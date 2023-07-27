@@ -1,0 +1,64 @@
+name: Node.js CI
+
+on: [push]
+jobs:
+  node_version:
+    runs-on: ubuntu-latest
+    outputs:
+      NODE_VERSION: ${{ steps.node_version.outputs.NODE_VERSION }}
+    steps:
+      - uses: actions/checkout@v3
+      - name: Read .nvmrc
+        id: node_version
+        run: echo ::set-output name=NODE_VERSION::$(cat .nvmrc |cut -c2-8)
+
+  build:
+    needs: [node_version]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        step: ["lint:check", "format:check", "build", "test:docker"]
+    steps:
+      - uses: actions/checkout@v3
+      - name: Read .nvmrc
+        id: node_version
+        run: echo ::set-output name=NODE_VERSION::$(cat .nvmrc |cut -c2-8)
+
+      - name: Use Node.js ${{ needs.node_version.outputs.NODE_VERSION }}
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ needs.node_version.outputs.NODE_VERSION }}
+
+      # Build Typescript
+      - run: |
+          yarn
+          yarn ${{ matrix.step }}
+
+  push:
+    needs: [node_version, build]
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      checks: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v3
+      # Build and push container image to GCR (only on main branch)
+      - name: Log in to the GitHub Container Registry
+        uses: docker/login-action@v1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push container image to GitHub Container Registry
+        uses: docker/build-push-action@v4
+        with:
+          push: true
+          build-args: |
+            NODE_VERSION=${{ needs.node_version.outputs.NODE_VERSION }}
+          tags: |
+            ghcr.io/ardriveapp/${{ github.event.repository.name }}:latest
+            ghcr.io/ardriveapp/${{ github.event.repository.name }}:${{ github.sha }}

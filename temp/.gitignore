@@ -1,0 +1,9 @@
+# Temp directory for incoming data items
+
+*
+!.gitignore
+!data
+!raw-data-item
+!bundle
+!bundle-payload
+!header

@@ -1,0 +1,16 @@
+name: Deploy Turbo Upload Lambdas
+
+concurrency:
+  group: build-deploy-lambdas-${{ github.ref_name }}
+  cancel-in-progress: true
+
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v3
+      - name: Build with Yarn
+        run: yarn && yarn build:lambda

@@ -1,0 +1,10 @@
+ARG NODE_VERSION=18.16.0
+
+FROM node:${NODE_VERSION}-bullseye-slim
+
+# Build
+WORKDIR /usr/src/app
+COPY . .
+RUN yarn && yarn build
+
+CMD ["yarn","db:migrate:latest"]

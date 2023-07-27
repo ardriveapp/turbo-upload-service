@@ -1,0 +1,59 @@
+version: "3"
+
+services:
+  arlocal:
+    image: textury/arlocal:v1.1.35
+    ports:
+      - "1984:1984"
+
+  upload-service:
+    build:
+      context: .
+      args:
+        NODE_VERSION: ${NODE_VERSION:-18.16.0}
+        NODE_VERSION_SHORT: ${NODE_VERSION_SHORT:-18}
+    environment:
+      NODE_ENV: ${NODE_ENV:-test}
+      DB_HOST: upload-service-pg
+      DB_PORT: 5432
+      DB_PASSWORD: postgres
+      PAYMENT_SERVICE_BASE_URL: ${PAYMENT_SERVICE_BASE_URL:-payment.ardrive.dev}
+      ALLOW_LISTED_ADDRESSES: ${ALLOW_LISTED_ADDRESSES:-}
+    ports:
+      - "${PORT:-3000}:${PORT:-3000}"
+    volumes:
+      - upload-service-data-items:/temp
+    depends_on:
+      - upload-service-pg
+
+  upload-service-pg:
+    image: postgres:13.8
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - upload-service-data:/var/lib/postgresql/data
+
+  test-runner:
+    build:
+      context: .
+      dockerfile: tests/Dockerfile.integration
+      args:
+        NODE_VERSION: ${NODE_VERSION:-18.16.0}
+    environment:
+      DB_HOST: upload-service-pg
+      DB_PASSWORD: postgres
+      DB_PORT: 5432
+      DISABLE_LOGS: ${DISABLE_LOGS:-true}
+      NODE_ENV: ${NODE_ENV:-test}
+      ARWEAVE_GATEWAY: ${ARWEAVE_GATEWAY:-http://arlocal:1984}
+    depends_on:
+      - upload-service-pg
+      - arlocal
+
+volumes:
+  upload-service-data:
+  upload-service-data-items:

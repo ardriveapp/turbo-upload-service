@@ -1,0 +1,89 @@
+openapi: 3.0.0
+info:
+  title: Turbo Upload Service
+  # TODO: inject as env var in CI to match package.json
+  version: 0.1.0
+  description: The Turbo Upload Service supports posting signed data-items to Arweave.net using Turbo Credits.
+
+servers:
+  - url: /v1
+
+components:
+  schemas:
+    DataItemPost:
+      type: object
+      properties:
+        id:
+          type: string
+          description: The id of the data item.
+        owner:
+          type: string
+          description: The wallet that signed data item.
+        dataCaches:
+          type: array
+          description: The Arweave data caches the data item has been posted to.
+          items:
+            type: string
+      example:
+        id: 7j-sF0lsslGVZ8lhEGXe5CtueB4iRYM3_oZ9m4GY_40
+        owner: xsi06LVwuRe2SaNFo0Yc1UtF3GSyi-GtzUtTkjLXrEw
+        dataCaches:
+          - arweave.net
+
+paths:
+  /tx:
+    post:
+      summary: Posts a signed data item to Arweave
+      requestBody:
+        required: true
+        description: A signed data item
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      headers:
+        Content-Length:
+          schema:
+            type: integer
+            format: int64
+            maximum: 2147483648 # 2GB in bytes
+          required: true
+        Content-Type:
+          schema:
+            type: string
+            enum:
+              - application/octet-stream
+          required: false
+
+      responses:
+        "200":
+          description: The signed data item was successfully submitted to and indexed on Arweave.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/DataItemPost"
+        "202":
+          description: Data item has already been posted to this service.
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                DataItemExists:
+                  value: Data Item Exists
+        "400":
+          description: Invalid data item post
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                InvalidContentType:
+                  value: Invalid Content Type
+                MissingContentLength:
+                  value: Request content has no length
+                InvalidContentLength:
+                  value: Data item is too large, this service only accepts data items up to 2147483648 bytes!
+                InvalidDataItem:
+                  value: Data item parsing error!

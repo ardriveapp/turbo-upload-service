@@ -1,0 +1,13 @@
+{
+  "root": true,
+  "parser": "@typescript-eslint/parser",
+  "plugins": ["@typescript-eslint", "header"],
+  "extends": ["eslint:recommended", "plugin:@typescript-eslint/recommended"],
+  "rules": {
+    "no-console": 1,
+    "no-unused-vars": "off",
+    "@typescript-eslint/no-unused-vars": ["error"],
+    "header/header": [2, "./resources/license.header.js"]
+  },
+  "ignorePatterns": ["lib/*", ".vscode/*", "bundle-jobs.cjs", "scripts"]
+}

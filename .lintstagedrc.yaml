@@ -1,0 +1,5 @@
+## To explicitly exclude folders
+## !(folderA|folderB)
+./**/*.{ts,json}:
+  - prettier --write
+  - eslint --cache --fix

@@ -1,0 +1,55 @@
+{
+  "files.insertFinalNewline": true,
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.formatOnSave": true,
+  "editor.formatOnSaveMode": "file",
+  "typescript.preferences.importModuleSpecifier": "relative",
+  "cSpell.words": [
+    "alexsasharegan",
+    "Aptos",
+    "arlocal",
+    "avsc",
+    "Backoff",
+    "bignumber",
+    "bundlr",
+    "dataitem",
+    "indep",
+    "indexdef",
+    "indexname",
+    "knexfile",
+    "multistream",
+    "nvmrc",
+    "Readables",
+    "schemaname",
+    "solana",
+    "sslmode",
+    "svcs",
+    "tablename",
+    "terragrunt",
+    "throughputs",
+    "trivago",
+    "typecheck",
+    "winstons"
+  ],
+  "[terraform]": {
+    "editor.defaultFormatter": "hashicorp.terraform",
+    "editor.formatOnSave": true,
+    "editor.formatOnSaveMode": "file"
+  },
+  "[terraform-vars]": {
+    "editor.defaultFormatter": "hashicorp.terraform",
+    "editor.formatOnSave": true,
+    "editor.formatOnSaveMode": "file"
+  },
+  "search.exclude": {
+    "**/.yarn": true,
+    "**/.pnp.*": true
+  },
+  "eslint.nodePath": ".yarn/sdks",
+  "prettier.prettierPath": ".yarn/sdks/prettier/index.js",
+  "typescript.tsdk": ".yarn/sdks/typescript/lib",
+  "typescript.enablePromptUseWorkspaceTsdk": true,
+  "[dockerfile]": {
+    "editor.defaultFormatter": "ms-azuretools.vscode-docker"
+  }
+}

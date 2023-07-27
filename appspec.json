@@ -1,0 +1,22 @@
+{
+  "version": 0,
+  "Resources": [
+    {
+      "TargetService": {
+        "Type": "AWS::ECS::Service",
+        "Properties": {
+          "TaskDefinition": "PLACEHOLDER",
+          "LoadBalancerInfo": {
+            "ContainerName": "PLACEHOLDER",
+            "ContainerPort": 3000
+          }
+        }
+      }
+    }
+  ],
+  "Hooks": [
+    {
+      "AfterAllowTestTraffic": "PLACEHOLDER"
+    }
+  ]
+}

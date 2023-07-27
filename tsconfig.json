@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "es2021",
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "outDir": "./lib",
+    "strict": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    /* Additional Checks */
+    "pretty": true,
+    "sourceMap": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "baseUrl": "."
+  },
+  "include": ["src", "tests"],
+  "exclude": ["node_modules", "**/node_modules/*"]
+}
