@@ -185,6 +185,15 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@ardrive/ardrive-promise-cache@npm:^1.1.4":
+  version: 1.1.4
+  resolution: "@ardrive/ardrive-promise-cache@npm:1.1.4"
+  dependencies:
+    "@alexsasharegan/simple-cache": ^3.3.3
+  checksum: c92f3f745c2138b2d62c53d6a394900f1691dfe696106cf99d1ca3e71fc284c34cf2c84ceb5ad224ad19964397b2097a41bd9f54bc93464182c095e96b400cba
+  languageName: node
+  linkType: hard
+
 "@aws-crypto/crc32@npm:3.0.0":
   version: 3.0.0
   resolution: "@aws-crypto/crc32@npm:3.0.0"
@@ -4293,7 +4302,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "ardrive-upload-service@workspace:."
   dependencies:
-    "@alexsasharegan/simple-cache": ^3.3.3
+    "@ardrive/ardrive-promise-cache": ^1.1.4
     "@aws-sdk/abort-controller": ^3.303.0
     "@aws-sdk/client-s3": ^3.367.0
     "@aws-sdk/client-secrets-manager": ^3.363.0
@@ -4344,26 +4353,26 @@ __metadata:
     https: ^1.0.0
     husky: ^8.0.1
     jsonwebtoken: ^9.0.0
-    knex: 2.4.0
+    knex: ^2.5.1
     koa: 2.13.4
     koa-router: 11.0.1
     koa2-swagger-ui: ^5.8.0
     lint-staged: ^12.5.0
     mocha: ^10.0.0
     multistream: 4.1.0
-    nodemon: ^2.0.16
+    nodemon: ^3.0.1
     nyc: ^15.1.0
     p-limit: ^3.1.0
     pg: ^8.8.0
     pg-query-stream: ^4.2.4
     prettier: ^2.6.2
     prom-client: ^14.1.0
-    rimraf: ^3.0.2
+    rimraf: ^5.0.1
     sinon: ^14.0.0
-    smartweave: ^0.4.49
     ts-node: ^10.7.0
     typescript: ^4.7.4
     winston: ^3.8.2
+    yaml: ^2.3.2
   languageName: unknown
   linkType: soft
 
@@ -5515,7 +5524,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"commander@npm:^9.1.0, commander@npm:^9.3.0":
+"commander@npm:^9.3.0":
   version: 9.5.0
   resolution: "commander@npm:9.5.0"
   checksum: c7a3e27aa59e913b54a1bafd366b88650bc41d6651f0cbe258d4ff09d43d6a7394232a4dadd0bf518b3e696fdf595db1028a0d82c785b88bd61f8a440cecfade
@@ -7018,7 +7027,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"glob@npm:^10.2.2":
+"glob@npm:^10.2.2, glob@npm:^10.2.5":
   version: 10.3.3
   resolution: "glob@npm:10.3.3"
   dependencies:
@@ -8114,45 +8123,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"knex@npm:2.4.0":
-  version: 2.4.0
-  resolution: "knex@npm:2.4.0"
-  dependencies:
-    colorette: 2.0.19
-    commander: ^9.1.0
-    debug: 4.3.4
-    escalade: ^3.1.1
-    esm: ^3.2.25
-    get-package-type: ^0.1.0
-    getopts: 2.3.0
-    interpret: ^2.2.0
-    lodash: ^4.17.21
-    pg-connection-string: 2.5.0
-    rechoir: ^0.8.0
-    resolve-from: ^5.0.0
-    tarn: ^3.0.2
-    tildify: 2.0.0
-  peerDependenciesMeta:
-    better-sqlite3:
-      optional: true
-    mysql:
-      optional: true
-    mysql2:
-      optional: true
-    pg:
-      optional: true
-    pg-native:
-      optional: true
-    sqlite3:
-      optional: true
-    tedious:
-      optional: true
-  bin:
-    knex: bin/cli.js
-  checksum: 66b4ae8412c61125b78512a66d924af95116628e16026efce4d03b80b2ced6b63208b37bb49fb52a499761da5e8981e136b48fcefcd48c3fe9fc72d9d17c5661
-  languageName: node
-  linkType: hard
-
 "knex@npm:^0.95.6":
   version: 0.95.15
   resolution: "knex@npm:0.95.15"
@@ -8186,6 +8156,45 @@ __metadata:
   bin:
     knex: bin/cli.js
   checksum: f70ad630c1a829b785514070a67d472511877c8fd17ef75df9dcadf9f7a244356a16dc85cd61a1c0a91a24a5a8d6355bfc29d1ff037092d0e1c7dfb3d19f9ff6
+  languageName: node
+  linkType: hard
+
+"knex@npm:^2.5.1":
+  version: 2.5.1
+  resolution: "knex@npm:2.5.1"
+  dependencies:
+    colorette: 2.0.19
+    commander: ^10.0.0
+    debug: 4.3.4
+    escalade: ^3.1.1
+    esm: ^3.2.25
+    get-package-type: ^0.1.0
+    getopts: 2.3.0
+    interpret: ^2.2.0
+    lodash: ^4.17.21
+    pg-connection-string: 2.6.1
+    rechoir: ^0.8.0
+    resolve-from: ^5.0.0
+    tarn: ^3.0.2
+    tildify: 2.0.0
+  peerDependenciesMeta:
+    better-sqlite3:
+      optional: true
+    mysql:
+      optional: true
+    mysql2:
+      optional: true
+    pg:
+      optional: true
+    pg-native:
+      optional: true
+    sqlite3:
+      optional: true
+    tedious:
+      optional: true
+  bin:
+    knex: bin/cli.js
+  checksum: 4f2da7fda51a450de25274eb76034c869de0427c17831dc8472b8116e879d23aae0592c2ce4e9b2a473417867063ac6e7b29021b39b4a4d502335017a5a09278
   languageName: node
   linkType: hard
 
@@ -9310,23 +9319,23 @@ __metadata:
   languageName: node
   linkType: hard
 
-"nodemon@npm:^2.0.16":
-  version: 2.0.22
-  resolution: "nodemon@npm:2.0.22"
+"nodemon@npm:^3.0.1":
+  version: 3.0.1
+  resolution: "nodemon@npm:3.0.1"
   dependencies:
     chokidar: ^3.5.2
     debug: ^3.2.7
     ignore-by-default: ^1.0.1
     minimatch: ^3.1.2
     pstree.remy: ^1.1.8
-    semver: ^5.7.1
-    simple-update-notifier: ^1.0.7
+    semver: ^7.5.3
+    simple-update-notifier: ^2.0.0
     supports-color: ^5.5.0
     touch: ^3.1.0
     undefsafe: ^2.0.5
   bin:
     nodemon: bin/nodemon.js
-  checksum: 9c987e139748f5b5c480c6c9080bdc97304ee7d29172b7b3da1a7db590b1323ad57b96346304e9b522b0e445c336dc393ccd3f9f45c73b20d476d2347890dcd0
+  checksum: 6a5d81855760d6617049eccce10ccf02bddb482dab13ceea5280ae595ec7004eee13e7b934368e3f46c37fe4d970342a8c38c99cae7e93e4d7a3ed1c1ecb6acf
   languageName: node
   linkType: hard
 
@@ -10394,6 +10403,17 @@ __metadata:
   languageName: node
   linkType: hard
 
+"rimraf@npm:^5.0.1":
+  version: 5.0.1
+  resolution: "rimraf@npm:5.0.1"
+  dependencies:
+    glob: ^10.2.5
+  bin:
+    rimraf: dist/cjs/src/bin.js
+  checksum: bafce85391349a2d960847980bf9b5caa2a8887f481af630f1ea27e08288217293cec72d75e9a2ba35495c212789f66a7f3d23366ba6197026ab71c535126857
+  languageName: node
+  linkType: hard
+
 "rpc-websockets@npm:^7.5.1":
   version: 7.5.1
   resolution: "rpc-websockets@npm:7.5.1"
@@ -10506,7 +10526,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"semver@npm:2 || 3 || 4 || 5, semver@npm:^5.0.3, semver@npm:^5.7.1":
+"semver@npm:2 || 3 || 4 || 5, semver@npm:^5.0.3":
   version: 5.7.1
   resolution: "semver@npm:5.7.1"
   bin:
@@ -10524,7 +10544,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"semver@npm:^7.3.5, semver@npm:^7.3.7, semver@npm:^7.3.8":
+"semver@npm:^7.3.5, semver@npm:^7.3.7, semver@npm:^7.3.8, semver@npm:^7.5.3":
   version: 7.5.4
   resolution: "semver@npm:7.5.4"
   dependencies:
@@ -10532,15 +10552,6 @@ __metadata:
   bin:
     semver: bin/semver.js
   checksum: 12d8ad952fa353b0995bf180cdac205a4068b759a140e5d3c608317098b3575ac2f1e09182206bf2eb26120e1c0ed8fb92c48c592f6099680de56bb071423ca3
-  languageName: node
-  linkType: hard
-
-"semver@npm:~7.0.0":
-  version: 7.0.0
-  resolution: "semver@npm:7.0.0"
-  bin:
-    semver: bin/semver.js
-  checksum: 272c11bf8d083274ef79fe40a81c55c184dff84dd58e3c325299d0927ba48cece1f020793d138382b85f89bab5002a35a5ba59a3a68a7eebbb597eb733838778
   languageName: node
   linkType: hard
 
@@ -10648,12 +10659,12 @@ __metadata:
   languageName: node
   linkType: hard
 
-"simple-update-notifier@npm:^1.0.7":
-  version: 1.1.0
-  resolution: "simple-update-notifier@npm:1.1.0"
+"simple-update-notifier@npm:^2.0.0":
+  version: 2.0.0
+  resolution: "simple-update-notifier@npm:2.0.0"
   dependencies:
-    semver: ~7.0.0
-  checksum: 1012e9b6c504e559a948078177b3eedbb9d7e4d15878e2bda56314d08db609ca5da485be4ac9f838759faae8057935ee0246fcdf63f1233c86bd9fecb2a5544b
+    semver: ^7.5.3
+  checksum: 9ba00d38ce6a29682f64a46213834e4eb01634c2f52c813a9a7b8873ca49cdbb703696f3290f3b27dc067de6d9418b0b84bef22c3eb074acf352529b2d6c27fd
   languageName: node
   linkType: hard
 
@@ -10717,7 +10728,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"smartweave@npm:^0.4.46, smartweave@npm:^0.4.49":
+"smartweave@npm:^0.4.46":
   version: 0.4.49
   resolution: "smartweave@npm:0.4.49"
   dependencies:
@@ -12124,6 +12135,13 @@ __metadata:
   version: 1.10.2
   resolution: "yaml@npm:1.10.2"
   checksum: ce4ada136e8a78a0b08dc10b4b900936912d15de59905b2bf415b4d33c63df1d555d23acb2a41b23cf9fb5da41c256441afca3d6509de7247daa062fd2c5ea5f
+  languageName: node
+  linkType: hard
+
+"yaml@npm:^2.3.2":
+  version: 2.3.2
+  resolution: "yaml@npm:2.3.2"
+  checksum: acd80cc24df12c808c6dec8a0176d404ef9e6f08ad8786f746ecc9d8974968c53c6e8a67fdfabcc5f99f3dc59b6bb0994b95646ff03d18e9b1dcd59eccc02146
   languageName: node
   linkType: hard
 

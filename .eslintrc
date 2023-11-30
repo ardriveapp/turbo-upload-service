@@ -9,5 +9,12 @@
     "@typescript-eslint/no-unused-vars": ["error"],
     "header/header": [2, "./resources/license.header.js"]
   },
-  "ignorePatterns": ["lib/*", ".vscode/*", "bundle-jobs.cjs", "scripts"]
+  "ignorePatterns": [
+    "lib/*",
+    ".vscode/*",
+    "bundle-jobs.cjs",
+    "scripts",
+    "package.json",
+    "testWallet.json"
+  ]
 }

@@ -204,6 +204,23 @@ const expectedVarCharColumn = ({
   };
 };
 
+const expectedDecimalColumn = ({
+  length = null,
+  nullable = false,
+  defaultValue = null,
+}: {
+  length?: null;
+  nullable?: boolean;
+  defaultValue?: null | string;
+}) => {
+  return {
+    type: "numeric",
+    maxLength: length,
+    nullable,
+    defaultValue,
+  };
+};
+
 const expectedIntegerColumn = ({
   length = null,
   nullable = false,
@@ -215,6 +232,23 @@ const expectedIntegerColumn = ({
 }) => {
   return {
     type: "integer",
+    maxLength: length,
+    nullable,
+    defaultValue,
+  };
+};
+
+const expectedBigIntegerColumn = ({
+  length = null,
+  nullable = false,
+  defaultValue = null,
+}: {
+  length?: number | null;
+  nullable?: boolean;
+  defaultValue?: null | string;
+}) => {
+  return {
+    type: "bigint",
     maxLength: length,
     nullable,
     defaultValue,
@@ -239,9 +273,9 @@ export const expectedColumnInfo = {
   bundle_id: expectedVarCharColumn({ length: 43 }),
   reward: expectedVarCharColumn({}),
 
-  header_byte_count: expectedIntegerColumn({ nullable: true }),
-  transaction_byte_count: expectedIntegerColumn({ nullable: true }),
-  payload_byte_count: expectedIntegerColumn({ nullable: true }),
+  header_byte_count: expectedBigIntegerColumn({ nullable: true }),
+  transaction_byte_count: expectedBigIntegerColumn({ nullable: true }),
+  payload_byte_count: expectedBigIntegerColumn({ nullable: true }),
 
   posted_date: expectedDateColumn,
   seeded_date: expectedDateColumn,
@@ -257,4 +291,5 @@ export const expectedColumnInfo = {
     defaultValue: null,
     maxLength: null,
   },
+  usd_to_ar_rate: expectedDecimalColumn({ nullable: true }),
 };

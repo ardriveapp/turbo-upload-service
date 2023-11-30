@@ -18,11 +18,12 @@ import { createHash } from "crypto";
 
 import { JWKInterface } from "../types/jwkTypes";
 import { Base64String, PublicArweaveAddress } from "../types/types";
+import { getPublicKeyFromJwk } from "./common";
 
 export function jwkToPublicArweaveAddress(
   jwk: JWKInterface
 ): PublicArweaveAddress {
-  return ownerToAddress(jwk.n);
+  return ownerToAddress(getPublicKeyFromJwk(jwk));
 }
 
 export function ownerToAddress(owner: Base64String): PublicArweaveAddress {

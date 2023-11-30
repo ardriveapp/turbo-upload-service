@@ -38,3 +38,12 @@ export interface PostgresError {
 
 export const postgresInsertFailedPrimaryKeyNotUniqueCode = "23505";
 export const postgresTableRowsLockedUniqueCode = "55P03";
+
+export class BundlePlanExistsInAnotherStateWarning extends Error {
+  constructor(planId: string, bundleId: string) {
+    super(
+      `[DUPLICATE-MESSAGE] Plan id '${planId}' is already in another state! (bundleId: ${bundleId})`
+    );
+    this.name = "BundlePlanExistsInAnotherStateWarning";
+  }
+}

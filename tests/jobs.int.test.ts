@@ -22,6 +22,7 @@ import { ArweaveGateway } from "../src/arch/arweaveGateway";
 import { columnNames, tableNames } from "../src/arch/db/dbConstants";
 import { PostgresDatabase } from "../src/arch/db/postgres";
 import { FileSystemObjectStore } from "../src/arch/fileSystemObjectStore";
+import { TurboPaymentService } from "../src/arch/payment";
 import { gatewayUrl } from "../src/constants";
 import { planBundleHandler } from "../src/jobs/plan";
 import { postBundleHandler } from "../src/jobs/post";
@@ -48,6 +49,7 @@ import {
   stubTxId14,
   stubTxId15,
   stubTxId16,
+  stubUsdToArRate,
 } from "./stubs";
 import {
   arweave,
@@ -59,7 +61,8 @@ import {
 const db = new PostgresDatabase();
 const dbTestHelper = new DbTestHelper(db);
 const objectStore = new FileSystemObjectStore();
-const gateway = new ArweaveGateway();
+const paymentService = new TurboPaymentService();
+const gateway = new ArweaveGateway({ endpoint: gatewayUrl });
 describe("Plan bundle job handler function integrated with PostgresDatabase class", () => {
   const dataItemIds = [stubTxId10, stubTxId11, stubTxId12];
 
@@ -189,11 +192,14 @@ describe("Post bundle job handler function integrated with PostgresDatabase clas
   });
 
   it("when post to Arweave succeeds, promotes new_bundle to posted_bundle and transaction returns from arlocal as expected", async () => {
+    // stub the response from payment service
+    stub(paymentService, "getFiatToARConversionRate").resolves(stubUsdToArRate);
     // Run handler as AWS would
     await postBundleHandler(planId, {
       objectStore,
       database: db,
       gateway,
+      paymentService,
     });
 
     const postedBundleDbResult = await db["writer"]<PostedBundleDBResult>(
@@ -202,6 +208,48 @@ describe("Post bundle job handler function integrated with PostgresDatabase clas
     expect(postedBundleDbResult.length).to.equal(1);
     expect(postedBundleDbResult[0].plan_id).to.equal(planId);
     expect(postedBundleDbResult[0].planned_date).to.exist;
+    expect(postedBundleDbResult[0].planned_date).to.exist;
+    // by default knex returns string values for decimals to avoid losing precision, so we have to cast as a number to validate
+    expect(postedBundleDbResult[0].usd_to_ar_rate).to.exist;
+    expect(+postedBundleDbResult[0].usd_to_ar_rate!).to.equal(stubUsdToArRate); // eslint-disable-line
+
+    await mineArLocalBlock(arweave);
+
+    const bundleTxFromArLocal = (
+      await axios.get(`${gatewayUrl.origin}/tx/${bundleId}`)
+    ).data;
+
+    expect(bundleTxFromArLocal.data_root).to.equal(
+      // cspell:disable
+      "JfGW9Ths4z-IH-UJwvhq4U14kyQmpZomOx6jeiFsM-Y"
+    ); // cspell:enable
+    expect(bundleTxFromArLocal.data_size).to.equal(1211);
+    expect(bundleTxFromArLocal.id).to.equal(bundleId);
+    expect(bundleTxFromArLocal.owner_address).to.equal(
+      bundleTxStubOwnerAddress
+    );
+  });
+
+  it("when get fiat to ar conversion rate fails, the post bundle handler still runs as expected", async () => {
+    stub(gateway, "postBundleTx").resolves();
+    stub(paymentService, "getFiatToARConversionRate").rejects();
+
+    // Run handler as AWS would
+    await postBundleHandler(planId, {
+      objectStore,
+      database: db,
+      gateway,
+      paymentService,
+    });
+
+    const postedBundleDbResult = await db["writer"]<PostedBundleDBResult>(
+      tableNames.postedBundle
+    ).where(columnNames.bundleId, bundleId);
+    expect(postedBundleDbResult.length).to.equal(1);
+    expect(postedBundleDbResult[0].plan_id).to.equal(planId);
+    expect(postedBundleDbResult[0].planned_date).to.exist;
+    expect(postedBundleDbResult[0].planned_date).to.exist;
+    expect(postedBundleDbResult[0].usd_to_ar_rate).to.not.exist;
 
     await mineArLocalBlock(arweave);
 
@@ -222,12 +270,14 @@ describe("Post bundle job handler function integrated with PostgresDatabase clas
 
   it("when post to Arweave fails, promotes new_bundle to failed_bundle and demotes each planned_data_item back to new_data_item", async () => {
     stub(gateway, "postBundleTx").throws();
+    stub(paymentService, "getFiatToARConversionRate").resolves(stubUsdToArRate);
 
     // We expect this handler to run without error so SQS will not attempt to retry this work
     await postBundleHandler(planId, {
       objectStore,
       database: db,
       gateway: gateway,
+      paymentService,
     });
 
     const newBundleDbResult = await db["writer"]<NewBundleDBResult>(
@@ -268,6 +318,7 @@ describe("Post bundle job handler function integrated with PostgresDatabase clas
         objectStore,
         database: db,
         gateway: gateway,
+        paymentService,
       }),
       errorMessage:
         "Wallet does not have enough balance for this bundle post! Current Balance: 0, Reward for Bundle: 2379774852",
@@ -307,16 +358,19 @@ describe("Verify bundle job handler function integrated with PostgresDatabase cl
   const bundleId = "uMguurlEh9a7MKYiauKGlbxG6OjP2xaGmWa1-vrHVh8"; // cspell:enable
   const planId = stubTxId10;
   const dataItemIds = [stubTxId14, stubTxId15, stubTxId16];
+  const usdToArRate = stubUsdToArRate;
   beforeEach(async () => {
     await dbTestHelper.insertStubSeededBundle({
       bundleId,
       planId,
       dataItemIds: dataItemIds,
+      usdToArRate,
     });
     await dbTestHelper.insertStubPostedBundle({
       bundleId,
       planId,
       dataItemIds: dataItemIds,
+      usdToArRate,
     });
   });
   afterEach(async () => {

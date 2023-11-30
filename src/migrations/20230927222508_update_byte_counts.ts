@@ -15,12 +15,13 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 import { Knex } from "knex";
-import { Schema } from "../src/arch/db/schema";
+
+import { Schema } from "../arch/db/schema";
 
 export async function up(knex: Knex): Promise<void> {
-  return Schema.create(knex);
+  return Schema.migrateToByteCountBundleColumns(knex);
 }
 
 export async function down(knex: Knex): Promise<void> {
-  return Schema.rollback(knex);
+  return Schema.rollbackFromByteCountBundleColumns(knex);
 }

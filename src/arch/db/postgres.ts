@@ -16,6 +16,7 @@
  */
 import knex, { Knex } from "knex";
 import pLimit from "p-limit";
+import path from "path";
 import winston from "winston";
 
 import { failedReasons, maxDataItemLimit } from "../../constants";
@@ -30,6 +31,7 @@ import {
   NewDataItem,
   NewDataItemDBInsert,
   NewDataItemDBResult,
+  PermanentBundleDBResult,
   PermanentBundleDbInsert,
   PermanentDataItemDBInsert,
   PermanentDataItemDBResult,
@@ -45,6 +47,7 @@ import {
 import { TransactionId, W, Winston } from "../../types/types";
 import { filterKeysFromObject } from "../../utils/common";
 import {
+  BundlePlanExistsInAnotherStateWarning,
   DataItemExistsWarning,
   PostgresError,
   postgresInsertFailedPrimaryKeyNotUniqueCode,
@@ -59,20 +62,33 @@ import {
   postedBundleDbResultToPostedBundleMap,
   seededBundleDbResultToSeededBundleMap,
 } from "./dbMaps";
-import { readerConfig, writerConfig } from "./knexConfig";
-
-/** Knex instance connected to a PostgreSQL database */
-const pgWriter = knex(writerConfig);
-const pgReader = knex(readerConfig);
+import { getReaderConfig, getWriterConfig } from "./knexConfig";
 
 export class PostgresDatabase implements Database {
   private log: winston.Logger;
+  private reader: Knex;
+  private writer: Knex;
 
-  constructor(
-    private readonly writer: Knex = pgWriter,
-    private readonly reader: Knex = pgReader
-  ) {
+  constructor({
+    writer = knex(getWriterConfig()),
+    reader = knex(getReaderConfig()),
+    migrate = false,
+  }: {
+    writer?: Knex;
+    reader?: Knex;
+    migrate?: boolean;
+  } = {}) {
     this.log = logger.child({ class: this.constructor.name });
+    this.writer = writer;
+    this.reader = reader;
+    if (migrate) {
+      this.log.info("Migrating database...");
+      // for testing purposes
+      this.writer.migrate
+        .latest({ directory: path.join(__dirname, "../../migrations") })
+        .then(() => this.log.info("Database migration complete."))
+        .catch((error) => this.log.error("Failed to migrate database!", error));
+    }
   }
 
   public async insertNewDataItem(
@@ -144,6 +160,8 @@ export class PostgresDatabase implements Database {
     dataStart,
     signatureType,
     failedBundles,
+    uploadedDate,
+    contentType,
   }: PostedNewDataItem): NewDataItemDBInsert {
     return {
       assessed_winston_price: assessedWinstonPrice.toString(),
@@ -153,6 +171,8 @@ export class PostgresDatabase implements Database {
       data_start: dataStart,
       failed_bundles: failedBundles.length > 0 ? failedBundles.join(",") : "",
       signature_type: signatureType,
+      uploaded_date: uploadedDate,
+      content_type: contentType,
     };
   }
 
@@ -274,7 +294,18 @@ export class PostgresDatabase implements Database {
   ): Promise<PlannedDataItem[]> {
     this.log.info("Getting planned data items from database...", { planId });
 
-    const plannedDataItemDbResult = await this.writer<PlannedDataItemDBResult>(
+    // Check if bundle plan still exists before getting planned data items
+    const bundlePlanDbResult = await this.reader<BundlePlanDBResult>(
+      tableNames.bundlePlan
+    ).where({ plan_id: planId });
+    if (bundlePlanDbResult.length === 0) {
+      logger.warn(
+        `[DUPLICATE-MESSAGE] No bundle plan still exists for plan id!`
+      );
+      return [];
+    }
+
+    const plannedDataItemDbResult = await this.reader<PlannedDataItemDBResult>(
       tableNames.plannedDataItem
     ).where({
       plan_id: planId,
@@ -303,25 +334,58 @@ export class PostgresDatabase implements Database {
       reward: reward.toString(),
     });
 
-    return this.writer.transaction(async (tx) => {
-      const { planned_date } = (
-        await tx<BundlePlanDBResult>(tableNames.bundlePlan)
-          .where({ plan_id: planId })
-          .del()
-          .returning("*")
-      )[0];
+    return this.writer.transaction(async (knexTransaction) => {
+      const bundlePlanDbResults = await knexTransaction<BundlePlanDBResult>(
+        tableNames.bundlePlan
+      )
+        .where({ plan_id: planId })
+        .forUpdate() // lock row
+        .noWait() // don't wait for fetching locked row, throws errors
+        .del() // once it is deleted, it can't be included in another bundle
+        .returning("*");
+
+      if (bundlePlanDbResults.length === 0) {
+        // If no bundle plan is found, check if plan id exists in another table
+        logger.warn(
+          "No bundle plan found! Checking other tables for plan id...",
+          { planId, bundleId }
+        );
+        const bundlePlanResults = await Promise.all([
+          knexTransaction<NewBundleDBResult>(tableNames.newBundle).where({
+            plan_id: planId,
+          }),
+          knexTransaction<PostedBundleDBResult>(tableNames.postedBundle).where({
+            plan_id: planId,
+          }),
+          knexTransaction<SeededBundleDBResult>(tableNames.seededBundle).where({
+            plan_id: planId,
+          }),
+          knexTransaction<PermanentBundleDBResult>(
+            tableNames.permanentBundle
+          ).where({
+            plan_id: planId,
+          }),
+        ]);
+        if (
+          bundlePlanResults.some((bundlePlanResult) => bundlePlanResult.length)
+        ) {
+          throw new BundlePlanExistsInAnotherStateWarning(planId, bundleId);
+        } else {
+          throw Error(`No bundle plan found for plan id ${planId}!`);
+        }
+      }
 
       const newBundleInsert: NewBundleDBInsert = {
         bundle_id: bundleId,
         plan_id: planId,
-        planned_date,
+        planned_date: bundlePlanDbResults[0].planned_date,
         reward: reward.toString(),
-        header_byte_count: headerByteCount,
-        payload_byte_count: payloadByteCount,
-        transaction_byte_count: transactionByteCount,
+        header_byte_count: headerByteCount.toString(),
+        payload_byte_count: payloadByteCount.toString(),
+        transaction_byte_count: transactionByteCount.toString(),
       };
 
-      await tx(tableNames.newBundle).insert(newBundleInsert);
+      await knexTransaction(tableNames.newBundle).insert(newBundleInsert);
     });
   }
 
@@ -339,9 +403,16 @@ export class PostgresDatabase implements Database {
     return newBundleDbResultToNewBundleMap(newBundleDbResult[0]);
   }
 
-  public insertPostedBundle(bundleId: TransactionId): Promise<void> {
+  public insertPostedBundle({
+    bundleId,
+    usdToArRate,
+  }: {
+    bundleId: TransactionId;
+    usdToArRate?: number;
+  }): Promise<void> {
     this.log.info("Inserting posted bundle...", {
       bundleId,
+      usdToArRate,
     });
 
     return this.writer.transaction(async (tx) => {
@@ -352,7 +423,11 @@ export class PostgresDatabase implements Database {
           .returning("*")
       )[0];
 
-      await tx(tableNames.postedBundle).insert(newBundleDbResult);
+      // append USD/AR conversion rate for accounting purposes
+      await tx(tableNames.postedBundle).insert({
+        ...newBundleDbResult,
+        usd_to_ar_rate: usdToArRate,
+      });
     });
   }
 

@@ -35,7 +35,7 @@ router.post("/v1/tx/:currency", dataItemRoute);
 router.post("/tx/:currency", dataItemRoute);
 
 // healthcheck endpoint
-
+// TODO: change this to something other than `/` (e.g. `/health` - note: doing so will require a change to AWS LB listener configuration)
 router.get("/", (ctx: KoaContext, next: Next) => {
   ctx.body = "OK";
   return next();

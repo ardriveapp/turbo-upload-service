@@ -15,9 +15,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 import { createReadStream } from "fs";
-import { Knex } from "knex";
 
-import { PostgresDatabase } from "../src/arch/db/postgres";
 import {
   NewBundle,
   NewDataItem,
@@ -65,6 +63,7 @@ export const stubBlockHeight = 123456;
 export const stubPlanId = "00000000-0000-0000-0000-000000000001";
 export const stubPlanId2 = "00000000-0000-0000-0000-000000000002";
 export const stubPlanId3 = "00000000-0000-0000-0000-000000000003";
+export const stubUsdToArRate = 5.63;
 
 const baseDate = new Date("2022-09-01 16:20:00");
 export const stubDates = {
@@ -107,12 +106,6 @@ export function stubNextBundleToPost(): NewBundle {
     planId: stubPlanId,
     plannedDate: stubDates.earliestDate,
   };
-}
-
-export class StubDatabase extends PostgresDatabase {
-  constructor() {
-    super(null as unknown as Knex);
-  }
 }
 
 export const stubDataItemBase64Signature = // cspell:disable

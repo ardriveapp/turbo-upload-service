@@ -14,23 +14,16 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-import Arweave from "arweave";
-import { readContract } from "smartweave";
+import { deepHash, getCryptoDriver } from "arbundles";
 
-import { TransactionId } from "../../types/types";
-import { ContractReader } from "./contractOracle";
+import { fromB64Url } from "./base64";
+import { SignedReceipt, prepareHash } from "./signReceipt";
 
-/**
- *  Oracle class responsible for retrieving and reading
- *  Smartweave Contracts from Arweave with the `smartweave` package
- */
-export class SmartweaveContractReader implements ContractReader {
-  constructor(private readonly arweave: Arweave) {}
-
-  /** Fetches smartweave contracts from Arweave with smartweave-js */
-  async readContract(txId: TransactionId): Promise<unknown> {
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-ignore
-    return readContract(this.arweave, `${txId}`);
-  }
+export async function verifyReceipt(receipt: SignedReceipt): Promise<boolean> {
+  const dh = await deepHash(prepareHash(receipt));
+  return getCryptoDriver().verify(
+    receipt.public,
+    dh,
+    fromB64Url(receipt.signature)
+  );
 }

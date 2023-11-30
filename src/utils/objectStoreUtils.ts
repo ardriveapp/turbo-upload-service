@@ -218,6 +218,7 @@ export async function assembleBundlePayload(
   return outputStream;
 }
 
+// TODO: Currently un-used. Test this is a new branch and ticket
 // focused on improvements to the bundle payload creation
 export async function assembleBundlePayloadWithMultiStream(
   objectStore: ObjectStore,

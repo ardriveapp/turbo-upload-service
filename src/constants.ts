@@ -18,58 +18,53 @@ import { PublicArweaveAddress } from "./types/types";
 
 export const port = process.env.PORT ? +process.env.PORT : 3000;
 
+export const receiptVersion = "0.1.0";
+
+export const deadlineHeightIncrement = 200;
+
 // Wallets added via environment var as a comma separated list // cspell:disable
 // e.g: ALLOW_LISTED_ADDRESSES="QWERTYUIOP,ASDFGHJKL,ZXCVBNM" // cspell:enable
 const injectedAllowListAddresses = process.env.ALLOW_LISTED_ADDRESSES
   ? process.env.ALLOW_LISTED_ADDRESSES.split(",")
   : [];
 
-// cspell:disable
-const testAllowListArweaveAddresses = [
-  "iKryOeZQMONi2965nKz528htMMN_sBcjlhc-VncoRjA",
-  "9ODOd-_ZT9oWoRMVmmD4G5f9Z6MjvYxO3Nen-T5OXvU",
-  "Hh6uQILbcMIFyHaEuqfO47f8VQcx_7eFzlmnRyCrGXI",
-  "mkKwVztgnnFwEiWu7hJR6JWESvG6FGb2EIbSxumRhFg",
-  "J40R1BgFSI1_7p25QW49T7P46BePJJnlDrsFGY1YWbM",
-  "PPPTGngwdgtmV3kuzYSUCJSBAivt3fO5Zhk6fQfB29Y",
-  "tIX9zeZ3ltzuRxZRkKkOmilN3Yz1dyZl2piid2xSkfI",
-];
+export const allowListPublicAddresses: PublicArweaveAddress[] =
+  injectedAllowListAddresses;
 
-const testAllowListSolanaAddresses = [
-  "VrRCYEai_2IveGr0lCiivqLGqenh4wpBnfZNgL-FtWY",
-];
-
-const testAllowListEthereumAddresses = [
-  "xsi06LVwuRe2SaNFo0Yc1UtF3GSyi-GtzUtTkjLXrEw",
-];
-// cspell:enable
-
-const testAllowListAddresses = [
-  ...testAllowListArweaveAddresses,
-  ...testAllowListSolanaAddresses,
-  ...testAllowListEthereumAddresses,
-];
-
-export const allowListPublicAddresses: PublicArweaveAddress[] = [
-  ...testAllowListAddresses,
-  ...injectedAllowListAddresses,
-];
+export const migrateOnStartup = process.env.MIGRATE_ON_STARTUP === "true";
 
 const oneGiB = 1_073_741_824;
 const twoGiB = oneGiB * 2;
+const fourGiB = oneGiB * 4;
 const oneKiB = 1024;
 
 export const maxDataItemLimit = 1_000;
-export const maxBundleSize = twoGiB;
-export const maxDataItemSize = twoGiB;
+
+/** Target max size for bundle packing. If data item is larger than this, it will bundle by itself */
+export const maxBundleSize = process.env.MAX_BUNDLE_SIZE
+  ? +process.env.MAX_BUNDLE_SIZE
+  : twoGiB;
+
+/** Max allowed data item limit on data post ingest */
+export const maxDataItemSize = process.env.MAX_DATA_ITEM_SIZE
+  ? +process.env.MAX_DATA_ITEM_SIZE
+  : fourGiB;
+
 export const freeArfsDataAllowLimit = +(
   process.env.FREE_UPLOAD_LIMIT ?? oneKiB * 505
 ); // Extra to account for the header sizes
+
 export const allowArFSData = process.env.ALLOW_ARFS_DATA === "true";
-export const shouldAddCommunityTip = process.env.ADD_COMMUNITY_TIP === "true";
 export const gatewayUrl = new URL(
-  process.env.ARWEAVE_GATEWAY || "http://localhost:1984"
+  process.env.ARWEAVE_GATEWAY || "https://arweave.net:443"
 );
+
+export const dataCaches = process.env.DATA_CACHES?.split(",") ?? [
+  "arweave.net",
+];
+export const fastFinalityIndexes = process.env.FAST_FINALITY_INDEXES?.split(
+  ","
+) ?? ["arweave.net"];
 
 /**
  * Error delay for the first failed request for a transaction header post or chunk upload

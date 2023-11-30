@@ -14,13 +14,16 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+import { defaultArchitecture } from "../arch/architecture";
 import { ArweaveGateway, Gateway } from "../arch/arweaveGateway";
 import { Database } from "../arch/db/database";
 import { PostgresDatabase } from "../arch/db/postgres";
 import { ObjectStore } from "../arch/objectStore";
+import { PaymentService, TurboPaymentService } from "../arch/payment";
 import { createQueueHandler, enqueue } from "../arch/queues";
 import { gatewayUrl } from "../constants";
-import logger from "../logger";
+import defaultLogger from "../logger";
+import { MetricRegistry } from "../metricRegistry";
 import { PlanId } from "../types/dbTypes";
 import { Winston } from "../types/winston";
 import { ownerToAddress } from "../utils/base64";
@@ -30,6 +33,7 @@ interface PostBundleJobInjectableArch {
   database?: Database;
   objectStore?: ObjectStore;
   gateway?: Gateway;
+  paymentService?: PaymentService;
 }
 
 export async function postBundleHandler(
@@ -40,10 +44,10 @@ export async function postBundleHandler(
     gateway = new ArweaveGateway({
       endpoint: gatewayUrl,
     }),
-  }: PostBundleJobInjectableArch
+    paymentService = new TurboPaymentService(),
+  }: PostBundleJobInjectableArch,
+  logger = defaultLogger.child({ job: "post-bundle-job", planId })
 ) {
-  logger.child({ job: "post-bundle-job" });
-
   const dbNextBundle = await database.getNextBundleToPostByPlanId(planId);
   const { bundleId, transactionByteCount } = dbNextBundle;
 
@@ -60,20 +64,33 @@ export async function postBundleHandler(
   logger.info(`Bundle Transaction details.`, { planId, bundleTx });
 
   try {
+    // post bundle, throw error on failure
     const transactionPostResponseData = await gateway.postBundleTx(bundleTx);
+
+    // fetch AR rate - but don't throw on failure
+    const usdToArRate = await paymentService
+      .getFiatToARConversionRate("usd")
+      .catch((err) => {
+        MetricRegistry.usdToArRateFail.inc();
+        logger.error("Failed to fetch USD/AR rate", {
+          err,
+        });
+        return undefined;
+      });
+
     logger.info("Successfully posted bundle for transaction.", {
-      planId,
       bundleId,
       response: transactionPostResponseData,
+      usdToArRate,
     });
 
-    await database.insertPostedBundle(bundleId);
+    await database.insertPostedBundle({ bundleId, usdToArRate });
     await enqueue("seed-bundle", { planId });
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error.";
     logger.error("Post Bundle Job has failed!", {
-      planId,
       bundleId,
-      error,
+      error: message,
     });
 
     const balance = await gateway.getBalanceForWallet(
@@ -90,15 +107,16 @@ export async function postBundleHandler(
 
     // For other failure reasons, insert as a failed to post bundle without throwing error
     // The planned_data_items in the bundle will be demoted to new_data_items
+    // We also do not care about the USD/AR rate if posting fails, so we do not pass it in
     return database.insertFailedToPostBundle(bundleId);
   }
 }
 export const handler = createQueueHandler(
   "post-bundle",
-  (message) => postBundleHandler(message.planId, {}),
+  (message) => postBundleHandler(message.planId, defaultArchitecture),
   {
     before: async () => {
-      logger.info("Post bundle job has been triggered.");
+      defaultLogger.info("Post bundle job has been triggered.");
     },
   }
 );

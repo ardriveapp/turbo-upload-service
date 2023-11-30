@@ -61,6 +61,7 @@ function stubNewDataItemInsert({
     data_start: 1500,
     signature_type: 1,
     failed_bundles: "",
+    content_type: "text/plain",
   };
 }
 
@@ -108,9 +109,9 @@ function stubNewBundleInsert({
     planned_date: stubDates.earliestDate,
     signed_date: signedDate,
     reward: stubWinstonPrice.toString(),
-    header_byte_count: stubByteCount,
-    payload_byte_count: stubByteCount,
-    transaction_byte_count: uMguurlBundleTxByteCount,
+    header_byte_count: stubByteCount.toString(),
+    payload_byte_count: stubByteCount.toString(),
+    transaction_byte_count: uMguurlBundleTxByteCount.toString(),
   };
 }
 
@@ -118,6 +119,7 @@ function stubPostedBundleInsert({
   bundleId,
   planId,
   postedDate = undefined,
+  usdToArRate,
 }: InsertStubPostedBundleBundleParams): PostedBundleDbInsert & {
   posted_date: Timestamp | undefined;
 } {
@@ -125,6 +127,7 @@ function stubPostedBundleInsert({
     ...stubNewBundleInsert({ bundleId, planId }),
     signed_date: stubDates.earliestDate,
     posted_date: postedDate,
+    usd_to_ar_rate: usdToArRate,
   };
 }
 
@@ -132,11 +135,12 @@ function stubSeededBundleInsert({
   bundleId,
   planId,
   seededDate = undefined,
+  usdToArRate,
 }: InsertStubSeededBundleParams): SeededBundleDbInsert & {
   seeded_date: Timestamp | undefined;
 } {
   return {
-    ...stubPostedBundleInsert({ bundleId, planId }),
+    ...stubPostedBundleInsert({ bundleId, planId, usdToArRate }),
     posted_date: stubDates.earliestDate,
     seeded_date: seededDate,
   };
@@ -212,13 +216,14 @@ export class DbTestHelper {
     planId,
     postedDate,
     dataItemIds = [],
+    usdToArRate,
   }: InsertStubPostedBundleBundleParams): Promise<void> {
     await Promise.all([
       dataItemIds.map((dataItemId) =>
         this.insertStubPlannedDataItem({ dataItemId, planId })
       ),
       this.knex(tableNames.postedBundle).insert(
-        stubPostedBundleInsert({ bundleId, planId, postedDate })
+        stubPostedBundleInsert({ bundleId, planId, postedDate, usdToArRate })
       ),
     ]);
     return;
@@ -228,9 +233,10 @@ export class DbTestHelper {
     bundleId,
     planId,
     seededDate,
+    usdToArRate,
   }: InsertStubSeededBundleParams): Promise<void> {
     return this.knex(tableNames.seededBundle).insert(
-      stubSeededBundleInsert({ bundleId, planId, seededDate })
+      stubSeededBundleInsert({ bundleId, planId, seededDate, usdToArRate })
     );
   }
 
@@ -361,6 +367,7 @@ interface InsertStubNewBundleBundleParams
 interface InsertStubPostedBundleBundleParams
   extends Omit<InsertStubNewBundleBundleParams, "signedDate"> {
   postedDate?: Timestamp;
+  usdToArRate: number;
 }
 
 interface InsertStubSeededBundleParams

@@ -14,11 +14,12 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-import { Tag, serializeTags } from "arbundles";
 import {
+  Tag,
   byteArrayToLong,
   deepHash,
   longTo8ByteArray,
+  serializeTags,
   shortTo2ByteArray,
 } from "arbundles";
 import Arweave from "arweave";

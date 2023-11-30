@@ -29,8 +29,7 @@ import { getDataItemData, getS3ObjectStore } from "./objectStoreUtils";
 export type DataItemHeader = {
   id: string;
   owner: string; // The raw public key
-  owner_address: string; // The base64url encoded sha256 hash of the owner string
-
+  owner_address: string; // The base64url encoded sha256 hash of the owner string - TODO: VERIFY
   signature: string;
   target: string; // Empty string if unspecified
   content_type: string;
@@ -39,8 +38,9 @@ export type DataItemHeader = {
 };
 
 export type SignedDataItemHeader = DataItemHeader & {
-  bundlr_signature: string;
+  bundlr_signature: string; // TODO: Update optical bridge to use bundler_signature
 };
+
 export function encodeTagsForOptical(
   dataItemHeader: DataItemHeader
 ): DataItemHeader {

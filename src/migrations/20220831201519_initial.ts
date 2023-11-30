@@ -14,15 +14,14 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-import { TransactionId } from "../../types/types";
-import { CommunityContractData, CommunityTipPercentage } from "./contractTypes";
+import { Knex } from "knex";
 
-/** An oracle interface responsible for reading contracts and retrieving the ArDrive Community Contract */
-export interface ContractOracle extends ContractReader {
-  getCommunityContract(): Promise<CommunityContractData>;
-  getTipPercentageFromContract(): Promise<CommunityTipPercentage>;
+import { Schema } from "../arch/db/schema";
+
+export async function up(knex: Knex): Promise<void> {
+  return Schema.create(knex);
 }
 
-export interface ContractReader {
-  readContract(txId: TransactionId): Promise<unknown>;
+export async function down(knex: Knex): Promise<void> {
+  return Schema.rollback(knex);
 }

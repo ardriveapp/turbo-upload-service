@@ -98,7 +98,11 @@ export const handler = async (event: SQSEvent) => {
             })
           );
         } catch (error) {
-          bdiLogger.error("Encountered error unpacking bdi", { error });
+          const message =
+            error instanceof Error ? error.message : "Unknown error";
+          bdiLogger.error("Encountered error unpacking bdi", {
+            error: message,
+          });
           return;
         }
 

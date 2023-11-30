@@ -42,7 +42,7 @@ export const handler = async (event: SQSEvent) => {
 
   // If any BDIs are detected, unpack them 1 nested level deep
   // and include the nested data items in the optical post
-
+  // TODO: Filter this further for ArDrive data
   const nestedStringifiedHeaders = await Promise.all(
     (
       await getNestedDataItemHeaders({

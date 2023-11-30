@@ -14,12 +14,13 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+import { defaultArchitecture } from "../arch/architecture";
 import { Database } from "../arch/db/database";
 import { PostgresDatabase } from "../arch/db/postgres";
 import { ObjectStore } from "../arch/objectStore";
 import { createQueueHandler } from "../arch/queues";
 import { ArweaveInterface } from "../arweaveJs";
-import logger from "../logger";
+import defaultLogger from "../logger";
 import { PlanId } from "../types/dbTypes";
 import {
   getBundlePayload,
@@ -39,10 +40,9 @@ export async function seedBundleHandler(
     database = new PostgresDatabase(),
     objectStore = getS3ObjectStore(),
     arweave = new ArweaveInterface(),
-  }: SeedBundleJobInjectableArch
+  }: SeedBundleJobInjectableArch,
+  logger = defaultLogger.child({ job: "seed-bundle-job", planId })
 ): Promise<void> {
-  logger.child({ job: "seed-bundle-job" });
-
   const dbResult = await database.getNextBundleAndDataItemsToSeedByPlanId(
     planId
   );
@@ -74,7 +74,11 @@ export async function seedBundleHandler(
       bundleTx
     );
   } catch (error) {
-    logger.error("Error when uploading chunks: ", { error, bundleToSeed });
+    const message = error instanceof Error ? error.message : "Unknown error.";
+    logger.error("Error when uploading chunks: ", {
+      error: message,
+      bundleToSeed,
+    });
     throw error;
   }
 
@@ -85,10 +89,11 @@ export async function seedBundleHandler(
 
 export const handler = createQueueHandler(
   "seed-bundle",
-  (message: { planId: PlanId }) => seedBundleHandler(message.planId, {}),
+  (message: { planId: PlanId }) =>
+    seedBundleHandler(message.planId, defaultArchitecture),
   {
     before: async () => {
-      logger.info("Seed bundle job has been triggered.");
+      defaultLogger.info("Seed bundle job has been triggered.");
     },
   }
 );
