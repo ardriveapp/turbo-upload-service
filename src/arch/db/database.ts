@@ -26,6 +26,7 @@ import {
 } from "../../types/dbTypes";
 import { TransactionId, Winston } from "../../types/types";
 
+// TODO: this could be an interface since no functions have a default implementation
 export interface Database {
   /** Store a new data item that has been posted to the data item route */
   insertNewDataItem(dataItem: PostedNewDataItem): Promise<void>;
@@ -64,7 +65,13 @@ export interface Database {
    * - Delete NewBundle
    * - Insert PostedBundle
    */
-  insertPostedBundle(bundleId: TransactionId): Promise<void>;
+  insertPostedBundle({
+    bundleId,
+    usdToArRate,
+  }: {
+    bundleId: TransactionId;
+    usdToArRate?: number;
+  }): Promise<void>;
 
   getNextBundleAndDataItemsToSeedByPlanId(planId: PlanId): Promise<{
     bundleToSeed: PostedBundle;

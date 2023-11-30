@@ -14,9 +14,14 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-import { PublicArweaveAddress, Winston } from "../../types/types";
+import { Knex } from "knex";
 
-export interface CommunityOracle {
-  getCommunityWinstonTip(winstonCost: Winston): Promise<Winston>;
-  selectTokenHolder(): Promise<PublicArweaveAddress>;
+import { Schema } from "../arch/db/schema";
+
+export async function up(knex: Knex): Promise<void> {
+  return Schema.migrateToPreserveSigType(knex);
+}
+
+export async function down(knex: Knex): Promise<void> {
+  return Schema.rollbackFromPreserveSigType(knex);
 }

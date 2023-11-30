@@ -14,10 +14,11 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+import { ReadThroughPromiseCache } from "@ardrive/ardrive-promise-cache";
 import Transaction from "arweave/node/lib/transaction";
 import axios, { AxiosInstance, AxiosResponse } from "axios";
 
-import { gatewayUrl } from "../constants";
+import { gatewayUrl, msPerMinute } from "../constants";
 import logger from "../logger";
 import {
   ConfirmedTransactionStatus,
@@ -74,7 +75,7 @@ export class ArweaveGateway extends Gateway {
     endpoint = gatewayUrl,
     retryStrategy = new ExponentialBackoffRetryStrategy({}),
     axiosInstance = axios.create({ validateStatus: undefined }),
-  }: GatewayAPIConstParams = {}) {
+  }: GatewayAPIConstParams) {
     super();
     this.endpoint = endpoint;
     this.retryStrategy = retryStrategy;
@@ -240,7 +241,23 @@ export class ArweaveGateway extends Gateway {
     }
   }
 
+  private currentBlockHeightCache = new ReadThroughPromiseCache<string, number>(
+    {
+      cacheParams: {
+        cacheCapacity: 1,
+        cacheTTL: msPerMinute,
+      },
+      readThroughFunction: async () => {
+        return this.getCurrentBlockHeightInternal();
+      },
+    }
+  );
+
   public async getCurrentBlockHeight(): Promise<number> {
+    return this.currentBlockHeightCache.get("currentBlockHeight");
+  }
+
+  private async getCurrentBlockHeightInternal(): Promise<number> {
     try {
       const statusResponse = await this.axiosInstance.post(
         this.endpoint.href + "graphql",

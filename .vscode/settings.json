@@ -7,6 +7,7 @@
   "cSpell.words": [
     "alexsasharegan",
     "Aptos",
+    "ardriveapp",
     "arlocal",
     "avsc",
     "Backoff",
@@ -19,6 +20,8 @@
     "knexfile",
     "multistream",
     "nvmrc",
+    "oracledb",
+    "outdir",
     "Readables",
     "schemaname",
     "solana",
@@ -29,6 +32,9 @@
     "throughputs",
     "trivago",
     "typecheck",
+    "unbundle",
+    "unbundling",
+    "Winc",
     "winstons"
   ],
   "[terraform]": {

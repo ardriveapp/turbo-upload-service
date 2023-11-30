@@ -17,19 +17,19 @@
 import { randomUUID } from "crypto";
 import pLimit from "p-limit";
 
+import { defaultArchitecture } from "../arch/architecture";
 import { Database } from "../arch/db/database";
 import { PostgresDatabase } from "../arch/db/postgres";
 import { enqueue } from "../arch/queues";
 import { BundlePacker } from "../bundles/bundlePacker";
-import logger from "../logger";
+import defaultLogger from "../logger";
 
 const PARALLEL_LIMIT = 5;
 export async function planBundleHandler(
   database: Database = new PostgresDatabase(),
-  bundlePacker: BundlePacker = new BundlePacker({})
+  bundlePacker: BundlePacker = new BundlePacker({}),
+  logger = defaultLogger.child({ job: "plan-bundle-job" })
 ) {
-  logger.child({ job: "plan-bundle-job" });
-
   /**
    * NOTE: this locks DB items, but only for the duration of this query.
    * The primary intent is to prevent 2 concurrent executions competing for work.
@@ -57,18 +57,18 @@ export async function planBundleHandler(
 
   try {
     await Promise.all(insertPromises);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } catch (error: any) {
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
     logger.error("Bundle plan insert has failed!", {
-      message: error.message,
+      error: message,
     });
     throw error;
   }
 }
 
 export async function handler(eventPayload?: unknown) {
-  logger.info("Plan bundle job has been triggered with event payload", {
+  defaultLogger.info("Plan bundle job has been triggered with event payload", {
     event: eventPayload,
   });
-  return planBundleHandler();
+  return planBundleHandler(defaultArchitecture.database);
 }

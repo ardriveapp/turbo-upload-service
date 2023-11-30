@@ -19,10 +19,12 @@ import { JWKInterface } from "arweave/node/lib/wallet";
 import axios from "axios";
 import { expect } from "chai";
 import { createReadStream, readFileSync } from "fs";
+import { stub } from "sinon";
 
 import { columnNames, tableNames } from "../src/arch/db/dbConstants";
 import { PostgresDatabase } from "../src/arch/db/postgres";
 import { FileSystemObjectStore } from "../src/arch/fileSystemObjectStore";
+import { TurboPaymentService } from "../src/arch/payment";
 import FileDataItem from "../src/bundles/dataItem";
 import {
   gatewayUrl,
@@ -48,6 +50,7 @@ import { TransactionId } from "../src/types/types";
 import { jwkToPublicArweaveAddress } from "../src/utils/base64";
 import { putDataItemRaw } from "../src/utils/objectStoreUtils";
 import { DbTestHelper } from "./helpers/dbTestHelpers";
+import { stubUsdToArRate } from "./stubs";
 import {
   arweave,
   fundArLocalWalletAddress,
@@ -155,17 +158,20 @@ describe("ArLocal <--> Jobs Integration Test", function () {
 
     // bundle tx on disk
     const bundleTx = readFileSync(`temp/bundle/${bundleId}`);
-    expect(bundleTx.byteLength).to.equal(2130);
+    expect(bundleTx.byteLength).to.equal(2129);
 
     // bundle header on disk
     const bundleHead = readFileSync(`temp/header/${planId}`);
-    expect(bundleHead.byteLength).to.equal(800);
+    expect(bundleHead.byteLength).to.equal(352);
 
     // bundle payload on disk
     const bundlePayload = readFileSync(`temp/bundle-payload/${planId}`);
-    expect(bundlePayload.byteLength).to.equal(800058);
+    expect(bundlePayload.byteLength).to.equal(268722);
 
-    await postBundleHandler(planId, { objectStore });
+    const paymentService = new TurboPaymentService();
+    stub(paymentService, "getFiatToARConversionRate").resolves(stubUsdToArRate);
+
+    await postBundleHandler(planId, { objectStore, paymentService });
     await mineArLocalBlock(arweave);
 
     // arlocal has the transaction
@@ -174,7 +180,7 @@ describe("ArLocal <--> Jobs Integration Test", function () {
     ).data;
 
     expect(bundleTxFromArLocal.data_root).to.exist;
-    expect(bundleTxFromArLocal.data_size).to.equal(800058);
+    expect(bundleTxFromArLocal.data_size).to.equal(268722);
     expect(bundleTxFromArLocal.id).to.equal(bundleId);
     expect(bundleTxFromArLocal.owner_address).to.equal(
       jwkToPublicArweaveAddress(jwk)

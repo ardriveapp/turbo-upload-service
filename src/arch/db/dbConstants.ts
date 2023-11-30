@@ -32,6 +32,7 @@ export const columnNames = {
   blockHeight: "block_height",
   bundleId: "bundle_id",
   byteCount: "byte_count",
+  contentType: "content_type",
   dataItemId: "data_item_id",
   dataStart: "data_start",
   failedBundles: "failed_bundles",
@@ -52,6 +53,7 @@ export const columnNames = {
   transactionByteCount: "transaction_byte_count",
   winstonPrice: "assessed_winston_price",
   uploadedDate: "uploaded_date",
+  usdToArRate: "usd_to_ar_rate",
 
   /** @deprecated */
   seedResultStatus: "seed_result_status",

@@ -20,6 +20,7 @@ import winston from "winston";
 
 import defaultLogger from "../logger";
 import { KoaContext } from "../server";
+import { JWKInterface } from "../types/jwkTypes";
 
 export function isTestEnv(): boolean {
   return process.env.NODE_ENV === "test";
@@ -82,6 +83,7 @@ export function tapStream({
   logger?: winston.Logger;
   context?: string;
   onError?: (error: Error) => void;
+  // TODO: add destroyOnError handler that
 }): PassThrough {
   const passThrough = new PassThrough({ writableHighWaterMark });
   passThrough.setMaxListeners(Infinity); // Suppress leak warnings related to backpressure and drain listeners
@@ -97,6 +99,7 @@ export function tapStream({
     }
   });
   readable.once("end", () => {
+    logger?.debug("Readable stream ended. Closing pass through stream...");
     passThrough.end();
   });
   readable.once("error", (error) => {
@@ -107,4 +110,8 @@ export function tapStream({
     passThrough.on("error", onError);
   }
   return passThrough;
+}
+
+export function getPublicKeyFromJwk(jwk: JWKInterface): string {
+  return jwk.n;
 }

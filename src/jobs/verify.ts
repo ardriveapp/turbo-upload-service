@@ -14,6 +14,9 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+import winston from "winston";
+
+import { defaultArchitecture } from "../arch/architecture";
 import { ArweaveGateway, Gateway } from "../arch/arweaveGateway";
 import { Database } from "../arch/db/database";
 import { PostgresDatabase } from "../arch/db/postgres";
@@ -23,7 +26,7 @@ import {
   gatewayUrl,
   txPermanentThreshold,
 } from "../constants";
-import logger from "../logger";
+import defaultLogger from "../logger";
 import { ByteCount, TransactionId } from "../types/types";
 import { getBundleTx, getS3ObjectStore } from "../utils/objectStoreUtils";
 
@@ -31,6 +34,7 @@ interface VerifyBundleJobArch {
   database?: Database;
   objectStore?: ObjectStore;
   gateway?: Gateway;
+  logger?: winston.Logger;
 }
 
 async function hasBundleBeenPostedLongerThanTheDroppedThreshold(
@@ -60,9 +64,8 @@ export async function verifyBundleHandler({
   database = new PostgresDatabase(),
   objectStore = getS3ObjectStore(),
   gateway = new ArweaveGateway({ endpoint: gatewayUrl }),
+  logger = defaultLogger.child({ job: "verify-bundle-job" }),
 }: VerifyBundleJobArch): Promise<void> {
-  logger.child({ job: "verify-bundle-job" });
-
   /**
    * NOTE: this locks DB items, but only for the duration of this query.
    * The primary intent is to prevent 2 concurrent executions competing for work.
@@ -105,22 +108,20 @@ export async function verifyBundleHandler({
           );
         }
       }
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (error: any) {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
       logger.error("Error verifying bundle!", {
         bundle,
-        error,
-        message: error.message,
+        error: message,
       });
     }
   }
 }
 
 export async function handler(eventPayload?: unknown) {
-  logger.info(
+  defaultLogger.info(
     `Verify bundle job has been triggered with event payload:`,
     eventPayload
   );
-  return verifyBundleHandler({});
+  return verifyBundleHandler(defaultArchitecture);
 }

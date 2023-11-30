@@ -43,6 +43,7 @@ export class Winston {
     divisor: BigNumber.Value,
     round: "ROUND_DOWN" | "ROUND_CEIL" = "ROUND_CEIL"
   ): Winston {
+    // TODO: Best rounding strategy? Up or down?
     return W(
       this.amount
         .dividedBy(divisor)

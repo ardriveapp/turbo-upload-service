@@ -16,12 +16,12 @@
  */
 import { Knex } from "knex";
 
-import { Schema } from "../src/arch/db/schema";
+import { Schema } from "../arch/db/schema";
 
 export async function up(knex: Knex): Promise<void> {
-  return Schema.migrateToPreserveSigType(knex);
+  return Schema.migrateToVerify(knex);
 }
 
 export async function down(knex: Knex): Promise<void> {
-  return Schema.rollbackFromPreserveSigType(knex);
+  return Schema.rollbackFromVerify(knex);
 }

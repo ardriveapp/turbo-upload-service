@@ -14,20 +14,16 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-import { gatewayUrl, shouldAddCommunityTip } from "../constants";
+import { gatewayUrl } from "../constants";
 import { PlannedDataItem } from "../types/dbTypes";
-import { ByteCount, TxAttributes, W } from "../types/types";
+import { ByteCount, TxAttributes } from "../types/types";
 import { ArweaveGateway, Gateway } from "./arweaveGateway";
-import { ArDriveCommunityOracle } from "./community/ardriveCommunityOracle";
-import { CommunityOracle } from "./community/communityOracle";
 
 export class PricingService {
   constructor(
     private readonly gateway: Gateway = new ArweaveGateway({
       endpoint: gatewayUrl,
-    }),
-    private readonly communityOracle: CommunityOracle = new ArDriveCommunityOracle(),
-    private readonly addCommunityTip: boolean = shouldAddCommunityTip
+    })
   ) {}
 
   public async getTxAttributesForDataItems(
@@ -44,10 +40,7 @@ export class PricingService {
 
     const txAttributes: TxAttributes = {};
 
-    if (this.addCommunityTip) {
-      txAttributes.target = await this.communityOracle.selectTokenHolder();
-    }
-
+    // TODO: call the real pricing service (or the pricing oracle within payment service)
     txAttributes.reward = (
       await this.gateway.getWinstonPriceForByteCount(
         bundledByteCount,
@@ -55,14 +48,6 @@ export class PricingService {
       )
     ).toString();
     txAttributes.last_tx = await this.gateway.getBlockHash();
-
-    if (this.addCommunityTip) {
-      txAttributes.quantity = (
-        await this.communityOracle.getCommunityWinstonTip(
-          W(txAttributes.reward)
-        )
-      ).toString();
-    }
 
     return txAttributes;
   }

@@ -16,12 +16,12 @@
  */
 import { Knex } from "knex";
 
-import { Schema } from "../src/arch/db/schema";
+import { NullableContentTypeMigrator } from "../../src/arch/db/migrator";
 
 export async function up(knex: Knex): Promise<void> {
-  return Schema.migrateToPreserveBlockHeight(knex);
+  return new NullableContentTypeMigrator(knex).migrate();
 }
 
 export async function down(knex: Knex): Promise<void> {
-  return Schema.rollbackFromPreserveBlockHeight(knex);
+  return new NullableContentTypeMigrator(knex).rollback();
 }

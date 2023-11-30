@@ -16,7 +16,7 @@
  */
 import { Knex } from "knex";
 
-import { Schema } from "../src/arch/db/schema";
+import { Schema } from "../arch/db/schema";
 
 export async function up(knex: Knex): Promise<void> {
   return Schema.migrateToIndexPlanIds(knex);

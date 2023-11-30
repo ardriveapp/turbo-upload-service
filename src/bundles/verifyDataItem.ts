@@ -138,6 +138,7 @@ export function createVerifiedDataItemStream(
             `Signature with value ${signatureType} not supported!`
           );
           emitter.emit("error", lastParsingError);
+          // TODO: should we tear down once this error is emitted
           return arweaveSigInfo.signatureLength;
         }
         return sigCfg.signatureLength;
@@ -272,6 +273,7 @@ export function createVerifiedDataItemStream(
         // Emit the next event in the queue if possible
         nextEventToParse = offsetQueue.shift();
         if (!nextEventToParse) {
+          // TODO: Set last error?
           logger?.error(
             `UNEXPECTED! SHOULD HAVE AT LEAST BEEN A DATA EVENT TO PARSE!`
           );
@@ -387,6 +389,8 @@ export function createVerifiedDataItemStream(
 
   inputStream.once("error", (error) => {
     clearTimeout(timeoutId);
+
+    // TODO: Should lastParsingError be set here?
 
     // Propagate error to the payload stream if possible
     payloadStream?.emit(

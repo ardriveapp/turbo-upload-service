@@ -16,16 +16,19 @@
  */
 import { Next } from "koa";
 
-import defaultArch, { Architecture } from "../arch/architecture";
+import { Architecture } from "../arch/architecture";
 import { KoaContext } from "../server";
 
 export async function architectureMiddleware(
   ctx: KoaContext,
   next: Next,
-  arch: Partial<Architecture>
+  arch: Architecture
 ) {
-  ctx.state.database = arch.database ?? defaultArch.database;
-  ctx.state.objectStore = arch.objectStore ?? defaultArch.objectStore;
-  ctx.state.paymentService = arch.paymentService ?? defaultArch.paymentService;
+  ctx.state.database = arch.database;
+  ctx.state.objectStore = arch.objectStore;
+  ctx.state.paymentService = arch.paymentService;
+  ctx.state.logger = arch.logger;
+  ctx.state.getArweaveWallet = arch.getArweaveWallet;
+  ctx.state.arweaveGateway = arch.arweaveGateway;
   return next();
 }

@@ -17,9 +17,9 @@
 import cors from "@koa/cors";
 import Koa, { DefaultState, Next, ParameterizedContext } from "koa";
 
-import { Architecture } from "./arch/architecture";
+import { Architecture, defaultArchitecture } from "./arch/architecture";
 import { port as defaultPort } from "./constants";
-import logger from "./logger";
+import globalLogger from "./logger";
 import { MetricRegistry } from "./metricRegistry";
 import {
   architectureMiddleware,
@@ -31,12 +31,14 @@ import router from "./router";
 type KoaState = DefaultState & Architecture;
 export type KoaContext = ParameterizedContext<KoaState>;
 
-logger.info(`Starting server with node environment ${process.env.NODE_ENV}...`);
+globalLogger.info(
+  `Starting server with node environment ${process.env.NODE_ENV}...`
+);
 
 // global error handler
 process.on("uncaughtException", (error) => {
   MetricRegistry.uncaughtExceptionCounter.inc();
-  logger.error("Uncaught exception:", error);
+  globalLogger.error("Uncaught exception:", error);
 });
 
 export function createServer(
@@ -44,6 +46,17 @@ export function createServer(
   port: number = defaultPort
 ) {
   const app = new Koa();
+
+  const uploadDatabase = arch.database ?? defaultArchitecture.database;
+  const objectStore = arch.objectStore ?? defaultArchitecture.objectStore;
+  const paymentService =
+    arch.paymentService ?? defaultArchitecture.paymentService;
+  const logger = arch.logger ?? defaultArchitecture.logger;
+  const getArweaveWallet =
+    arch.getArweaveWallet ?? defaultArchitecture.getArweaveWallet;
+  const arweaveGateway =
+    arch.arweaveGateway ?? defaultArchitecture.arweaveGateway;
+
   // attach logger to context including trace id
   app.use(loggerMiddleware);
   // attaches listeners related to request streams for debugging
@@ -51,7 +64,14 @@ export function createServer(
   app.use(cors({ allowMethods: "POST" }));
   // attach our primary architecture
   app.use((ctx: KoaContext, next: Next) =>
-    architectureMiddleware(ctx, next, arch)
+    architectureMiddleware(ctx, next, {
+      database: uploadDatabase,
+      logger,
+      objectStore,
+      paymentService,
+      arweaveGateway,
+      getArweaveWallet,
+    })
   );
   app.use(router.routes());
   const server = app.listen(port);

@@ -16,12 +16,12 @@
  */
 import { Knex } from "knex";
 
-import { Schema } from "../src/arch/db/schema";
+import { Schema } from "../arch/db/schema";
 
 export async function up(knex: Knex): Promise<void> {
-  return Schema.migrateToVerify(knex);
+  return Schema.migrateToAddARtoUSDConversionRates(knex);
 }
 
 export async function down(knex: Knex): Promise<void> {
-  return Schema.rollbackFromVerify(knex);
+  return Schema.rollbackFromAddARtoUSDConversionRates(knex);
 }

@@ -14,17 +14,14 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-export function weightedRandom(
-  dict: Record<string, number>
-): string | undefined {
-  let sum = 0;
-  const r = Math.random();
+import { Knex } from "knex";
 
-  for (const addr of Object.keys(dict)) {
-    sum += dict[addr];
-    if (r <= sum && dict[addr] > 0) {
-      return addr;
-    }
-  }
-  return;
+import { Schema } from "../arch/db/schema";
+
+export async function up(knex: Knex): Promise<void> {
+  return Schema.migrateToPreserveBlockHeight(knex);
+}
+
+export async function down(knex: Knex): Promise<void> {
+  return Schema.rollbackFromPreserveBlockHeight(knex);
 }

@@ -9,6 +9,9 @@ node_modules
 #  Lambda builds
 *.zip 
 
+# SQL dumps
+*.sql
+
 .husky/_
 .eslintcache
 
@@ -33,6 +36,3 @@ node_modules
 
 # 🕵️‍♂️
 .wallet
-
-.terraform
-.terragrunt-cache

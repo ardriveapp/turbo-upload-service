@@ -14,9 +14,18 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+import { JWKInterface } from "arbundles";
+import knex from "knex";
+import winston from "winston";
+
+import { migrateOnStartup } from "../constants";
+import globalLogger from "../logger";
 import { isTestEnv } from "../utils/common";
+import { getArweaveWallet } from "../utils/getArweaveWallet";
 import { getS3ObjectStore } from "../utils/objectStoreUtils";
+import { ArweaveGateway } from "./arweaveGateway";
 import { Database } from "./db/database";
+import { getReaderConfig, getWriterConfig } from "./db/knexConfig";
 import { PostgresDatabase } from "./db/postgres";
 import { FileSystemObjectStore } from "./fileSystemObjectStore";
 import { ObjectStore } from "./objectStore";
@@ -26,16 +35,24 @@ export interface Architecture {
   objectStore: ObjectStore;
   database: Database;
   paymentService: PaymentService;
+  logger: winston.Logger;
+  arweaveGateway: ArweaveGateway;
+  getArweaveWallet: () => Promise<JWKInterface>;
 }
 
-export const defaultArch: Architecture = {
+export const defaultArchitecture: Architecture = {
+  database: new PostgresDatabase({
+    migrate: migrateOnStartup,
+    writer: knex(getWriterConfig()),
+    reader: knex(getReaderConfig()),
+  }),
+  // If on test NODE_ENV or if no DATA_ITEM_BUCKET variable is set, use Local File System
   objectStore:
-    // If on test NODE_ENV or if no DATA_ITEM_BUCKET variable is set, use Local File System
     isTestEnv() || !process.env.DATA_ITEM_BUCKET
       ? new FileSystemObjectStore()
       : getS3ObjectStore(),
-  database: new PostgresDatabase(),
   paymentService: new TurboPaymentService(),
+  logger: globalLogger,
+  getArweaveWallet: () => getArweaveWallet(),
+  arweaveGateway: new ArweaveGateway({}),
 };
-
-export default defaultArch;

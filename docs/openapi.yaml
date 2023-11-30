@@ -16,19 +16,45 @@ components:
         id:
           type: string
           description: The id of the data item.
+          example: "QpmY8mZmFEC8RxNsgbxSV6e36OF6quIYaPRKzvUco0o"
         owner:
           type: string
-          description: The wallet that signed data item.
+          description: The normalized wallet address that signed data item.
+          example: "8wgRDgvYOrtSaWEIV21g0lTuWDUnTu4_iYj4hmA7PI0"
         dataCaches:
           type: array
           description: The Arweave data caches the data item has been posted to.
           items:
             type: string
-      example:
-        id: 7j-sF0lsslGVZ8lhEGXe5CtueB4iRYM3_oZ9m4GY_40
-        owner: xsi06LVwuRe2SaNFo0Yc1UtF3GSyi-GtzUtTkjLXrEw
-        dataCaches:
-          - arweave.net
+          example:
+            - arweave.net
+        fastFinalityIndexes:
+          type: array
+          description: The Arweave fast finality indexes the data item has been posted to.
+          items:
+            type: string
+          example:
+            - arweave.net
+        deadlineHeight:
+          type: integer
+          description: The deadline block height for the data item to be posted to Arweave.
+          example: 1310000
+        timestamp:
+          type: integer
+          description: The timestamp in millisecond of when the data item was fully uploaded and receipt was signed.
+          example: 1700590909589
+        version:
+          type: string
+          description: The version of the receipt
+          example: "0.1.0"
+        signature:
+          type: string
+          description: The base64URL signature of the receipt
+          example: "iU_S6uuG1OD8k0XqMGOmbcKfysDckEMUy4R9-ODPXiQjKXuT4lTngRFBFKO5NQT1iIfqSDKcbTRL6gJowM_L7bBQZRGkojzXD0PNNU2F0bNNJ80VtUktHifGTXbCgz5kiFciL19n0P3nX6ZfXnOn-H8ALZzRJV69apdvwqitpNKxLMPyc-QA0QBxmC3CKPz_7fy2Qg0QHr5g_ZT2Of-YJ_RsZTEoc3g1fgzsEmMBPOsx4XtPrhV6llnA3pncngzHbPdFvypdWiO8Bvr0EWmazNsoanuwK5uKJ_ROIGXW_dBBGN8Vrfv5U6dJnhJVn5IE7JFlixpFTluF_ICRzbUq2pk_re6jEtW1H3ItH2iN0UeFUw1uDbq3HJW6lDc8aOwDwDspJI11KEI6uCz5QmQy2V8DvRknoqcxmuihF6XmmJIZgTVeo6LNufEis9kFxqtc3Dh_gn8z0cDXKEKFycudckmcHP7vkWD68uSssMMJIdVgwvPZss06svfRnI-E33j3MrQI9FzMIv-7Df8iYATyeyldM1v3gexG0kQm0AMG1_8_SLqwu2QlqzM41mrK5vNmQxOVdIQSOPWPvzbF-YGRwpCjlveRBuARGC9JNC4UipvDYri2gRWuBx2uDL7dmVFv1gRll3dYNMYaMULHYngtrrCynB3Cyfhh7cyPlwuNlk0"
+        public:
+          type: string
+          description: The public key of the wallet that signed the receipt
+          example: "qREovbmD6oxgHYNCzOeTei07lSz0-YLcjnvgSDzqptsCiqNOtB3RKUToSX5hkPD45fJDY4057XkkcsQRuGsU8y9rgm37i-Kiyd5Z_iy6pJXrwi9XnAgGL118lIV790GZ7xe5o3DvPV3Px74C0ABsfL9lW86D4t_qClJ6wSQksKNd7rnUImIvHW0vxLswST7dfUngevzKt4kv48VTub4951XdUHjb45Uurf7xFYSCizAGtGqr5GYDFrVk-mNrzFH5bXt06PJfxe9E5ujIE5Uq1Az6vqEOO0E1mWmXqdTPluAxcjmgktkoNLHZnnU-BsYuFaTWW5NU3aS-RgJKXYs9O6Dc1-2SITl-H_wtdGNSj31fj72UkaAbkpA1mionK-8bOIkSpYgKCyTC42oHh1Fw4SLXPyLxBj1w6F32LSLjpse5dmKymj4fJPezCMdi709uIiVT7XOm4LZBCzFOxS6-UNxgE57dBFpcWkcqNO3p00biYqH5d5bzvK3bwd-4j0KyKlqPYTProSnd3P6ROZuuJaLoLD_Or5-L_dUjawHz-DFlzmckYaf8l3XdzPM4JSsE8CEDZl0NCN0AidXt_wjbr6k9JsO7cnLB226AjxhcyuxZOlhgkIn7EbxpVXx-O2mXkcXF8PixCP0k5brtriLeF1MAdspgd_S-LKQeGVr7-mk"
 
 paths:
   /tx:
@@ -47,8 +73,8 @@ paths:
           schema:
             type: integer
             format: int64
-            maximum: 2147483648 # 2GB in bytes
-          required: true
+            maximum: 10737418240 # 10GiB
+          required: false
         Content-Type:
           schema:
             type: string
@@ -72,6 +98,15 @@ paths:
               examples:
                 DataItemExists:
                   value: Data Item Exists
+
+        "402":
+          description: Insufficient balance
+          content:
+            text/plain:
+              schema:
+                type: string
+                default: "Insufficient balance"
+
         "400":
           description: Invalid data item post
           content:

@@ -16,19 +16,13 @@
  */
 import Arweave from "arweave";
 import { expect } from "chai";
-import { stub } from "sinon";
 
-import { ArweaveGateway } from "../src/arch/arweaveGateway";
-import { ArDriveCommunityOracle } from "../src/arch/community/ardriveCommunityOracle";
 import { columnNames, tableNames } from "../src/arch/db/dbConstants";
 import { PostgresDatabase } from "../src/arch/db/postgres";
 import { FileSystemObjectStore } from "../src/arch/fileSystemObjectStore";
-import { PricingService } from "../src/arch/pricing";
-import { gatewayUrl } from "../src/constants";
 import { prepareBundleHandler } from "../src/jobs/prepare";
 import { BundlePlanDBResult, NewBundleDBResult } from "../src/types/dbTypes";
 import { JWKInterface } from "../src/types/jwkTypes";
-import { W } from "../src/types/winston";
 import {
   getBundleHeader,
   getBundlePayload,
@@ -36,13 +30,7 @@ import {
 } from "../src/utils/objectStoreUtils";
 import { streamToBuffer } from "../src/utils/streamToBuffer";
 import { DbTestHelper } from "./helpers/dbTestHelpers";
-import {
-  stubOwnerAddress,
-  stubPlanId,
-  stubTxId20,
-  stubTxId21,
-  stubTxId22,
-} from "./stubs";
+import { stubPlanId, stubTxId20, stubTxId21, stubTxId22 } from "./stubs";
 import { deleteStubRawDataItems, writeStubRawDataItems } from "./test_helpers";
 
 const db = new PostgresDatabase();
@@ -106,38 +94,5 @@ describe("Prepare bundle job handler", () => {
 
     const bundleHeader = await getBundleHeader(objectStore, planId);
     expect((await streamToBuffer(bundleHeader, 224)).byteLength).to.equal(224);
-  });
-
-  it("adds the expected quantity and target values when ADD_COMMUNITY_TIP is true", async () => {
-    const objectStore = new FileSystemObjectStore();
-
-    const communityOracle = new ArDriveCommunityOracle();
-    stub(communityOracle, "getCommunityWinstonTip").resolves(W(1));
-    stub(communityOracle, "selectTokenHolder").resolves(stubOwnerAddress);
-
-    await prepareBundleHandler(planId, {
-      objectStore,
-      jwk,
-      pricing: new PricingService(
-        new ArweaveGateway({
-          endpoint: gatewayUrl,
-        }),
-        communityOracle,
-        true
-      ),
-    });
-
-    const bundleTxId = (
-      await db["writer"]<NewBundleDBResult>(tableNames.newBundle).where(
-        columnNames.planId,
-        planId
-      )
-    )[0].bundle_id;
-
-    const bundleTx = await getBundleTx(objectStore, bundleTxId, 2168);
-
-    // We expect a tip on bundle transactions when env var is true
-    expect(bundleTx.quantity).to.equal("1");
-    expect(bundleTx.target).to.equal(stubOwnerAddress);
   });
 });

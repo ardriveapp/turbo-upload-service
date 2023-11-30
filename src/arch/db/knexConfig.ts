@@ -14,31 +14,51 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-import type { Knex } from "knex";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore
 import KnexDialect from "knex/lib/dialects/postgres";
+import path from "path";
 
-const dbHost =
-  process.env.DB_WRITER_ENDPOINT || process.env.DB_HOST || "127.0.0.1";
-const dbPort = process.env.DB_PORT || 5432;
-const dbPassword = process.env.DB_PASSWORD || "postgres";
+import logger from "../../logger";
 
-const dbConnection = `postgres://postgres:${dbPassword}@${dbHost}:${dbPort}/postgres?sslmode=disable`;
-
-export const writerConfig: Knex.Config = {
+const baseConfig = {
   client: KnexDialect,
   version: "13.8",
-  connection: dbConnection,
   migrations: {
     tableName: "knex_migrations",
-    directory: "../../../migrations",
+    directory: path.join(__dirname, "../../migrations"),
   },
 };
 
-export const readerConfig: Knex.Config = {
-  ...writerConfig,
-  connection: `postgres://postgres:${dbPassword}@${
-    process.env.DB_READER_ENDPOINT || dbHost
-  }:${dbPort}/postgres?sslmode=disable`,
-};
+function getDbConnection(host: string) {
+  const dbPort = +(process.env.DB_PORT || 5432);
+  const dbPassword = process.env.DB_PASSWORD || "postgres";
+
+  logger.debug("Getting DB Connection", {
+    host,
+    dbPort,
+  });
+
+  return `postgres://postgres:${dbPassword}@${host}:${dbPort}/postgres?sslmode=disable`;
+}
+
+export function getWriterConfig() {
+  const dbHost =
+    process.env.DB_WRITER_ENDPOINT || process.env.DB_HOST || "127.0.0.1";
+  return {
+    ...baseConfig,
+    connection: getDbConnection(dbHost),
+  };
+}
+
+export function getReaderConfig() {
+  const dbHost =
+    process.env.DB_READER_ENDPOINT ||
+    process.env.DB_WRITER_ENDPOINT ||
+    process.env.DB_HOST ||
+    "127.0.0.1";
+  return {
+    ...baseConfig,
+    connection: getDbConnection(dbHost),
+  };
+}
