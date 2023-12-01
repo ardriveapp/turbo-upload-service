@@ -39,14 +39,6 @@ type QueueType =
 
 type SQSQueueUrl = string;
 
-export const queues: { [key in QueueType]: SQSQueueUrl } = {
-  "prepare-bundle": process.env.SQS_PREPARE_BUNDLE_URL!,
-  "post-bundle": process.env.SQS_POST_BUNDLE_URL!,
-  "seed-bundle": process.env.SQS_SEED_BUNDLE_URL!,
-  "optical-post": process.env.SQS_OPTICAL_URL!,
-  "unbundle-bdi": process.env.SQS_UNBUNDLE_BDI_URL!,
-};
-
 type PlanMessage = { planId: PlanId };
 
 type QueueTypeToMessageType = {
@@ -67,6 +59,13 @@ const sqs = new SQSClient({
 });
 
 export const getQueueUrl = (type: QueueType): SQSQueueUrl => {
+  const queues: { [key in QueueType]: SQSQueueUrl } = {
+    "prepare-bundle": process.env.SQS_PREPARE_BUNDLE_URL!,
+    "post-bundle": process.env.SQS_POST_BUNDLE_URL!,
+    "seed-bundle": process.env.SQS_SEED_BUNDLE_URL!,
+    "optical-post": process.env.SQS_OPTICAL_URL!,
+    "unbundle-bdi": process.env.SQS_UNBUNDLE_BDI_URL!,
+  };
   return queues[type];
 };
 
@@ -81,6 +80,7 @@ export const enqueue = async <T extends QueueType>(
   queueType: T,
   message: QueueTypeToMessageType[T]
 ) => {
+  //TODO: Tech Debt - Handle this better
   if (isTestEnv()) {
     logger.error("Skipping SQS Enqueue since we are on test environment");
     return;

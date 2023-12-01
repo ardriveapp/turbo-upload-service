@@ -14,22 +14,11 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-import axios, { AxiosResponse } from "axios";
-
-import { TransactionId } from "../../types/types";
-import { ContractReader } from "./contractOracle";
-
-/**
- *  Oracle class responsible for retrieving and
- *  reading Smartweave Contracts from the Verto cache
- */
-export class VertoContractReader implements ContractReader {
-  /** Fetches smartweave contracts from the Verto cache */
-  public async readContract(txId: TransactionId): Promise<unknown> {
-    const response: AxiosResponse = await axios.get(
-      `https://v2.cache.verto.exchange/${txId}`
-    );
-    const contract = response.data;
-    return contract.state;
+{
+  "extends": "../../tsconfig.json",
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules"],
+  "compilerOptions": {
+    "outDir": "dist"
   }
 }

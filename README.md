@@ -2,18 +2,18 @@
 
 Welcome to the Turbo Upload Service 👋
 
-## Local Development
+## Setting up the development environment
 
-### Requirements
+### System Package Installation
 
 For a compatible development environment, we require the following packages installed on the system:
 
+- `nvm`
 - `yarn`
-- `nvm` (optional)
-- `husky` (optional)
-- `docker` (optional)
+- `husky`
+- `docker`
 
-### Running locally
+### Running the Upload Service locally
 
 With a compatible system, follow these steps to start the upload service:
 
@@ -22,7 +22,8 @@ With a compatible system, follow these steps to start the upload service:
 - `yarn build`
 - `yarn db:up && yarn db:migrate:latest`
 - `yarn start`
-  - alternatively use `yarn start:watch` to run the app in development mode with hot reloading provided by `nodemon`
+
+Developers can alternatively use `yarn start:watch` to run the app in development mode with hot reloading provided by `nodemon`
 
 ## Database
 
@@ -58,20 +59,28 @@ You can rollback knex migrations using the following command:
 
 Additional `knex` documentation can be found [here](https://knexjs.org/guide/migrations.html).
 
-### Docker
+## Docker
 
-To run this service and a connected postgres database, fully migrated.
+### Building Image
 
-Run the container:
-
-```shell
-yarn start:docker
-```
-
-To build the image:
+To build the container:
 
 ```shell
 docker build --build-arg NODE_VERSION=$(cat .nvmrc |cut -c2-8) --build-arg NODE_VERSION_SHORT=$(cat .nvmrc |cut -c2-3) .
+```
+
+### Docker Compose
+
+Runs this service, against the most recent version of `payment-service` and `arlocal`, and local postgres instances.
+
+```shell
+docker compose up -d
+```
+
+Run just the upload service against migrated local postgres instance.
+
+```shell
+docker compose up upload-service --build
 ```
 
 ## Tests

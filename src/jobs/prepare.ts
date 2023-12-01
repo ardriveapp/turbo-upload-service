@@ -17,6 +17,7 @@
 import pLimit from "p-limit";
 import { Readable } from "stream";
 
+import { defaultArchitecture } from "../arch/architecture";
 import { ArweaveGateway, Gateway } from "../arch/arweaveGateway";
 import { Database } from "../arch/db/database";
 import { PostgresDatabase } from "../arch/db/postgres";
@@ -32,10 +33,11 @@ import {
 import { rawIdFromRawSignature } from "../bundles/rawIdFromRawSignature";
 import { signatureTypeInfo } from "../bundles/verifyDataItem";
 import { gatewayUrl } from "../constants";
-import logger from "../logger";
+import defaultLogger from "../logger";
 import { PlanId } from "../types/dbTypes";
 import { JWKInterface } from "../types/jwkTypes";
 import { W } from "../types/winston";
+import { BundlePlanExistsInAnotherStateWarning } from "../utils/errors";
 import { getArweaveWallet } from "../utils/getArweaveWallet";
 import {
   assembleBundlePayload,
@@ -80,18 +82,20 @@ export async function prepareBundleHandler(
     }),
     pricing = new PricingService(gateway),
     arweave = new ArweaveInterface(),
-  }: PrepareBundleJobInjectableArch
+  }: PrepareBundleJobInjectableArch,
+  logger = defaultLogger.child({ job: "prepare-bundle-job", planId })
 ): Promise<void> {
-  logger.child({ job: "prepare-bundle-job" });
-
   if (!jwk) {
     jwk = await getArweaveWallet();
   }
 
   const dbDataItems = await database.getPlannedDataItemsForPlanId(planId);
+  if (dbDataItems.length === 0) {
+    logger.warn("No planned data items for plan.");
+    return;
+  }
 
   logger.info(`Preparing data items.`, {
-    planId,
     dataItems: dbDataItems,
   });
 
@@ -103,7 +107,6 @@ export async function prepareBundleHandler(
       return parallelLimit(async () => {
         logger.info("Getting raw signature of data item.", {
           dataItemId,
-          planId,
         });
         const sigType =
           signatureType ??
@@ -115,7 +118,6 @@ export async function prepareBundleHandler(
         );
         logger.info("Retrieved raw signature of data item.", {
           dataItemId,
-          planId,
         });
         const dataItemRawId = await rawIdFromRawSignature(
           dataItemRawSignature,
@@ -124,28 +126,20 @@ export async function prepareBundleHandler(
         logger.info("Parsed data item raw id.", {
           dataItemRawId,
           dataItemId,
-          planId,
         });
         return { dataItemRawId, byteCount };
       });
     })
   );
-  logger.info("Assembling bundle header.", {
-    planId,
-  });
+  logger.info("Assembling bundle header.");
   const bundleHeaderReadable = await assembleBundleHeader(
     dataItemRawIdsAndByteCounts
   );
   const bundleHeaderBuffer = await streamToBuffer(bundleHeaderReadable);
-  logger.info("Caching bundle header.", {
-    planId,
-  });
+  logger.info("Caching bundle header.");
   await putBundleHeader(objectStore, planId, Readable.from(bundleHeaderBuffer));
   // Bundle header end
-  logger.info("Successfully cached bundle header.", {
-    planId,
-  });
-
+  logger.info("Successfully cached bundle header.");
   // Call pricing service to determine reward and tip settings for bundle
   const txAttributes = await pricing.getTxAttributesForDataItems(dbDataItems);
 
@@ -156,7 +150,6 @@ export async function prepareBundleHandler(
     0
   );
   logger.info("Assembling bundle transaction.", {
-    planId,
     dataItemCount,
     totalDataItemsSize,
   });
@@ -165,7 +158,6 @@ export async function prepareBundleHandler(
     bundleHeaderInfoFromBuffer(bundleHeaderBuffer)
   );
   logger.info("Caching bundle payload.", {
-    planId,
     payloadSize: totalPayloadSize,
   });
   await putBundlePayload(
@@ -177,6 +169,7 @@ export async function prepareBundleHandler(
   );
   const headerByteCount = bundleHeaderBuffer.byteLength;
 
+  // TODO: OPTIMIZE THIS! Potentially by splitting streams above? Consider stream consumer rates...
   const bundleTx = await arweave.createTransactionFromPayloadStream(
     await getBundlePayload(
       objectStore,
@@ -189,7 +182,6 @@ export async function prepareBundleHandler(
   );
 
   logger.info("Successfully assembled bundle transaction.", {
-    planId,
     txId: bundleTx.id,
   });
   bundleTx.addTag("Bundle-Format", "binary");
@@ -207,7 +199,6 @@ export async function prepareBundleHandler(
   await arweave.signTx(bundleTx, jwk);
 
   logger.info("Successfully signed bundle transaction.", {
-    planId,
     txId: bundleTx.id,
   });
   bundleTx.data = new Uint8Array(0);
@@ -215,34 +206,40 @@ export async function prepareBundleHandler(
   const bundleTxBuffer = Buffer.from(serializedBundleTx);
 
   logger.info("Updating object-store with bundled transaction.", {
-    planId,
     txId: bundleTx.id,
   });
 
   await putBundleTx(objectStore, bundleTx.id, Readable.from(bundleTxBuffer));
 
-  await database.insertNewBundle({
-    planId,
-    bundleId: bundleTx.id,
-    reward: W(bundleTx.reward),
-    payloadByteCount: totalPayloadSize,
-    headerByteCount,
-    transactionByteCount: bundleTxBuffer.byteLength,
-  });
-
+  try {
+    await database.insertNewBundle({
+      planId,
+      bundleId: bundleTx.id,
+      reward: W(bundleTx.reward),
+      payloadByteCount: totalPayloadSize,
+      headerByteCount,
+      transactionByteCount: bundleTxBuffer.byteLength,
+    });
+  } catch (error) {
+    if (error instanceof BundlePlanExistsInAnotherStateWarning) {
+      logger.warn(error.message);
+      return;
+    }
+    throw error;
+  }
   await enqueue("post-bundle", { planId });
 
   logger.info("Successfully updated object-store with bundled transaction.", {
-    planId,
     txId: bundleTx.id,
   });
 }
 export const handler = createQueueHandler(
   "prepare-bundle",
-  (message: { planId: PlanId }) => prepareBundleHandler(message.planId, {}),
+  (message: { planId: PlanId }) =>
+    prepareBundleHandler(message.planId, defaultArchitecture),
   {
     before: async () => {
-      logger.info("Prepare bundle job has been triggered.");
+      defaultLogger.info("Prepare bundle job has been triggered.");
     },
   }
 );

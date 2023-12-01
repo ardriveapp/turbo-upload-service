@@ -1,5 +1,5 @@
 # Temp directory for incoming data items
-
+# TODO: We shouldn't need a temp directory when piping directly to Object Store
 *
 !.gitignore
 !data

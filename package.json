@@ -5,13 +5,14 @@
   "packageManager": "yarn@3.2.1",
   "type": "commonjs",
   "scripts": {
-    "clean": "rimraf [ lib .nyc_output coverage temp ]",
+    "clean": "rimraf [ lib .nyc_output coverage ]",
     "format:fix": "prettier --write \"src/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\"",
     "lint:check": "eslint . --ext .ts",
     "lint:fix": "eslint . --ext .ts --fix",
     "typecheck": "tsc --noEmit",
     "test": "nyc mocha --spec='src/**/*.test.ts' --spec='tests/**/*.test.ts'",
+    "test:local": "yarn db:up && yarn arlocal:up && yarn test $* ; yarn arlocal:down && yarn db:down",
     "test:unit": "nyc mocha --spec='src/**/*.test.ts'",
     "test:integration": "nyc mocha --spec='tests/**/*.test.ts'",
     "test:integration:local": "yarn db:up && yarn arlocal:up && yarn test:integration $* ; yarn arlocal:down && yarn db:down",
@@ -25,9 +26,11 @@
     "start:watch": "yarn nodemon -r dotenv/config -r ./src/index.ts",
     "arlocal:up": "docker compose up arlocal -d",
     "arlocal:down": "docker compose stop arlocal",
-    "db:up": "docker compose up upload-service-pg -d && yarn db:migrate:latest",
+    "db:up": "docker compose down -v ; docker compose up upload-service-pg -d && yarn db:migrate:latest",
     "db:down": "docker compose down -v",
-    "db:migrate:latest": "yarn knex migrate:latest --knexfile \"src/arch/db/knexfile.ts\""
+    "db:migrate:latest": "yarn knex migrate:latest --cwd ./src/arch/db --knexfile knexfile.ts",
+    "db:migrate:rollback": "yarn knex migrate:rollback $* --cwd ./src/arch/db --knexfile knexfile.ts",
+    "db:make:migration": "yarn knex migrate:make $* -x ts --cwd ./src/arch/db --knexfile knexfile.ts"
   },
   "devDependencies": {
     "@aws-sdk/types": "^3.357.0",
@@ -63,17 +66,17 @@
     "husky": "^8.0.1",
     "lint-staged": "^12.5.0",
     "mocha": "^10.0.0",
-    "nodemon": "^2.0.16",
+    "nodemon": "^3.0.1",
     "nyc": "^15.1.0",
     "pg-query-stream": "^4.2.4",
     "prettier": "^2.6.2",
-    "rimraf": "^3.0.2",
+    "rimraf": "^5.0.1",
     "sinon": "^14.0.0",
     "ts-node": "^10.7.0",
     "typescript": "^4.7.4"
   },
   "dependencies": {
-    "@alexsasharegan/simple-cache": "^3.3.3",
+    "@ardrive/ardrive-promise-cache": "^1.1.4",
     "@aws-sdk/abort-controller": "^3.303.0",
     "@aws-sdk/client-s3": "^3.367.0",
     "@aws-sdk/client-secrets-manager": "^3.363.0",
@@ -81,7 +84,7 @@
     "@aws-sdk/client-ssm": "^3.363.0",
     "@aws-sdk/lib-storage": "^3.367.0",
     "@aws-sdk/node-http-handler": "^3.360.0",
-    "@aws-sdk/signature-v4-crt": "^3.363.0",
+    "@aws-sdk/signature-v4-crt": "^3.451.0",
     "@koa/cors": "^4.0.0",
     "@solana/wallet-adapter-base": "^0.9.22",
     "arbundles": "0.9.8",
@@ -93,7 +96,7 @@
     "bignumber.js": "^9.1.0",
     "https": "^1.0.0",
     "jsonwebtoken": "^9.0.0",
-    "knex": "2.4.0",
+    "knex": "^2.5.1",
     "koa": "2.13.4",
     "koa-router": "11.0.1",
     "koa2-swagger-ui": "^5.8.0",
@@ -101,8 +104,8 @@
     "p-limit": "^3.1.0",
     "pg": "^8.8.0",
     "prom-client": "^14.1.0",
-    "smartweave": "^0.4.49",
-    "winston": "^3.8.2"
+    "winston": "^3.8.2",
+    "yaml": "^2.3.2"
   },
   "resolutions": {
     "arweave": "1.11.6"

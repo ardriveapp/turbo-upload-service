@@ -67,6 +67,7 @@ import {
   stubTxId14,
   stubTxId15,
   stubTxId16,
+  stubUsdToArRate,
   stubWinstonPrice,
 } from "./stubs";
 
@@ -83,6 +84,8 @@ describe("PostgresDatabase class", () => {
       dataStart: 1500,
       failedBundles: [],
       signatureType: 1,
+      uploadedDate: stubDates.earliestDate,
+      contentType: "application/json",
     });
 
     const newDataItems = await db["writer"]<NewDataItemDBResult>(
@@ -96,6 +99,7 @@ describe("PostgresDatabase class", () => {
       byte_count,
       data_item_id,
       uploaded_date,
+      content_type,
     } = newDataItems[0];
 
     expect(assessed_winston_price).to.equal(stubWinstonPrice.toString());
@@ -103,6 +107,7 @@ describe("PostgresDatabase class", () => {
     expect(byte_count).to.equal(stubByteCount.toString());
     expect(data_item_id).to.equal(stubTxId13);
     expect(uploaded_date).to.exist;
+    expect(content_type).to.equal("application/json");
 
     await dbTestHelper.cleanUpEntityInDb(tableNames.newDataItem, stubTxId13);
   });
@@ -225,9 +230,15 @@ describe("PostgresDatabase class", () => {
   it("insertPostedBundle method deletes existing new_bundle and inserts posted_bundle and seed_result as expected", async () => {
     const bundleId = stubTxId13;
 
-    await dbTestHelper.insertStubNewBundle({ planId: stubPlanId, bundleId });
+    await dbTestHelper.insertStubNewBundle({
+      planId: stubPlanId,
+      bundleId,
+    });
 
-    await db.insertPostedBundle(bundleId);
+    await db.insertPostedBundle({
+      bundleId,
+      usdToArRate: stubUsdToArRate,
+    });
 
     // New bundle is removed
     expect(
@@ -251,8 +262,13 @@ describe("PostgresDatabase class", () => {
   it("insertSeededBundle method deletes existing posted_bundle and inserts seeded_bundle", async () => {
     const bundleId = stubTxId13;
     const planId = stubPlanId;
+    const usdToArRate = stubUsdToArRate;
 
-    await dbTestHelper.insertStubPostedBundle({ planId, bundleId });
+    await dbTestHelper.insertStubPostedBundle({
+      planId,
+      bundleId,
+      usdToArRate,
+    });
 
     await db.insertSeededBundle(bundleId);
 
@@ -280,9 +296,17 @@ describe("PostgresDatabase class", () => {
 
   it("getSeededBundles method gets the expected seed_results", async () => {
     const stubSeededBundles = [
-      { bundleId: stubTxId1, planId: stubPlanId },
-      { bundleId: stubTxId2, planId: stubPlanId2 },
-      { bundleId: stubTxId3, planId: stubPlanId3 },
+      { bundleId: stubTxId1, planId: stubPlanId, usdToArRate: stubUsdToArRate },
+      {
+        bundleId: stubTxId2,
+        planId: stubPlanId2,
+        usdToArRate: stubUsdToArRate,
+      },
+      {
+        bundleId: stubTxId3,
+        planId: stubPlanId3,
+        usdToArRate: stubUsdToArRate,
+      },
     ];
 
     await Promise.all(
@@ -313,11 +337,13 @@ describe("PostgresDatabase class", () => {
     const dataItemIds = [stubTxId1, stubTxId2, stubTxId3];
     const indexedOnGQL = true;
     const blockHeight = stubBlockHeight;
+    const usdToArRate = stubUsdToArRate;
 
     await dbTestHelper.insertStubSeededBundle({
       planId,
       bundleId,
       dataItemIds,
+      usdToArRate,
     });
     await db.updateBundleAsPermanent(planId, blockHeight, indexedOnGQL);
 
@@ -388,11 +414,13 @@ describe("PostgresDatabase class", () => {
     const bundleId = stubTxId4;
     const planId = stubPlanId2;
     const dataItemIds = [stubTxId5, stubTxId13, stubTxId4];
+    const usdToArRate = stubUsdToArRate;
 
     await dbTestHelper.insertStubSeededBundle({
       planId,
       bundleId,
       dataItemIds,
+      usdToArRate,
     });
     await db.updateBundleAsDropped(planId);
 

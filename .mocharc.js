@@ -2,7 +2,7 @@
 
 process.env.NODE_ENV ??= "test";
 process.env.PORT ??= 1234;
-process.env.ARWEAVE_GATEWAY ??= "http://localhost:1984";
+process.env.ARWEAVE_GATEWAY ??= "http://arlocal:1984";
 
 // Mocha configuration file
 // Reference for options: https://github.com/mochajs/mocha/blob/master/example/config/.mocharc.js

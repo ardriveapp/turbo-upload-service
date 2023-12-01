@@ -44,6 +44,7 @@ describe("assembleBundleHeader", () => {
 
 describe("bundleHeaderInfoFromBuffer", () => {
   it("returns the correct data from test data", async () => {
+    // TODO: Use a bundle header with multiple data items
     const dataItemRawSig = stubDataItemRawSignatureReadStream();
 
     const stubDataItemRawId = await rawIdFromRawSignature(dataItemRawSig, 512);

@@ -74,11 +74,18 @@ export async function expectAsyncErrorThrow({
   }
 }
 
+// // Helper function to grab the decoded gql tags off of a Transaction
+// export const getDecodedTags = (tags: Tag[]): GQLTagInterface[] =>
+//   tags.map((tag) => ({
+//     name: tag.get("name", { decode: true, string: true }),
+//     value: tag.get("value", { decode: true, string: true }),
+//   }));
+
 export async function fundArLocalWalletAddress(
   arweave: Arweave,
   address: string
 ): Promise<void> {
-  await arweave.api.get(`/mint/${address}/9999999999999999`);
+  await arweave.api.get(`mint/${address}/9999999999999999`);
 }
 
 export async function mineArLocalBlock(arweave: Arweave): Promise<void> {
@@ -93,6 +100,9 @@ export const invalidDataItem = readFileSync(
 );
 export const solanaDataItem = readFileSync(
   "tests/stubFiles/stubSolanaDataItem"
+);
+export const stubDataItemWithEmptyStringsForTagNamesAndValues = readFileSync(
+  "tests/stubFiles/stubDataItemWithEmptyStringsForTagNamesAndValues"
 );
 
 export const ethereumDataItem = readFileSync(

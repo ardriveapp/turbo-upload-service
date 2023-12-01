@@ -17,25 +17,28 @@
 import { Tag } from "arbundles";
 import { Next } from "koa";
 import { Readable } from "stream";
-import winston from "winston";
 
-import { ReserveBalanceResponse } from "../arch/payment";
+import { CheckBalanceResponse, ReserveBalanceResponse } from "../arch/payment";
 import { enqueue } from "../arch/queues";
 import { StreamingDataItem } from "../bundles/streamingDataItem";
 import { signatureTypeInfo } from "../bundles/verifyDataItem";
 import {
   anchorLength,
+  dataCaches,
+  deadlineHeightIncrement,
   emptyAnchorLength,
   emptyTargetLength,
+  fastFinalityIndexes,
   maxDataItemSize,
   octetStreamContentType,
+  receiptVersion,
   signatureTypeLength,
   targetLength,
 } from "../constants";
 import { MetricRegistry } from "../metricRegistry";
 import { KoaContext } from "../server";
 import { TransactionId } from "../types/types";
-import { Winston } from "../types/winston";
+import { W } from "../types/winston";
 import { errorResponse, tapStream } from "../utils/common";
 import { DataItemExistsWarning } from "../utils/errors";
 import {
@@ -48,6 +51,11 @@ import {
   encodeTagsForOptical,
   signDataItemHeader,
 } from "../utils/opticalUtils";
+import {
+  SignedReceipt,
+  UnsignedReceipt,
+  signReceipt,
+} from "../utils/signReceipt";
 
 const dataItemIdCache: Set<TransactionId> = new Set();
 const addToDataItemCache = (dataItemId: TransactionId) =>
@@ -56,8 +64,7 @@ const removeFromDataItemCache = (dataItemId: TransactionId) =>
   dataItemIdCache.delete(dataItemId);
 
 export async function dataItemRoute(ctx: KoaContext, next: Next) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let { logger }: { logger: winston.Logger } = ctx.state as any;
+  let { logger } = ctx.state;
   const durations = {
     totalDuration: 0,
     cacheDuration: 0,
@@ -68,15 +75,19 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
   const requestStartTime = Date.now();
   logger.info("New Data Item posting...");
 
-  const { objectStore, database, paymentService } = ctx.state;
+  const {
+    objectStore,
+    database,
+    paymentService,
+    arweaveGateway,
+    getArweaveWallet,
+  } = ctx.state;
 
   // Validate the content-length header
   const contentLength = ctx.req.headers?.["content-length"];
   logger.info("request content length: ", { contentLength });
   if (contentLength === undefined) {
-    return errorResponse(ctx, {
-      errorMessage: "Request content has no length",
-    });
+    logger.warn("Request has no content length header!");
   } else if (+contentLength > maxDataItemSize) {
     return errorResponse(ctx, {
       errorMessage: `Data item is too large, this service only accepts data items up to ${maxDataItemSize} bytes!`,
@@ -101,6 +112,7 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
 
   // Duplicate the request body stream. The original will go to the data item
   // event emitter. This one will go to the object store.
+  ctx.request.req.pause();
   const rawDataItemStream = tapStream({
     readable: ctx.request.req,
     logger: logger.child({ context: "rawDataItemStream" }),
@@ -108,6 +120,7 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
 
   // Create a streaming data item with the request body
   const streamingDataItem = new StreamingDataItem(ctx.request.req, logger);
+  ctx.request.req.resume();
 
   // Assess a Winston price and/or whitelist-status for this upload once
   // enough data item info has streamed to the data item event emitter
@@ -145,40 +158,35 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
   }
   addToDataItemCache(dataItemId);
 
-  let paymentResponse: ReserveBalanceResponse;
-  try {
-    logger.info("Reserving balance for upload...");
-    paymentResponse = await paymentService.reserveBalanceForData({
-      ownerPublicAddress,
-      size: +contentLength,
-      dataItemId,
-    });
-  } catch (error) {
-    errorResponse(ctx, {
-      status: 503,
-      errorMessage: `Data Item: ${dataItemId}. Upload Service is Unavailable. Payment Service is unreachable`,
-    });
-    removeFromDataItemCache(dataItemId);
-    return next();
-  }
-
-  let assessedWinstonPrice: Winston;
-
-  if (paymentResponse.isReserved) {
-    assessedWinstonPrice = paymentResponse.costOfDataItem;
-    logger.info("Balance successfully reserved", { assessedWinstonPrice });
-  } else {
-    if (!paymentResponse.walletExists) {
-      logger.info("Wallet does not exist.");
+  // Reserve balance for this upload if the content-length header was present
+  if (contentLength !== undefined) {
+    let checkBalanceResponse: CheckBalanceResponse;
+    try {
+      logger.info("Checking balance for upload...");
+      checkBalanceResponse = await paymentService.checkBalanceForData({
+        ownerPublicAddress,
+        size: +contentLength,
+      });
+    } catch (error) {
+      errorResponse(ctx, {
+        status: 503,
+        errorMessage: `Data Item: ${dataItemId}. Upload Service is Unavailable. Payment Service is unreachable`,
+      });
+      removeFromDataItemCache(dataItemId);
+      return next();
     }
 
-    errorResponse(ctx, {
-      status: 401,
-      errorMessage: "Insufficient balance",
-    });
+    if (checkBalanceResponse.userHasSufficientBalance) {
+      logger.info("User can afford bytes", checkBalanceResponse);
+    } else {
+      errorResponse(ctx, {
+        status: 402,
+        errorMessage: "Insufficient balance",
+      });
 
-    removeFromDataItemCache(dataItemId);
-    return next();
+      removeFromDataItemCache(dataItemId);
+      return next();
+    }
   }
 
   // Parse out the content type and the payload stream
@@ -233,11 +241,6 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
       errorMessage: "Data item parsing error!",
       error,
     });
-    await paymentService.refundBalanceForData({
-      ownerPublicAddress,
-      winston: paymentResponse.costOfDataItem,
-      dataItemId,
-    });
 
     removeFromDataItemCache(dataItemId);
     return next();
@@ -262,7 +265,7 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
         objectStore,
         dataItemId,
         contentType,
-        extractedDataItemStream
+        extractedDataItemStream // TODO: IS THERE ENOUGH HIGH WATER BUFFER IN THE PASS-THROUGH TO GET HERE?
       ).then(() => {
         durations.extractDuration = Date.now() - objectStoreCacheStart;
         logger.info(
@@ -286,16 +289,6 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
       error,
     });
 
-    await paymentService.refundBalanceForData({
-      ownerPublicAddress,
-      winston: assessedWinstonPrice,
-      dataItemId,
-    });
-
-    logger.info(`Balance refunded due to caching error.`, {
-      assessedWinstonPrice,
-    });
-
     removeFromDataItemCache(dataItemId);
     return next();
   }
@@ -309,14 +302,7 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
       errorMessage: "Data item parsing error!",
       error,
     });
-    await paymentService.refundBalanceForData({
-      ownerPublicAddress,
-      winston: paymentResponse.costOfDataItem,
-      dataItemId,
-    });
-    logger.info(`Balance refunded due to parsing error.`, {
-      assessedWinstonPrice,
-    });
+
     removeFromDataItemCache(dataItemId);
     removeDataItem(objectStore, dataItemId); // no need to await - just invoke and forget
     return next();
@@ -326,65 +312,68 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
     errorResponse(ctx, {
       errorMessage: "Invalid Data Item!",
     });
-    await paymentService.refundBalanceForData({
-      ownerPublicAddress,
-      winston: paymentResponse.costOfDataItem,
-      dataItemId,
-    });
-    logger.info(`Balance refunded due to invalid data item.`, {
-      assessedWinstonPrice,
-    });
+
     removeFromDataItemCache(dataItemId);
     return removeDataItem(objectStore, dataItemId);
   }
 
-  const dbInsertStart = Date.now();
-  try {
-    await database.insertNewDataItem({
-      dataItemId,
-      ownerPublicAddress: ownerPublicAddress,
-      assessedWinstonPrice,
-      byteCount: +contentLength,
-      dataStart,
-      signatureType,
-      failedBundles: [],
+  // NOTE: Safe to get payload size now that payload has been fully consumed
+  const data_size = await streamingDataItem.getPayloadSize();
+  const totalSize = data_size + dataStart;
+
+  if (totalSize > maxDataItemSize) {
+    errorResponse(ctx, {
+      errorMessage: `Data item is too large, this service only accepts data items up to ${maxDataItemSize} bytes!`,
     });
-    durations.dbInsertDuration = Date.now() - dbInsertStart;
-    logger.info(`DB insert duration: ${durations.dbInsertDuration}ms`);
+    removeFromDataItemCache(dataItemId);
+    removeDataItem(objectStore, dataItemId);
+    return next();
+  }
+
+  // Reserve balance for this upload if the content-length header was not present
+  let paymentResponse: ReserveBalanceResponse;
+
+  try {
+    logger.info("Reserving balance for upload...");
+    paymentResponse = await paymentService.reserveBalanceForData({
+      ownerPublicAddress,
+      size: totalSize,
+      dataItemId,
+    });
   } catch (error) {
-    if (error instanceof DataItemExistsWarning) {
-      logger.info(`DB insert exists duration: ${Date.now() - dbInsertStart}ms`);
-      ctx.status = 202;
-      const message = (error as DataItemExistsWarning).message;
-      logger.warn(message);
-      ctx.res.statusMessage = message;
-      return next();
-    } else {
-      logger.info(`DB insert failed duration: ${Date.now() - dbInsertStart}ms`);
-      errorResponse(ctx, {
-        status: 503,
-        errorMessage: `Data Item: ${dataItemId}. Upload Service is Unavailable. Cloud Database is unreachable`,
-        error,
-      });
-      await paymentService.refundBalanceForData({
-        ownerPublicAddress,
-        winston: paymentResponse.costOfDataItem,
-        dataItemId,
-      });
-      logger.info(`Balance refunded due to database error.`, {
-        assessedWinstonPrice,
-      });
-      removeFromDataItemCache(dataItemId);
-      removeDataItem(objectStore, dataItemId); // don't need to await this - just invoke and move on
-      return next();
+    errorResponse(ctx, {
+      status: 503,
+      errorMessage: `Data Item: ${dataItemId}. Upload Service is Unavailable. Payment Service is unreachable`,
+    });
+    removeFromDataItemCache(dataItemId);
+    return next();
+  }
+
+  if (paymentResponse.isReserved) {
+    logger.info("Balance successfully reserved", {
+      assessedWinstonPrice: paymentResponse.costOfDataItem,
+    });
+  } else {
+    if (!paymentResponse.walletExists) {
+      logger.info("Wallet does not exist.");
     }
+
+    errorResponse(ctx, {
+      status: 402,
+      errorMessage: "Insufficient balance",
+    });
+
+    removeFromDataItemCache(dataItemId);
+    return next();
   }
 
   // Enqueue data item for optical bridging
-  // NOTE: Safe to get payload size now that payload has been fully consumed
-  const data_size = await streamingDataItem.getPayloadSize();
-  const confirmedFeatures: Record<string, string[]> = {
-    dataCaches: ["arweave.net"],
+  const confirmedFeatures: {
+    dataCaches: string[];
+    fastFinalityIndexes: string[];
+  } = {
+    dataCaches,
+    fastFinalityIndexes: [],
   };
   try {
     logger.info("Enqueuing data item to optical...");
@@ -403,6 +392,7 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
         })
       )
     );
+    confirmedFeatures.fastFinalityIndexes = fastFinalityIndexes;
   } catch (opticalError) {
     // Soft error, just log
     logger.error(
@@ -413,7 +403,7 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
   }
 
   // Enqueue data item for unbundling if it appears to be a BDI
-  if (containsAns104Tags(tags))
+  if (containsAns104Tags(tags)) {
     try {
       logger.info("Enqueuing BDI for unbundling...");
       await enqueue("unbundle-bdi", dataItemId);
@@ -425,18 +415,90 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
       );
       MetricRegistry.unbundleBdiEnqueueFail.inc();
     }
+  }
+
+  let uploadTimestamp: number;
+  let signedReceipt: SignedReceipt;
+  try {
+    const currentBlockHeight = await arweaveGateway.getCurrentBlockHeight();
+    const jwk = await getArweaveWallet();
+
+    uploadTimestamp = Date.now();
+    const receipt: UnsignedReceipt = {
+      id: dataItemId,
+      timestamp: uploadTimestamp,
+      winc: paymentResponse.costOfDataItem.toString(),
+      version: receiptVersion,
+      deadlineHeight: currentBlockHeight + deadlineHeightIncrement,
+      ...confirmedFeatures,
+    };
+    signedReceipt = await signReceipt(receipt, jwk);
+    logger.info("Receipt signed!", signedReceipt);
+  } catch (error) {
+    errorResponse(ctx, {
+      status: 503,
+      errorMessage: `Data Item: ${dataItemId}. Upload Service is Unavailable. Unable to sign receipt...`,
+      error,
+    });
+    removeFromDataItemCache(dataItemId);
+    removeDataItem(objectStore, dataItemId); // don't need to await this - just invoke and move on
+    return next();
+  }
+
+  const dbInsertStart = Date.now();
+  try {
+    await database.insertNewDataItem({
+      dataItemId,
+      ownerPublicAddress: ownerPublicAddress,
+      assessedWinstonPrice: paymentResponse.costOfDataItem,
+      byteCount: totalSize,
+      dataStart,
+      signatureType,
+      failedBundles: [],
+      uploadedDate: new Date(uploadTimestamp).toISOString(),
+      contentType,
+    });
+    durations.dbInsertDuration = Date.now() - dbInsertStart;
+    logger.info(`DB insert duration: ${durations.dbInsertDuration}ms`);
+  } catch (error) {
+    if (error instanceof DataItemExistsWarning) {
+      logger.info(`DB insert exists duration: ${Date.now() - dbInsertStart}ms`);
+      ctx.status = 202;
+      const message = (error as DataItemExistsWarning).message;
+      logger.warn(message);
+      ctx.res.statusMessage = message;
+      return next();
+    } else {
+      logger.info(`DB insert failed duration: ${Date.now() - dbInsertStart}ms`);
+      errorResponse(ctx, {
+        status: 503,
+        errorMessage: `Data Item: ${dataItemId}. Upload Service is Unavailable. Cloud Database is unreachable`,
+        error,
+      });
+      if (paymentResponse.costOfDataItem.isGreaterThan(W(0))) {
+        await paymentService.refundBalanceForData({
+          ownerPublicAddress,
+          winston: paymentResponse.costOfDataItem,
+          dataItemId,
+        });
+        logger.info(`Balance refunded due to database error.`, {
+          assessedWinstonPrice: paymentResponse.costOfDataItem,
+        });
+      }
+      removeFromDataItemCache(dataItemId);
+      removeDataItem(objectStore, dataItemId); // don't need to await this - just invoke and move on
+      return next();
+    }
+  }
 
   ctx.status = 200;
-  ctx.body = {
-    id: dataItemId,
-    owner: ownerPublicAddress,
-    ...confirmedFeatures,
-  };
+
+  ctx.body = { ...signedReceipt, owner: ownerPublicAddress };
 
   removeFromDataItemCache(dataItemId);
 
   durations.totalDuration = Date.now() - requestStartTime;
-
+  // TODO: our logger middleware now captures total request time, so these can logs can be removed if they are not being used for any reporting/alerting
   logger.info(`Total request duration: ${durations.totalDuration}ms`);
   logger.info(`Durations (ms):`, durations);
 
@@ -454,10 +516,9 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
 
     const toMiBPerSec = 1000 / 1048576;
     const throughputs = {
-      totalThroughput: (+contentLength / durations.totalDuration) * toMiBPerSec,
-      cacheThroughput: (+contentLength / durations.cacheDuration) * toMiBPerSec,
-      extractThroughput:
-        (+contentLength / durations.extractDuration) * toMiBPerSec,
+      totalThroughput: (totalSize / durations.totalDuration) * toMiBPerSec,
+      cacheThroughput: (totalSize / durations.cacheDuration) * toMiBPerSec,
+      extractThroughput: (totalSize / durations.extractDuration) * toMiBPerSec,
     };
     logger.info(`Throughputs (MiB/sec):`, throughputs);
   }

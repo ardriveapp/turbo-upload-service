@@ -76,6 +76,22 @@ export class Schema {
     return new Schema(pg).rollbackFullSchema();
   }
 
+  public static migrateToAddARtoUSDConversionRates(pg: Knex): Promise<void> {
+    return new Schema(pg).migrateToAddARtoUSDConversionRates();
+  }
+
+  public static rollbackFromAddARtoUSDConversionRates(pg: Knex): Promise<void> {
+    return new Schema(pg).rollbackFromAddARtoUSDConversionRates();
+  }
+
+  public static migrateToByteCountBundleColumns(pg: Knex): Promise<void> {
+    return new Schema(pg).migrateToByteCountBundleColumns();
+  }
+
+  public static rollbackFromByteCountBundleColumns(pg: Knex): Promise<void> {
+    return new Schema(pg).rollbackFromByteCountBundleColumns();
+  }
+
   private async initializeSchema(): Promise<void> {
     logger.info("Starting initial migration...");
 
@@ -629,6 +645,134 @@ export class Schema {
       t.string(blockHeight).nullable();
       t.string(seedResultStatus).notNullable().defaultTo("posted");
     });
+  }
+
+  private async migrateToAddARtoUSDConversionRates(): Promise<void> {
+    logger.info("Starting add AR to USD conversion rates migration...");
+    const migrationStartTime = Date.now();
+
+    // create column on bundle tables for AR/USD conversion rate - allow nullable on initial migration
+    return this.pg.transaction(async (transaction) => {
+      await transaction.schema.alterTable(tableNames.postedBundle, (t) => {
+        t.decimal(columnNames.usdToArRate).nullable();
+      });
+      await transaction.schema.alterTable(tableNames.seededBundle, (t) => {
+        t.decimal(columnNames.usdToArRate).nullable();
+      });
+      await transaction.schema.alterTable(tableNames.permanentBundle, (t) => {
+        t.decimal(columnNames.usdToArRate).nullable();
+      });
+      await transaction.schema.alterTable(tableNames.failedBundle, (t) => {
+        t.decimal(columnNames.usdToArRate).nullable();
+      });
+      logger.info("Finished add AR to USD conversion rates migration!", {
+        migrationMs: Date.now() - migrationStartTime,
+      });
+    });
+  }
+
+  private async rollbackFromAddARtoUSDConversionRates(): Promise<void> {
+    logger.info("Starting add AR to USD conversion rates migration...");
+    const rollbackStartTime = Date.now();
+
+    // drop columns in relevant tables
+    return this.pg.transaction(async (transaction) => {
+      await transaction.schema.alterTable(tableNames.postedBundle, (t) => {
+        t.dropColumn(columnNames.usdToArRate);
+      });
+      await transaction.schema.alterTable(tableNames.seededBundle, (t) => {
+        t.dropColumn(columnNames.usdToArRate);
+      });
+      await transaction.schema.alterTable(tableNames.permanentBundle, (t) => {
+        t.dropColumn(columnNames.usdToArRate);
+      });
+      await transaction.schema.alterTable(tableNames.failedBundle, (t) => {
+        t.dropColumn(columnNames.usdToArRate);
+      });
+      logger.info("Finished add AR to USD conversion rates rollback!", {
+        rollbackMs: Date.now() - rollbackStartTime,
+      });
+    });
+  }
+
+  private async migrateToByteCountBundleColumns(): Promise<void> {
+    logger.info(
+      "Starting bigInteger column conversion for bundle tables migration..."
+    );
+    const migrationStartTime = Date.now();
+
+    await this.pg.schema.alterTable(tableNames.newBundle, (t) => {
+      t.bigInteger(columnNames.transactionByteCount).alter();
+      t.bigInteger(columnNames.headerByteCount).alter();
+      t.bigInteger(columnNames.payloadByteCount).alter();
+    });
+    await this.pg.schema.alterTable(tableNames.postedBundle, (t) => {
+      t.bigInteger(columnNames.transactionByteCount).alter();
+      t.bigInteger(columnNames.headerByteCount).alter();
+      t.bigInteger(columnNames.payloadByteCount).alter();
+    });
+    await this.pg.schema.alterTable(tableNames.seededBundle, (t) => {
+      t.bigInteger(columnNames.transactionByteCount).alter();
+      t.bigInteger(columnNames.headerByteCount).alter();
+      t.bigInteger(columnNames.payloadByteCount).alter();
+    });
+    await this.pg.schema.alterTable(tableNames.failedBundle, (t) => {
+      t.bigInteger(columnNames.transactionByteCount).alter();
+      t.bigInteger(columnNames.headerByteCount).alter();
+      t.bigInteger(columnNames.payloadByteCount).alter();
+    });
+    await this.pg.schema.alterTable(tableNames.permanentBundle, (t) => {
+      t.bigInteger(columnNames.transactionByteCount).alter();
+      t.bigInteger(columnNames.headerByteCount).alter();
+      t.bigInteger(columnNames.payloadByteCount).alter();
+    });
+
+    logger.info(
+      "Finished bigInteger column conversion for bundle tables migration!",
+      {
+        migrationMs: Date.now() - migrationStartTime,
+      }
+    );
+  }
+
+  public async rollbackFromByteCountBundleColumns(): Promise<void> {
+    logger.info(
+      "Starting bigInteger column conversion for bundle tables rollback..."
+    );
+    const rollbackStartTime = Date.now();
+
+    await this.pg.schema.alterTable(tableNames.newBundle, (t) => {
+      t.integer(columnNames.transactionByteCount).alter();
+      t.integer(columnNames.headerByteCount).alter();
+      t.integer(columnNames.payloadByteCount).alter();
+    });
+    await this.pg.schema.alterTable(tableNames.postedBundle, (t) => {
+      t.integer(columnNames.transactionByteCount).alter();
+      t.integer(columnNames.headerByteCount).alter();
+      t.integer(columnNames.payloadByteCount).alter();
+    });
+    await this.pg.schema.alterTable(tableNames.seededBundle, (t) => {
+      t.integer(columnNames.transactionByteCount).alter();
+      t.integer(columnNames.headerByteCount).alter();
+      t.integer(columnNames.payloadByteCount).alter();
+    });
+    await this.pg.schema.alterTable(tableNames.failedBundle, (t) => {
+      t.integer(columnNames.transactionByteCount).alter();
+      t.integer(columnNames.headerByteCount).alter();
+      t.integer(columnNames.payloadByteCount).alter();
+    });
+    await this.pg.schema.alterTable(tableNames.permanentBundle, (t) => {
+      t.integer(columnNames.transactionByteCount).alter();
+      t.integer(columnNames.headerByteCount).alter();
+      t.integer(columnNames.payloadByteCount).alter();
+    });
+
+    logger.info(
+      "Finished bigInteger column conversion for bundle tables rollback!",
+      {
+        migrationMs: Date.now() - rollbackStartTime,
+      }
+    );
   }
 
   private defaultTimestamp() {

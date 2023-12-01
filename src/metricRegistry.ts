@@ -40,6 +40,11 @@ export class MetricRegistry {
     help: "Count of uncaught exceptions",
   });
 
+  public static usdToArRateFail = new promClient.Counter({
+    name: "usd_to_ar_rate_fail_count",
+    help: "Count of failed API calls to the USD/AR endpoint of the payment service",
+  });
+
   private constructor() {
     this.registry = new promClient.Registry();
 
@@ -47,6 +52,7 @@ export class MetricRegistry {
     this.registry.registerMetric(MetricRegistry.opticalBridgeEnqueueFail);
     this.registry.registerMetric(MetricRegistry.unbundleBdiEnqueueFail);
     this.registry.registerMetric(MetricRegistry.refundBalanceFail);
+    this.registry.registerMetric(MetricRegistry.usdToArRateFail);
   }
 
   public static getInstance(): MetricRegistry {

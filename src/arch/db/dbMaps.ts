@@ -50,9 +50,12 @@ export function newBundleDbResultToNewBundleMap({
     plannedDate: planned_date,
     reward: W(reward),
     signedDate: signed_date,
-    headerByteCount: header_byte_count ?? undefined,
-    payloadByteCount: payload_byte_count ?? undefined,
-    transactionByteCount: transaction_byte_count ?? undefined,
+    // bigInteger types come back as strings, so we convert them to numbers here
+    headerByteCount: header_byte_count ? +header_byte_count : undefined,
+    payloadByteCount: payload_byte_count ? +payload_byte_count : undefined,
+    transactionByteCount: transaction_byte_count
+      ? +transaction_byte_count
+      : undefined,
   };
 }
 

@@ -18,10 +18,12 @@ import { Next } from "koa";
 import Router from "koa-router";
 import * as promClient from "prom-client";
 
+import { receiptVersion } from "./constants";
 import { MetricRegistry } from "./metricRegistry";
 import { dataItemRoute } from "./routes/dataItemPost";
 import { swaggerDocs, swaggerDocsJSON } from "./routes/swagger";
 import { KoaContext } from "./server";
+import { jwkToPublicArweaveAddress } from "./utils/base64";
 
 const metricsRegistry = MetricRegistry.getInstance().getRegistry();
 promClient.collectDefaultMetrics({ register: metricsRegistry });
@@ -34,10 +36,22 @@ router.post("/tx", dataItemRoute);
 router.post("/v1/tx/:currency", dataItemRoute);
 router.post("/tx/:currency", dataItemRoute);
 
-// healthcheck endpoint
-
-router.get("/", (ctx: KoaContext, next: Next) => {
+router.get("/health", (ctx: KoaContext, next: Next) => {
   ctx.body = "OK";
+  return next();
+});
+
+router.get("/", async (ctx: KoaContext, next: Next) => {
+  const signingWalletAddress = jwkToPublicArweaveAddress(
+    await ctx.state.getArweaveWallet()
+  );
+  ctx.body = {
+    version: receiptVersion,
+    addresses: {
+      arweave: signingWalletAddress,
+    },
+    gateway: ctx.state.arweaveGateway["endpoint"].hostname,
+  };
   return next();
 });
 

@@ -35,15 +35,32 @@ import {
 } from "../types/types";
 import { createAxiosInstance } from "./axiosClient";
 
+// TODO: Payment service response API
 export interface ReserveBalanceResponse {
   walletExists: boolean;
   isReserved: boolean;
   costOfDataItem: Winston;
 }
 
-interface ReserveBalanceParams {
+export interface CheckBalanceResponse {
+  userHasSufficientBalance: boolean;
+  bytesCostInWinc: Winston;
+  userBalanceInWinc?: Winston;
+}
+
+interface PaymentServiceCheckBalanceResponse {
+  userHasSufficientBalance: boolean;
+  bytesCostInWinc: Winston;
+  userBalanceInWinc: Winston;
+  adjustments: Record<string, unknown>[];
+}
+
+interface CheckBalanceParams {
   size: ByteCount;
   ownerPublicAddress: PublicArweaveAddress;
+}
+
+interface ReserveBalanceParams extends CheckBalanceParams {
   dataItemId: TransactionId;
 }
 
@@ -58,10 +75,14 @@ interface RefundBalanceParams {
 }
 
 export interface PaymentService {
+  checkBalanceForData(
+    params: CheckBalanceParams
+  ): Promise<CheckBalanceResponse>;
   reserveBalanceForData(
     params: ReserveBalanceParams
   ): Promise<ReserveBalanceResponse>;
   refundBalanceForData(params: RefundBalanceParams): Promise<void>;
+  getFiatToARConversionRate(currency: "usd"): Promise<number>; // TODO: create type for currency
 }
 
 const allowedReserveBalanceResponse: ReserveBalanceResponse = {
@@ -74,7 +95,7 @@ const secret = process.env.PRIVATE_ROUTE_SECRET ?? testPrivateRouteSecret;
 export class TurboPaymentService implements PaymentService {
   constructor(
     private readonly shouldAllowArFSData: boolean = allowArFSData,
-
+    // TODO: create a client config with base url pointing at the base url of the payment service
     private readonly axios: AxiosInstance = createAxiosInstance({}),
     private readonly logger: winston.Logger = defaultLogger,
     private readonly paymentServiceURL: string = process.env
@@ -89,6 +110,87 @@ export class TurboPaymentService implements PaymentService {
     this.paymentServiceURL = `https://${paymentServiceURL}`;
   }
 
+  public async checkBalanceForData({
+    size,
+    ownerPublicAddress,
+  }: CheckBalanceParams): Promise<CheckBalanceResponse> {
+    const logger = this.logger.child({ ownerPublicAddress, size });
+
+    logger.info("Checking balance for wallet.");
+
+    if (await this.checkBalanceForDataInternal({ size, ownerPublicAddress })) {
+      logger.info(
+        "Data was allowed via internal upload service business logic. Not calling payment service to check balance..."
+      );
+      return {
+        userHasSufficientBalance: true,
+        bytesCostInWinc: W(0),
+      };
+    }
+
+    logger.info("Calling payment service to check balance...");
+
+    const token = sign({}, secret, {
+      expiresIn: "1h",
+    });
+    const url = `${this.paymentServiceURL}/v1/check-balance/${ownerPublicAddress}?byteCount=${size}`;
+
+    const { status, statusText, data } = await this.axios.get<
+      PaymentServiceCheckBalanceResponse | string
+    >(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      validateStatus: (status) => {
+        if (status >= 500) {
+          throw new Error(`Payment service unavailable. Status: ${status}`);
+        }
+        return true;
+      },
+    });
+
+    logger.info("Payment service response.", {
+      status,
+      statusText,
+      data,
+    });
+
+    if (typeof data === "string") {
+      throw new Error(
+        `Payment service returned a string instead of a json object. Body: ${data} | Status: ${status} | StatusText: ${statusText}`
+      );
+    }
+
+    return data;
+  }
+
+  private async checkBalanceForDataInternal({
+    size,
+    ownerPublicAddress,
+  }: CheckBalanceParams): Promise<boolean> {
+    const logger = this.logger.child({ ownerPublicAddress, size });
+
+    logger.info("Checking balance for wallet.");
+
+    if (allowListPublicAddresses.includes(ownerPublicAddress)) {
+      logger.info(
+        "The owner's address is on the arweave public address allow list. Allowing data item to be bundled by the service..."
+      );
+      return true;
+    }
+
+    if (this.shouldAllowArFSData && size <= freeArfsDataAllowLimit) {
+      // TODO: Add limitations PE-2603
+      logger.info(
+        "This data item is under the free ArFS data limit. Allowing data item to be bundled by the service..."
+      );
+
+      return true;
+    }
+
+    return false;
+  }
+
   public async reserveBalanceForData({
     size,
     ownerPublicAddress,
@@ -98,18 +200,10 @@ export class TurboPaymentService implements PaymentService {
 
     logger.info("Reserving balance for wallet.");
 
-    if (allowListPublicAddresses.includes(ownerPublicAddress)) {
+    if (await this.checkBalanceForDataInternal({ size, ownerPublicAddress })) {
       logger.info(
-        "The owner's address is on the arweave public address allow list. Allowing data item to be bundled by the service..."
+        "Data was allowed via internal upload service business logic. Not calling payment service to reserve balance..."
       );
-      return allowedReserveBalanceResponse;
-    }
-
-    if (this.shouldAllowArFSData && size <= freeArfsDataAllowLimit) {
-      logger.info(
-        "This data item is under the free ArFS data limit. Allowing data item to be bundled by the service..."
-      );
-
       return allowedReserveBalanceResponse;
     }
 
@@ -182,11 +276,21 @@ export class TurboPaymentService implements PaymentService {
       );
       logger.info("Successfully refunded balance for wallet.");
     } catch (error) {
+      // TODO: add prometheus metric for when this fails - we may need to manually intervene to distribute the refund
       MetricRegistry.refundBalanceFail.inc();
       const message = error instanceof Error ? error.message : "Unknown error";
       logger.error("Unable to issue refund!", {
         error: message,
       });
     }
+  }
+
+  public async getFiatToARConversionRate(
+    currency: "usd" = "usd"
+  ): Promise<number> {
+    const { data: fiatToArRate } = await this.axios.get(
+      `${this.paymentServiceURL}/v1/rates/${currency}`
+    );
+    return +fiatToArRate.rate;
   }
 }

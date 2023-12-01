@@ -32,7 +32,7 @@ export class StreamingDataItem {
   private targetFlagPromise: Promise<number>;
   private targetFlagResolver?: (targetFlag: number) => void;
   private targetPromise: Promise<string | undefined>;
-  private targetResolver?: (target: string | undefined) => void;
+  private targetResolver?: (target: string | undefined) => void; // TODO: Arweave public address?
   private anchorFlagPromise: Promise<number>;
   private anchorFlagResolver?: (anchorFlag: number) => void;
   private anchorPromise: Promise<string | undefined>;
@@ -54,7 +54,8 @@ export class StreamingDataItem {
   constructor(
     dataItemStream: Readable,
     private log?: winston.Logger,
-    private failOnTagsSpecViolation = true
+    private failOnTagsSpecViolation = true,
+    private failOnEmptyStringsInTags = false
   ) {
     this.signatureTypePromise = new Promise((resolve) => {
       this.signatureTypeResolver = resolve;
@@ -317,15 +318,15 @@ export class StreamingDataItem {
         const tagNameLength = Buffer.from(tag.name).byteLength;
         if (tagNameLength > 1024) {
           const errMsg = `ANS-104 spec violation! A data item tag name must not exceed 1024 bytes in size! Parsed size was ${tagNameLength}`;
-          this.lastError = new Error(errMsg);
           if (this.failOnTagsSpecViolation) {
+            this.lastError = new Error(errMsg);
             throw new Error(errMsg);
           }
           this.log?.warn(errMsg);
         } else if (tag.name === "") {
           const errMsg = `ANS-104 spec violation! A data item tag name may not be an empty string!`;
-          this.lastError = new Error(errMsg);
-          if (this.failOnTagsSpecViolation) {
+          if (this.failOnEmptyStringsInTags) {
+            this.lastError = new Error(errMsg);
             throw new Error(errMsg);
           }
           this.log?.warn(errMsg);
@@ -334,15 +335,15 @@ export class StreamingDataItem {
         const tagValueLength = Buffer.from(tag.value).byteLength;
         if (tagValueLength > 3072) {
           const errMsg = `ANS-104 spec violation! A data item tag value must not exceed 3072 bytes in size! Parsed size was ${tagValueLength}`;
-          this.lastError = new Error(errMsg);
           if (this.failOnTagsSpecViolation) {
+            this.lastError = new Error(errMsg);
             throw new Error(errMsg);
           }
           this.log?.warn(errMsg);
         } else if (tag.value === "") {
           const errMsg = `ANS-104 spec violation! A data item tag value may not be an empty string!`;
-          this.lastError = new Error(errMsg);
-          if (this.failOnTagsSpecViolation) {
+          if (this.failOnEmptyStringsInTags) {
+            this.lastError = new Error(errMsg);
             throw new Error(errMsg);
           }
           this.log?.warn(errMsg);
@@ -355,7 +356,10 @@ export class StreamingDataItem {
 
   getPayloadStream(): Promise<Readable> {
     return this.payloadStreamPromise
-      .then((payloadStream) => payloadStream.resume())
+      .then((payloadStream) =>
+        // TODO: Necessary?
+        payloadStream.resume()
+      )
       .then((payloadStream) => {
         if (!this.lastError) {
           return payloadStream;

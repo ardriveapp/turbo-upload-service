@@ -15,6 +15,10 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 import {
+  PromiseCache,
+  ReadThroughPromiseCache,
+} from "@ardrive/ardrive-promise-cache";
+import {
   GetSecretValueCommand,
   SecretsManagerClient,
 } from "@aws-sdk/client-secrets-manager";
@@ -25,16 +29,17 @@ import { Base64UrlString } from "arweave/node/lib/utils";
 import { msPerMinute } from "../constants";
 import logger from "../logger";
 import { JWKInterface } from "../types/jwkTypes";
-import { PromiseCache } from "./promiseCache";
+
+const sixtyMinutes = msPerMinute * 60;
 
 const opticalWalletCache = new PromiseCache<string, JWKInterface>({
   cacheCapacity: 1,
-  cacheTTL: msPerMinute * 60,
+  cacheTTL: sixtyMinutes,
 });
 
 const opticalPubKeyCache = new PromiseCache<string, string>({
   cacheCapacity: 1,
-  cacheTTL: msPerMinute * 60,
+  cacheTTL: sixtyMinutes,
 });
 
 // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
@@ -46,7 +51,6 @@ const secretsMgrClient = new SecretsManagerClient({
 
 const svcsSystemsMgrClient = new SSMClient({ region: awsRegion });
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 function getSecretValue(secretName: string): Promise<string> {
   return secretsMgrClient
     .send(
@@ -65,8 +69,23 @@ function getSecretValue(secretName: string): Promise<string> {
     });
 }
 
+const arweaveWalletSecretName = `arweave-wallet`;
+
+const signingWalletCache = new ReadThroughPromiseCache<string, JWKInterface>({
+  cacheParams: {
+    cacheCapacity: 1,
+    cacheTTL: sixtyMinutes,
+  },
+  readThroughFunction: async () => {
+    return getSecretValue(arweaveWalletSecretName).then((walletString) =>
+      JSON.parse(walletString)
+    );
+  },
+});
 export async function getArweaveWallet(): Promise<JWKInterface> {
-  return JSON.parse(await getSecretValue("arweave-wallet"));
+  // Return any inflight, potentially-resolved promise for the wallet OR
+  // start, cache, and return a new one
+  return signingWalletCache.get(arweaveWalletSecretName);
 }
 
 export async function getOpticalWallet(): Promise<JWKInterface> {

@@ -95,6 +95,7 @@ describe("createVerifiedDataItemStream function", () => {
     ).to.equal("5670\n");
     expect(await streamingDataItem.getPayloadSize()).to.equal(5);
     expect(await streamingDataItem.isValid()).to.be.true;
+    // TODO: CONSIDER USING DIFFERENT CHUNK SIZES TO EXECUTE DIFFERENT PATHS DURING TESTS
   });
 
   it("succeeds with a Solana-signed data item", async () => {

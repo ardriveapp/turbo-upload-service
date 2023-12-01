@@ -21,8 +21,10 @@ import {
   Winston,
 } from "./types";
 
+// TODO: Timestamp type. Currently using Postgres Date type (ISO String without Timezone)
 export type Timestamp = string;
 
+// TODO: Plan ID type
 export type PlanId = string;
 
 export type SignatureType = number;
@@ -30,6 +32,8 @@ export type DataStart = number;
 export type BlockHeight = number;
 
 export type FailedReason = "not_found" | "failed_to_post";
+
+export type ContentType = string;
 
 export interface NewDataItem {
   dataItemId: TransactionId;
@@ -40,9 +44,10 @@ export interface NewDataItem {
 
   failedBundles: TransactionId[];
   signatureType?: SignatureType;
+  contentType?: ContentType;
   dataStart?: DataStart;
 }
-export type PostedNewDataItem = Omit<Required<NewDataItem>, "uploadedDate">;
+export type PostedNewDataItem = Required<NewDataItem>;
 
 export interface PlannedDataItem extends NewDataItem {
   planId: PlanId;
@@ -136,9 +141,11 @@ interface NewDataItemDB {
 }
 
 export interface NewDataItemDBInsert extends NewDataItemDB {
+  uploaded_date?: string;
   signature_type: number;
   data_start: number;
   failed_bundles: string;
+  content_type: string;
 }
 
 export interface NewDataItemDBResult extends NewDataItemDB {
@@ -147,6 +154,7 @@ export interface NewDataItemDBResult extends NewDataItemDB {
   signature_type: number | null;
   data_start: number | null;
   failed_bundles: string | null;
+  content_type: string | null;
 }
 
 export interface PlannedDataItemDBInsert extends NewDataItemDBInsert {
@@ -183,20 +191,22 @@ interface NewBundleDB extends BundlePlanDBResult {
 }
 
 export interface NewBundleDBInsert extends NewBundleDB {
-  transaction_byte_count: number;
-  header_byte_count: number;
-  payload_byte_count: number;
+  transaction_byte_count: string;
+  header_byte_count: string;
+  payload_byte_count: string;
 }
 
 export interface NewBundleDBResult extends NewBundleDB {
   signed_date: string;
 
-  transaction_byte_count: number | null;
-  header_byte_count: number | null;
-  payload_byte_count: number | null;
+  transaction_byte_count: string | null;
+  header_byte_count: string | null;
+  payload_byte_count: string | null;
 }
 
-export type PostedBundleDbInsert = NewBundleDBResult;
+export interface PostedBundleDbInsert extends NewBundleDBResult {
+  usd_to_ar_rate?: number; // optional, as we don't want to block data item posting if the rate is not available
+}
 
 export interface PostedBundleDBResult extends PostedBundleDbInsert {
   posted_date: string;
