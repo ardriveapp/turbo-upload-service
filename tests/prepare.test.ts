@@ -81,7 +81,7 @@ describe("Prepare bundle job handler", () => {
 
     const bundleTxId = newBundleDbResult[0].bundle_id;
 
-    const bundleTx = await getBundleTx(objectStore, bundleTxId, 2125);
+    const bundleTx = await getBundleTx(objectStore, bundleTxId);
 
     // We expect no tips on bundle transactions by default
     expect(bundleTx.quantity).to.equal("0");

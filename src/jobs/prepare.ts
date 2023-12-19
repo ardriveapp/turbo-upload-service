@@ -32,7 +32,11 @@ import {
 } from "../bundles/assembleBundleHeader";
 import { rawIdFromRawSignature } from "../bundles/rawIdFromRawSignature";
 import { signatureTypeInfo } from "../bundles/verifyDataItem";
-import { gatewayUrl } from "../constants";
+import {
+  arnsContractTxId,
+  gatewayUrl,
+  tickArnsContractEnabled,
+} from "../constants";
 import defaultLogger from "../logger";
 import { PlanId } from "../types/dbTypes";
 import { JWKInterface } from "../types/jwkTypes";
@@ -193,8 +197,21 @@ export async function prepareBundleHandler(
   // Mint $U
   bundleTx.addTag("App-Name", "SmartWeaveAction");
   bundleTx.addTag("App-Version", "0.3.0");
-  bundleTx.addTag("Input", '{ "function": "mint" }');
   bundleTx.addTag("Contract", "KTzTXT_ANmF84fWEKHzWURD1LWd9QaFR9yfYUwH2Lxw");
+  bundleTx.addTag("Input", JSON.stringify({ function: "mint" }));
+
+  // tick arns contract
+  if (tickArnsContractEnabled && arnsContractTxId) {
+    logger.info(
+      "Adding tick interaction to ArNS registry to bundle transaction.",
+      {
+        txId: bundleTx.id,
+        arnsContractTxId,
+      }
+    );
+    bundleTx.addTag("Contract", arnsContractTxId);
+    bundleTx.addTag("Input", JSON.stringify({ function: "tick" }));
+  }
 
   await arweave.signTx(bundleTx, jwk);
 
