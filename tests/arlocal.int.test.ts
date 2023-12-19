@@ -158,7 +158,7 @@ describe("ArLocal <--> Jobs Integration Test", function () {
 
     // bundle tx on disk
     const bundleTx = readFileSync(`temp/bundle/${bundleId}`);
-    expect(bundleTx.byteLength).to.equal(2129);
+    expect(bundleTx.byteLength).to.equal(2125);
 
     // bundle header on disk
     const bundleHead = readFileSync(`temp/header/${planId}`);

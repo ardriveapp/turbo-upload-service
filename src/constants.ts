@@ -50,6 +50,10 @@ export const maxDataItemSize = process.env.MAX_DATA_ITEM_SIZE
   ? +process.env.MAX_DATA_ITEM_SIZE
   : fourGiB;
 
+export const tickArnsContractEnabled =
+  process.env.TICK_ARNS_REGISTRY_ENABLED === "true";
+export const arnsContractTxId = process.env.ARNS_CONTRACT_TX_ID;
+
 export const freeArfsDataAllowLimit = +(
   process.env.FREE_UPLOAD_LIMIT ?? oneKiB * 505
 ); // Extra to account for the header sizes
