@@ -30,16 +30,21 @@ const baseConfig = {
   },
 };
 
-function getDbConnection(host: string) {
-  const dbPort = +(process.env.DB_PORT || 5432);
+function getDbConnection(dbHost: string) {
+  const dbUser = process.env.DB_USER || "postgres";
   const dbPassword = process.env.DB_PASSWORD || "postgres";
+  const dbPort = +(process.env.DB_PORT || 5432);
+  const dbDatabase = process.env.DB_DATABASE || "postgres";
 
   logger.debug("Getting DB Connection", {
-    host,
+    dbUser,
+    dbPassword: '*'.repeat(dbPassword.length),
+    dbHost,
     dbPort,
+    dbDatabase,
   });
 
-  return `postgres://postgres:${dbPassword}@${host}:${dbPort}/postgres?sslmode=disable`;
+  return `postgres://${dbUser}:${dbPassword}@${dbHost}:${dbPort}/${dbDatabase}?sslmode=disable`;
 }
 
 export function getWriterConfig() {
