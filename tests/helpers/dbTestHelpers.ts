@@ -34,6 +34,7 @@ import { TransactionId } from "../../src/types/types";
 import {
   stubBlockHeight,
   stubByteCount,
+  stubDataItemBufferSignature,
   stubDates,
   stubOwnerAddress,
   stubWinstonPrice,
@@ -49,6 +50,8 @@ function stubNewDataItemInsert({
   dataItemId,
   uploadedDate = undefined,
   byte_count = stubByteCount.toString(),
+  signature = stubDataItemBufferSignature,
+  failedBundles = [],
 }: InsertStubNewDataItemParams): NewDataItemDBInsert & {
   uploaded_date: string | undefined;
 } {
@@ -60,20 +63,24 @@ function stubNewDataItemInsert({
     uploaded_date: uploadedDate,
     data_start: 1500,
     signature_type: 1,
-    failed_bundles: "",
+    failed_bundles: failedBundles.join(","),
     content_type: "text/plain",
+    premium_feature_type: "test",
+    signature,
   };
 }
 
 function stubPlannedDataItemInsert({
   dataItemId,
   planId,
-  plannedDate = undefined,
+  plannedDate = stubDates.earliestDate,
+  signature,
+  failedBundles = [],
 }: InsertStubPlannedDataItemParams): PlannedDataItemDBInsert & {
   planned_date: string | undefined;
 } {
   return {
-    ...stubNewDataItemInsert({ dataItemId }),
+    ...stubNewDataItemInsert({ dataItemId, signature, failedBundles }),
     plan_id: planId,
     uploaded_date: stubDates.earliestDate,
     planned_date: plannedDate,
@@ -84,9 +91,20 @@ function stubPermanentDataItemInsert({
   dataItemId,
   planId,
   bundleId,
+  byte_count = stubByteCount.toString(),
 }: InsertStubPermanentDataItemParams): PermanentDataItemDBInsert {
   return {
-    ...stubPlannedDataItemInsert({ dataItemId, planId }),
+    data_item_id: dataItemId,
+    owner_public_address: stubOwnerAddress,
+    byte_count,
+    assessed_winston_price: stubWinstonPrice.toString(),
+    uploaded_date: stubDates.earliestDate,
+    data_start: 1500,
+    signature_type: 1,
+    failed_bundles: "",
+    content_type: "text/plain",
+    premium_feature_type: "test",
+    plan_id: planId,
     planned_date: stubDates.earliestDate,
     bundle_id: bundleId,
     block_height: stubBlockHeight.toString(),
@@ -149,7 +167,7 @@ function stubSeededBundleInsert({
 export class DbTestHelper {
   constructor(public readonly db: PostgresDatabase) {}
 
-  private get knex(): Knex {
+  public get knex(): Knex {
     return this.db["writer"];
   }
 
@@ -184,7 +202,12 @@ export class DbTestHelper {
   }: InsertStubBundlePlanParams) {
     await Promise.all([
       ...dataItemIds.map((dataItemId) =>
-        this.insertStubPlannedDataItem({ dataItemId, planId, plannedDate })
+        this.insertStubPlannedDataItem({
+          dataItemId,
+          planId,
+          plannedDate,
+          signature: stubDataItemBufferSignature, // may not work depending on invariants checked
+        })
       ),
       this.knex(tableNames.bundlePlan).insert({
         plan_id: planId,
@@ -202,7 +225,11 @@ export class DbTestHelper {
   }: InsertStubNewBundleBundleParams): Promise<void> {
     await Promise.all([
       dataItemIds.map((dataItemId) =>
-        this.insertStubPlannedDataItem({ dataItemId, planId })
+        this.insertStubPlannedDataItem({
+          dataItemId,
+          planId,
+          signature: stubDataItemBufferSignature, // may not work depending on invariants checked
+        })
       ),
       this.knex(tableNames.newBundle).insert(
         stubNewBundleInsert({ bundleId, planId, signedDate })
@@ -220,7 +247,11 @@ export class DbTestHelper {
   }: InsertStubPostedBundleBundleParams): Promise<void> {
     await Promise.all([
       dataItemIds.map((dataItemId) =>
-        this.insertStubPlannedDataItem({ dataItemId, planId })
+        this.insertStubPlannedDataItem({
+          dataItemId,
+          planId,
+          signature: stubDataItemBufferSignature, // may not work depending on invariants checked
+        })
       ),
       this.knex(tableNames.postedBundle).insert(
         stubPostedBundleInsert({ bundleId, planId, postedDate, usdToArRate })
@@ -233,9 +264,21 @@ export class DbTestHelper {
     bundleId,
     planId,
     seededDate,
+    dataItemIds = [],
     usdToArRate,
+    failedBundles = [],
   }: InsertStubSeededBundleParams): Promise<void> {
-    return this.knex(tableNames.seededBundle).insert(
+    await Promise.all([
+      dataItemIds.map((dataItemId) =>
+        this.insertStubPlannedDataItem({
+          dataItemId,
+          planId,
+          signature: stubDataItemBufferSignature,
+          failedBundles,
+        })
+      ),
+    ]);
+    await this.knex(tableNames.seededBundle).insert(
       stubSeededBundleInsert({ bundleId, planId, seededDate, usdToArRate })
     );
   }
@@ -338,6 +381,8 @@ interface InsertStubNewDataItemParams {
   dataItemId: TransactionId;
   uploadedDate?: string;
   byte_count?: string;
+  signature?: Buffer;
+  failedBundles?: string[];
 }
 
 interface InsertStubPlannedDataItemParams
@@ -373,6 +418,7 @@ interface InsertStubPostedBundleBundleParams
 interface InsertStubSeededBundleParams
   extends Omit<InsertStubPostedBundleBundleParams, "postedDate"> {
   seededDate?: Timestamp;
+  failedBundles?: string[];
 }
 
 type TableNameKeys = keyof typeof tableNames;

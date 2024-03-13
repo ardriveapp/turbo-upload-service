@@ -20,9 +20,9 @@ import pLimit from "p-limit";
 import winston from "winston";
 
 import { ObjectStore } from "../arch/objectStore";
-import { octetStreamContentType } from "../constants";
 import { ParsedDataItemHeader } from "../types/types";
 import { fromB64Url, ownerToAddress, toB64Url } from "./base64";
+import { payloadContentTypeFromDecodedTags } from "./common";
 import { getOpticalWallet } from "./getArweaveWallet";
 import { getDataItemData, getS3ObjectStore } from "./objectStoreUtils";
 
@@ -114,7 +114,7 @@ export async function getNestedDataItemHeaders({
         bdiDataItemId
       );
 
-      logger.info("Processing BDI stream...", {
+      logger.debug("Processing BDI stream...", {
         bdiDataItemId,
       });
 
@@ -123,7 +123,7 @@ export async function getNestedDataItemHeaders({
         dataItemReadable
       )) as ParsedDataItemHeader[];
 
-      logger.info("Finished processing BDI stream.", {
+      logger.debug("Finished processing BDI stream.", {
         bdiDataItemId,
         parsedDataItemHeaders,
       });
@@ -136,10 +136,7 @@ export async function getNestedDataItemHeaders({
             const decodedTags = parsedDataItemHeader.tags;
 
             // Get content type from tag if possible
-            const contentType =
-              decodedTags
-                .filter((tag) => tag.name.toLowerCase() === "content-type")
-                .shift()?.value || octetStreamContentType;
+            const contentType = payloadContentTypeFromDecodedTags(decodedTags);
 
             return {
               id: parsedDataItemHeader.id,

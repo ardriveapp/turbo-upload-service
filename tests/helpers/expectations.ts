@@ -49,7 +49,7 @@ export function assertExpectedHeadersWithContentLength(
   );
 }
 
-const expectedHeadersWithContentLength = (contentLength: number) => {
+function expectedHeadersWithContentLength(contentLength: number) {
   // Headers without `date` for deep equality check
   // `date` value is not consistently predictable
   return {
@@ -57,7 +57,7 @@ const expectedHeadersWithContentLength = (contentLength: number) => {
     "content-length": `${contentLength}`,
     connection: "close",
   };
-};
+}
 
 interface NewDataItemExpectations {
   expectedDataItemId: TransactionId;

@@ -19,12 +19,24 @@ import pLimit from "p-limit";
 import path from "path";
 import winston from "winston";
 
-import { failedReasons, maxDataItemLimit } from "../../constants";
+import {
+  batchingSize,
+  failedReasons,
+  maxDataItemsPerBundle,
+} from "../../constants";
 import logger from "../../logger";
 import {
   BundlePlanDBResult,
   FailedBundleDbInsert,
+  FinishedMultiPartUpload,
+  FinishedMultiPartUploadDBInsert,
+  FinishedMultiPartUploadDBResult,
+  InFlightMultiPartUpload,
+  InFlightMultiPartUploadDBInsert,
+  InFlightMultiPartUploadDBResult,
+  InFlightMultiPartUploadParams,
   InsertNewBundleParams,
+  MultipartUploadFailedReason,
   NewBundle,
   NewBundleDBInsert,
   NewBundleDBResult,
@@ -37,23 +49,26 @@ import {
   PermanentDataItemDBResult,
   PlanId,
   PlannedDataItem,
+  PlannedDataItemDBInsert,
   PlannedDataItemDBResult,
   PostedBundle,
   PostedBundleDBResult,
   PostedNewDataItem,
+  RePackDataItemDbInsert,
   SeededBundle,
   SeededBundleDBResult,
 } from "../../types/dbTypes";
-import { TransactionId, W, Winston } from "../../types/types";
-import { filterKeysFromObject } from "../../utils/common";
+import { TransactionId, UploadId, W, Winston } from "../../types/types";
+import { generateArrayChunks } from "../../utils/common";
 import {
   BundlePlanExistsInAnotherStateWarning,
   DataItemExistsWarning,
+  MultiPartUploadNotFound,
   PostgresError,
   postgresInsertFailedPrimaryKeyNotUniqueCode,
   postgresTableRowsLockedUniqueCode,
 } from "../../utils/errors";
-import { Database } from "./database";
+import { Database, UpdateDataItemsToPermanentParams } from "./database";
 import { columnNames, tableNames } from "./dbConstants";
 import {
   newBundleDbResultToNewBundleMap,
@@ -72,6 +87,7 @@ export class PostgresDatabase implements Database {
   constructor({
     writer = knex(getWriterConfig()),
     reader = knex(getReaderConfig()),
+    // TODO: add tracer for spans
     migrate = false,
   }: {
     writer?: Knex;
@@ -94,14 +110,13 @@ export class PostgresDatabase implements Database {
   public async insertNewDataItem(
     newDataItem: PostedNewDataItem
   ): Promise<void> {
-    this.log.info("Inserting new data item...", {
-      dataItem: newDataItem,
+    const { signature, ...restOfNewDataItem } = newDataItem;
+    this.log.debug("Inserting new data item...", {
+      dataItem: restOfNewDataItem,
     });
 
-    const dataItemExistsWarningMessage = `Data item with ID ${newDataItem.dataItemId} has already been uploaded to this service!`;
-
     if (await this.dataItemExists(newDataItem.dataItemId)) {
-      throw new DataItemExistsWarning(dataItemExistsWarningMessage);
+      throw new DataItemExistsWarning(newDataItem.dataItemId);
     }
 
     try {
@@ -114,7 +129,7 @@ export class PostgresDatabase implements Database {
         (error as PostgresError).code ===
         postgresInsertFailedPrimaryKeyNotUniqueCode
       ) {
-        throw new DataItemExistsWarning(dataItemExistsWarningMessage);
+        throw new DataItemExistsWarning(newDataItem.dataItemId);
       }
 
       // Log and re throw other unknown errors on insert
@@ -157,42 +172,61 @@ export class PostgresDatabase implements Database {
     byteCount,
     dataItemId,
     ownerPublicAddress,
-    dataStart,
+    payloadDataStart,
     signatureType,
     failedBundles,
     uploadedDate,
-    contentType,
+    payloadContentType,
+    premiumFeatureType,
+    signature,
   }: PostedNewDataItem): NewDataItemDBInsert {
     return {
       assessed_winston_price: assessedWinstonPrice.toString(),
       byte_count: byteCount.toString(),
       data_item_id: dataItemId,
       owner_public_address: ownerPublicAddress,
-      data_start: dataStart,
+      data_start: payloadDataStart,
       failed_bundles: failedBundles.length > 0 ? failedBundles.join(",") : "",
       signature_type: signatureType,
       uploaded_date: uploadedDate,
-      content_type: contentType,
+      content_type: payloadContentType,
+      premium_feature_type: premiumFeatureType,
+      signature,
     };
   }
 
   public async getNewDataItems(): Promise<NewDataItem[]> {
-    this.log.info("Getting new data items from database...");
+    this.log.debug("Getting new data items from database...");
 
     try {
       /**
        * Note: Locking will only occur for the duration of this query, it will be released
        * once the query completes.
        */
-      const dbResult = await this.writer<NewDataItemDBResult>(
-        tableNames.newDataItem
-      )
-        .orderBy("uploaded_date")
-        // Limit this getter to 5 times the amount max data items allowed in a bundle
-        .limit(maxDataItemLimit * 5)
-        .forUpdate() // lock rows
-        .noWait(); // don't wait for fetching locked rows, throws errors
-
+      // Using a raw query here due to the db driver's behavior of returning uploaded_date in the "wrong" UTC timezone
+      const fetchStartTimestamp = Date.now();
+      const dbResult: (NewDataItemDBResult & { uploaded_date_utc: string })[] =
+        (
+          (await this.writer.raw(
+            `SELECT *, uploaded_date AT TIME ZONE 'UTC' as uploaded_date_utc
+              FROM ${tableNames.newDataItem}
+              ORDER BY uploaded_date
+              LIMIT ${maxDataItemsPerBundle * 5}
+              FOR UPDATE
+              NOWAIT
+            `
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          )) as any
+        ).rows;
+      dbResult.forEach((result) => {
+        result.uploaded_date = result.uploaded_date_utc;
+      });
+      const durationMs = Date.now() - fetchStartTimestamp;
+      this.log.info(`Fetched new data items from database.`, {
+        count: dbResult.length,
+        durationMs,
+        msPerRow: durationMs / dbResult.length,
+      });
       return dbResult.map(newDataItemDbResultToNewDataItemMap);
     } catch (error) {
       if ((error as PostgresError).code === postgresTableRowsLockedUniqueCode) {
@@ -206,93 +240,98 @@ export class PostgresDatabase implements Database {
     }
   }
 
-  public insertBundlePlan(
+  public async insertBundlePlan(
     planId: PlanId,
     dataItemIds: TransactionId[]
   ): Promise<void> {
-    const PARALLEL_LIMIT = 10;
-    const parallelLimit = pLimit(PARALLEL_LIMIT);
-
-    this.log.info("Inserting bundle plan...", {
+    this.log.debug("Inserting bundle plan...", {
       planId,
       dataItemIds,
     });
 
-    return this.writer.transaction(async (knexTransaction) => {
-      let encounteredEmptyOrLockedDataItem = false;
-      const { planned_date } = (
-        await knexTransaction<BundlePlanDBResult>(tableNames.bundlePlan)
-          .insert({ plan_id: planId })
-          .returning("planned_date")
-      )[0];
+    const dataItemIdBatches = [
+      ...generateArrayChunks<TransactionId>(dataItemIds, batchingSize),
+    ];
 
-      const newDataItemPromises = dataItemIds.map((data_item_id) =>
-        parallelLimit(async () => {
-          try {
-            /**
-             * Delete the existing NewDataItem, deriving existing info
-             * Note: 'DELETE' acquires a lock using 'FOR UPDATE', but we want to make sure we do not wait
-             * to acquire the lock, so we add both 'FOR UPDATE' and 'NO WAIT' explicitly
-             **/
-            const [newDataItem] = await knexTransaction<NewDataItemDBResult>(
-              tableNames.newDataItem
-            )
-              .where({ data_item_id })
-              .forUpdate() // lock row while we are deleting it
-              .noWait() // throw errors if unable to acquire
-              .del() // once it is are deleted, it can't be included in another bundle
-              .returning("*");
-            if (newDataItem) {
-              await knexTransaction(tableNames.plannedDataItem).insert({
-                ...newDataItem,
-                plan_id: planId,
-                planned_date,
-              });
-            } else {
-              // the data item has already been assigned a bundle plan and deleted
-              encounteredEmptyOrLockedDataItem = true;
-            }
-          } catch (error) {
-            if (
-              (error as PostgresError).code ===
-              postgresTableRowsLockedUniqueCode
-            ) {
-              this.log.warn(
-                "Data items are locked by another execution...skipping"
-              );
-              encounteredEmptyOrLockedDataItem = true;
-              return;
-            }
-            throw error;
-          }
-        })
+    const { planned_date } = (
+      await this.writer<BundlePlanDBResult>(tableNames.bundlePlan)
+        .insert({ plan_id: planId })
+        .returning("planned_date")
+    )[0];
+
+    let encounteredEmptyOrLockedDataItem = false;
+
+    try {
+      logger.debug(
+        `Batch moving ${dataItemIdBatches.length} batches of ${batchingSize} or less data items from ${tableNames.newDataItem} table to  ${tableNames.plannedDataItem} table...`
       );
+      let batchNumber = 1;
+      for (const dataItemIds of dataItemIdBatches) {
+        logger.debug(
+          `Moving batch ${batchNumber} of ${dataItemIdBatches.length} from ${tableNames.newDataItem} table to ${tableNames.plannedDataItem} table...`
+        );
+        await this.writer.transaction(async (knexTransaction) => {
+          const deletedDataItems = await knexTransaction<NewDataItemDBResult>(
+            tableNames.newDataItem
+          )
+            .whereIn("data_item_id", dataItemIds)
+            .forUpdate()
+            .noWait()
+            .del()
+            .returning("*");
 
-      await Promise.all(newDataItemPromises);
+          const dbInserts: PlannedDataItemDBInsert[] = deletedDataItems.map(
+            (deletedDataItem) => ({
+              ...deletedDataItem,
+              plan_id: planId,
+              planned_date,
+            })
+          );
 
-      // Confirm there are actually data items in the bundled plan, remove if not
-      if (encounteredEmptyOrLockedDataItem) {
-        const bundledDataItems = await knexTransaction(
-          tableNames.plannedDataItem
-        ).where({ plan_id: planId });
+          await knexTransaction.batchInsert<
+            PlannedDataItemDBInsert,
+            PlannedDataItemDBResult
+          >(tableNames.plannedDataItem, dbInserts);
+        });
 
-        if (!bundledDataItems.length) {
-          this.log.warn("No data items in bundle plan, removing...", {
-            planId,
-          });
-          // remove empty bundle plan immediately so it doesn't get shared
-          await knexTransaction(tableNames.bundlePlan)
-            .where({ plan_id: planId })
-            .del();
-        }
+        logger.debug(
+          `Finished moving batch ${batchNumber++} of ${
+            dataItemIdBatches.length
+          } from ${tableNames.newDataItem} table to ${
+            tableNames.plannedDataItem
+          } table...`
+        );
       }
-    });
+    } catch (error) {
+      if ((error as PostgresError).code === postgresTableRowsLockedUniqueCode) {
+        this.log.warn("Data items are locked by another execution...skipping");
+        encounteredEmptyOrLockedDataItem = true;
+      }
+      throw error;
+    }
+
+    // Confirm there are actually data items in the bundled plan, remove if not
+    if (encounteredEmptyOrLockedDataItem) {
+      const bundledDataItems = await this.reader(
+        tableNames.plannedDataItem
+      ).where({ plan_id: planId });
+
+      if (!bundledDataItems.length) {
+        this.log.warn("No data items in bundle plan, removing...", {
+          planId,
+        });
+        // remove empty bundle plan immediately so it doesn't get shared
+        await this.writer(tableNames.bundlePlan)
+          .where({ plan_id: planId })
+          .del();
+      }
+    }
   }
 
   public async getPlannedDataItemsForPlanId(
     planId: PlanId
   ): Promise<PlannedDataItem[]> {
-    this.log.info("Getting planned data items from database...", { planId });
+    this.log.debug("Getting planned data items from database...", { planId });
 
     // Check if bundle plan still exists before getting planned data items
     const bundlePlanDbResult = await this.reader<BundlePlanDBResult>(
@@ -305,19 +344,31 @@ export class PostgresDatabase implements Database {
       return [];
     }
 
+    return this.getPlannedDataItemsByPlanId(planId);
+  }
+
+  private async getPlannedDataItemsByPlanId(
+    planId: PlanId
+  ): Promise<PlannedDataItem[]> {
     const plannedDataItemDbResult = await this.reader<PlannedDataItemDBResult>(
       tableNames.plannedDataItem
     ).where({
       plan_id: planId,
     });
 
-    if (plannedDataItemDbResult.length === 0) {
-      throw Error(`No planned_data_item found for plan id ${planId}!`);
-    }
-
     return plannedDataItemDbResult.map(
       plannedDataItemDbResultToPlannedDataItemMap
     );
+  }
+
+  public getPlannedDataItemsForVerification(
+    planId: PlanId
+  ): Promise<PlannedDataItem[]> {
+    this.log.debug("Getting planned data items for verification...", {
+      planId,
+    });
+
+    return this.getPlannedDataItemsByPlanId(planId);
   }
 
   public insertNewBundle({
@@ -328,7 +379,7 @@ export class PostgresDatabase implements Database {
     payloadByteCount,
     transactionByteCount,
   }: InsertNewBundleParams): Promise<void> {
-    this.log.info("Inserting new bundle...", {
+    this.log.debug("Inserting new bundle...", {
       bundleId,
       planId,
       reward: reward.toString(),
@@ -390,7 +441,7 @@ export class PostgresDatabase implements Database {
   }
 
   public async getNextBundleToPostByPlanId(planId: PlanId): Promise<NewBundle> {
-    this.log.info("Getting new_bundle from database...", { planId });
+    this.log.debug("Getting new_bundle from database...", { planId });
 
     const newBundleDbResult = await this.writer<NewBundleDBResult>(
       tableNames.newBundle
@@ -410,7 +461,7 @@ export class PostgresDatabase implements Database {
     bundleId: TransactionId;
     usdToArRate?: number;
   }): Promise<void> {
-    this.log.info("Inserting posted bundle...", {
+    this.log.debug("Inserting posted bundle...", {
       bundleId,
       usdToArRate,
     });
@@ -437,7 +488,7 @@ export class PostgresDatabase implements Database {
     bundleToSeed: PostedBundle;
     dataItemsToSeed: PlannedDataItem[];
   }> {
-    this.log.info("Getting posted bundle from database...", { planId });
+    this.log.debug("Getting posted bundle from database...", { planId });
 
     const postedBundleDbResult = await this.writer<PostedBundleDBResult>(
       tableNames.postedBundle
@@ -462,7 +513,7 @@ export class PostgresDatabase implements Database {
   }
 
   public insertSeededBundle(bundleId: TransactionId): Promise<void> {
-    this.log.info("Inserting seeded bundle with ID: ", { bundleId });
+    this.log.debug("Inserting seeded bundle with ID: ", { bundleId });
 
     return this.writer.transaction(async (knexTransaction) => {
       const postedBundleDbResult = (
@@ -478,8 +529,8 @@ export class PostgresDatabase implements Database {
     });
   }
 
-  public async getSeededBundles(limit = 100): Promise<SeededBundle[]> {
-    this.log.info("Getting seeded results from database...", {
+  public async getSeededBundles(limit = 50): Promise<SeededBundle[]> {
+    this.log.debug("Getting seeded bundles from database...", {
       limit,
     });
 
@@ -523,120 +574,187 @@ export class PostgresDatabase implements Database {
           .returning("*")
       )[0];
 
-      // Retrieve all the planned data items that were in the seeded bundle entry
-      const plannedDataItemDbResult = await dbTx<PlannedDataItemDBResult>(
-        tableNames.plannedDataItem
-      ).where({ plan_id: planId });
-
-      const promises = [
-        dbTx(tableNames.permanentBundle).insert<PermanentBundleDbInsert>({
-          ...seededBundleDbResult,
-          indexed_on_gql: indexedOnGQL,
-          block_height: blockHeight,
-        }),
-      ];
-
-      for (const dataItem of plannedDataItemDbResult) {
-        const data_item_id = dataItem.data_item_id;
-        const permanentDataItemInsert: PermanentDataItemDBInsert = {
-          ...dataItem,
-          bundle_id: seededBundleDbResult.bundle_id,
-          block_height: blockHeight.toString(),
-        };
-
-        promises.push(
-          dbTx(tableNames.plannedDataItem).where({ data_item_id }).del(),
-          dbTx(tableNames.permanentDataItem).insert(permanentDataItemInsert)
-        );
-      }
-
-      await Promise.all(promises);
+      // Insert permanent bundle entry
+      await dbTx(tableNames.permanentBundle).insert<PermanentBundleDbInsert>({
+        ...seededBundleDbResult,
+        indexed_on_gql: indexedOnGQL,
+        block_height: blockHeight,
+      });
     });
   }
 
-  public async updateBundleAsDropped(planId: string): Promise<void> {
+  public async updateDataItemsAsPermanent({
+    dataItemIds,
+    blockHeight,
+    bundleId,
+  }: UpdateDataItemsToPermanentParams): Promise<void> {
+    if (dataItemIds.length > batchingSize) {
+      throw Error(
+        `This method expects ${batchingSize} data items at a time! Please batch those data items up`
+      );
+    }
+
+    return this.writer.transaction(async (dbTx) => {
+      const dataItems = await dbTx<PlannedDataItemDBResult>(
+        tableNames.plannedDataItem
+      )
+        .whereIn(columnNames.dataItemId, dataItemIds)
+        .del()
+        .returning("*");
+
+      const permanentDataItemInserts: PermanentDataItemDBInsert[] =
+        dataItems.map(({ signature: _, ...restOfPlannedDataItem }) => ({
+          ...restOfPlannedDataItem,
+          block_height: blockHeight.toString(),
+          bundle_id: bundleId,
+        }));
+
+      await dbTx.batchInsert<PermanentDataItemDBResult>(
+        tableNames.permanentDataItem,
+        permanentDataItemInserts
+      );
+    });
+  }
+
+  public async updateDataItemsToBeRePacked(
+    dataItemIds: TransactionId[],
+    failedBundleId: TransactionId
+  ): Promise<void> {
+    if (dataItemIds.length > batchingSize) {
+      throw Error(
+        `This method expects ${batchingSize} data items at a time! Please batch those data items up`
+      );
+    }
+
+    this.log.info("Updating data items to be re packed...", {
+      dataItemIds,
+      failedBundleId,
+    });
+
+    return this.writer.transaction(async (knexTransaction) => {
+      const deletedDataItems = await knexTransaction<PlannedDataItemDBResult>(
+        tableNames.plannedDataItem
+      )
+        .whereIn("data_item_id", dataItemIds)
+        .del()
+        .returning("*");
+
+      const dbInserts: RePackDataItemDbInsert[] = deletedDataItems.map(
+        ({ plan_id: _pi, planned_date: _pd, ...restOfDataItem }) => ({
+          ...restOfDataItem,
+          failed_bundles: [
+            ...(restOfDataItem.failed_bundles
+              ? restOfDataItem.failed_bundles.split(",")
+              : []),
+            failedBundleId,
+          ].join(","),
+        })
+      );
+
+      await knexTransaction.batchInsert<
+        RePackDataItemDbInsert,
+        NewDataItemDBResult
+      >(tableNames.newDataItem, dbInserts);
+    });
+  }
+
+  public async updateSeededBundleToDropped(
+    planId: PlanId,
+    bundleId: TransactionId
+  ): Promise<void> {
+    await this.rePackDataItemsForPlanId(planId, bundleId);
+
+    // Now that we've moved all the planned data items to new data items, we will delete the seeded bundle and insert as a failed bundle
     await this.writer.transaction(async (dbTx) => {
-      // Delete the seeded bundle entity
-      const seededBundleDeleteDbResult = (
+      const seededBundleDbResult = (
         await dbTx<SeededBundleDBResult>(tableNames.seededBundle)
           .where({ plan_id: planId })
           .del()
           .returning("*")
       )[0];
-
-      // Retrieve all the planned data items that were in the seeded bundle entity
-      const plannedDataItemDbResult = await dbTx<PlannedDataItemDBResult>(
-        tableNames.plannedDataItem
-      ).where({ plan_id: planId });
-
-      const failedBundleDbInsert: FailedBundleDbInsert = {
-        ...seededBundleDeleteDbResult,
+      await dbTx(tableNames.failedBundle).insert<FailedBundleDbInsert>({
+        ...seededBundleDbResult,
         failed_reason: failedReasons.notFound,
-      };
-
-      const promises = [
-        dbTx(tableNames.failedBundle).insert(failedBundleDbInsert),
-      ];
-
-      for (const dataItem of plannedDataItemDbResult) {
-        promises.push(
-          dbTx(tableNames.plannedDataItem)
-            .where({ data_item_id: dataItem.data_item_id })
-            .del(),
-          dbTx(tableNames.newDataItem).insert(
-            filterKeysFromObject(dataItem, ["plan_id", "planned_date"])
-          )
-        );
-      }
-
-      await Promise.all(promises);
+      });
     });
   }
 
   // Migrates new bundle that failed the post bundle job and its planned data items to their failed and unplanned ("new") counterparts, respectively
-  public async insertFailedToPostBundle(
+  public async updateNewBundleToFailedToPost(
+    planId: PlanId,
     bundleId: TransactionId
   ): Promise<void> {
-    // Delete the new bundle entity
-    const newBundleDbResult = (
-      await this.writer<NewBundleDBResult>(tableNames.newBundle)
-        .where({ bundle_id: bundleId })
-        .del()
-        .returning("*")
-    )[0];
+    this.log.info("Inserting failed to post bundle...", { bundleId, planId });
+    await this.rePackDataItemsForPlanId(planId, bundleId);
+    await this.writer.transaction(async (dbTx) => {
+      const newBundleDbResult = (
+        await dbTx<NewBundleDBResult>(tableNames.newBundle)
+          .where({ bundle_id: bundleId })
+          .del()
+          .returning("*")
+      )[0];
 
-    // Retrieve all the planned data items that were in the new bundle entity
-    const plannedDataItemDbResult = await this.writer<PlannedDataItemDBResult>(
+      const failedBundleDbInsert: FailedBundleDbInsert = {
+        ...newBundleDbResult,
+        // Stub in planned_date for posted/seeded date as the columns are non-nullable. TODO: PE-5637 -- make these columns nullable
+        posted_date: newBundleDbResult.planned_date,
+        seeded_date: newBundleDbResult.planned_date,
+        failed_reason: failedReasons.failedToPost,
+      };
+
+      await dbTx(tableNames.failedBundle).insert(failedBundleDbInsert);
+    });
+  }
+
+  /** For a given plan Id, move data items from planned_data_item to new_data_item for repacking in plan job */
+  private async rePackDataItemsForPlanId(
+    planId: PlanId,
+    failedBundleId: TransactionId
+  ): Promise<void> {
+    const plannedDataItems = await this.reader<PlannedDataItemDBResult>(
       tableNames.plannedDataItem
-    ).where({ plan_id: newBundleDbResult.plan_id });
-    const failedBundleDbInsert: FailedBundleDbInsert = {
-      ...newBundleDbResult,
-      seeded_date: newBundleDbResult.planned_date,
-      posted_date: newBundleDbResult.planned_date,
-      failed_reason: failedReasons.failedToPost,
-    };
+    ).where({ plan_id: planId });
 
-    const promises = [
-      // Insert a failed bundle entity
-      this.writer<FailedBundleDbInsert>(tableNames.failedBundle).insert(
-        failedBundleDbInsert
+    const newDataItemInserts = plannedDataItems.map(
+      ({ plan_id: _pi, planned_date: _pd, failed_bundles, ...rest }) => {
+        const failedBundlesArray = failed_bundles
+          ? failed_bundles.split(",")
+          : [];
+        failedBundlesArray.push(failedBundleId);
+
+        return {
+          ...rest,
+          failed_bundles: failedBundlesArray.join(","),
+        };
+      }
+    );
+
+    const rePackDataItemInsertBatches = [
+      ...generateArrayChunks<RePackDataItemDbInsert>(
+        newDataItemInserts,
+        batchingSize
       ),
     ];
+    const parallelLimit = pLimit(1);
+    const transactionPromises = rePackDataItemInsertBatches.map((batch) =>
+      parallelLimit(() =>
+        // Each batch will insert and delete in its own atomic transaction
+        this.writer.transaction(async (dbTx) => {
+          await dbTx.batchInsert<NewDataItemDBResult>(
+            tableNames.newDataItem,
+            batch
+          );
+          await dbTx(tableNames.plannedDataItem)
+            .whereIn(
+              columnNames.dataItemId,
+              batch.map((b) => b.data_item_id)
+            )
+            .del();
+        })
+      )
+    );
 
-    for (const dataItem of plannedDataItemDbResult) {
-      promises.push(
-        // Delete planned Data Item
-        this.writer(tableNames.plannedDataItem)
-          .where({ data_item_id: dataItem.data_item_id })
-          .del(),
-        // Insert new data item
-        this.writer(tableNames.newDataItem).insert(
-          filterKeysFromObject(dataItem, ["plan_id", "planned_date"])
-        )
-      );
-    }
-
-    await Promise.all(promises);
+    await Promise.all(transactionPromises);
   }
 
   public async getDataItemInfo(dataItemId: string): Promise<
@@ -644,37 +762,66 @@ export class PostgresDatabase implements Database {
         status: "new" | "pending" | "permanent";
         assessedWinstonPrice: Winston;
         bundleId?: string | undefined;
+        uploadedTimestamp: number;
       }
     | undefined
   > {
-    this.log.info("Getting data item info...", {
+    this.log.debug("Getting data item info...", {
       dataItemId,
     });
 
-    const newDataItemDbResult = await this.writer<NewDataItemDBResult>(
+    // Check for brand new data item
+    const newDataItemDbResult = await this.reader<NewDataItemDBResult>(
       tableNames.newDataItem
     ).where({ data_item_id: dataItemId });
     if (newDataItemDbResult.length > 0) {
       return {
         status: "new",
         assessedWinstonPrice: W(newDataItemDbResult[0].assessed_winston_price),
+        // TODO: HANDLE POSTGRES TIMEZONE ISSUE IF NECESSARY
+        uploadedTimestamp: new Date(
+          newDataItemDbResult[0].uploaded_date
+        ).getTime(),
       };
     }
 
-    const plannedDataItemDbResult = await this.writer<PlannedDataItemDBResult>(
+    // Check for a bundled data item that's not yet permanent
+    const plannedDataItemDbResult = await this.reader<PlannedDataItemDBResult>(
       tableNames.plannedDataItem
     ).where({ data_item_id: dataItemId });
     if (plannedDataItemDbResult.length > 0) {
+      const bundleDbResult = await Promise.all([
+        this.reader<NewBundleDBResult>(tableNames.newBundle).where({
+          plan_id: plannedDataItemDbResult[0].plan_id,
+        }),
+        this.reader<PostedBundleDBResult>(tableNames.postedBundle).where({
+          plan_id: plannedDataItemDbResult[0].plan_id,
+        }),
+        this.reader<SeededBundleDBResult>(tableNames.seededBundle).where({
+          plan_id: plannedDataItemDbResult[0].plan_id,
+        }),
+      ]).then((results) => {
+        return results.flat();
+      });
+
+      const bundleId =
+        bundleDbResult.length > 0 ? bundleDbResult[0].bundle_id : undefined;
+
       return {
         status: "pending",
         assessedWinstonPrice: W(
           plannedDataItemDbResult[0].assessed_winston_price
         ),
+        bundleId,
+        uploadedTimestamp: new Date(
+          plannedDataItemDbResult[0].uploaded_date
+        ).getTime(),
       };
     }
 
+    // Check for a permanent data item
     const permanentDataItemDbResult =
-      await this.writer<PermanentDataItemDBResult>(
+      await this.reader<PermanentDataItemDBResult>(
         tableNames.permanentDataItem
       ).where({ data_item_id: dataItemId });
     if (permanentDataItemDbResult.length > 0) {
@@ -684,6 +831,9 @@ export class PostgresDatabase implements Database {
           permanentDataItemDbResult[0].assessed_winston_price
         ),
         bundleId: permanentDataItemDbResult[0].bundle_id,
+        uploadedTimestamp: new Date(
+          permanentDataItemDbResult[0].uploaded_date
+        ).getTime(),
       };
     }
 
@@ -694,7 +844,7 @@ export class PostgresDatabase implements Database {
   public async getLastDataItemInBundle(
     plan_id: string
   ): Promise<PlannedDataItem> {
-    this.log.info("Getting last data item in bundle ...", {
+    this.log.debug("Getting last data item in bundle ...", {
       plan_id,
     });
 
@@ -709,4 +859,264 @@ export class PostgresDatabase implements Database {
       throw Error(`No data items found for plan_id :${plan_id}`);
     }
   }
+
+  public async insertInFlightMultiPartUpload({
+    uploadId,
+    uploadKey,
+  }: InFlightMultiPartUploadParams): Promise<void> {
+    this.log.debug("Inserting in flight multipart upload...", {
+      uploadId,
+      uploadKey,
+    });
+
+    return this.writer.transaction(async (knexTransaction) => {
+      await knexTransaction(tableNames.inFlightMultiPartUpload).insert({
+        upload_id: uploadId,
+        upload_key: uploadKey,
+      });
+    });
+  }
+
+  public async finalizeMultiPartUpload({
+    dataItemId,
+    etag,
+    uploadId,
+  }: {
+    uploadId: UploadId;
+    etag: string;
+    dataItemId: string;
+  }) {
+    this.log.debug("Finalizing multipart upload...", {
+      uploadId,
+    });
+
+    return this.writer.transaction(async (knexTransaction) => {
+      const inFlightMultiPartUploadDbResult = (
+        await knexTransaction<InFlightMultiPartUploadDBResult>(
+          tableNames.inFlightMultiPartUpload
+        )
+          .where({ upload_id: uploadId })
+          .del()
+          .returning("*")
+      )[0];
+
+      if (!inFlightMultiPartUploadDbResult) {
+        this.log.debug("In-flight multipart upload not found!", {
+          uploadId,
+        });
+        throw new MultiPartUploadNotFound(uploadId);
+      }
+
+      await knexTransaction(
+        tableNames.finishedMultiPartUpload
+      ).insert<FinishedMultiPartUploadDBInsert>({
+        ...inFlightMultiPartUploadDbResult,
+        etag,
+        data_item_id: dataItemId,
+      });
+    });
+  }
+
+  public async getInflightMultiPartUpload(
+    uploadId: UploadId
+  ): Promise<InFlightMultiPartUpload> {
+    this.log.debug("Getting in flight multipart upload...", {
+      uploadId,
+    });
+
+    const inFlightUpload = await this.reader<InFlightMultiPartUploadDBResult>(
+      tableNames.inFlightMultiPartUpload
+    )
+      .where({ upload_id: uploadId })
+      .first();
+
+    if (!inFlightUpload) {
+      this.log.debug("In-flight multipart upload not found!", {
+        uploadId,
+      });
+      throw new MultiPartUploadNotFound(uploadId);
+    }
+
+    return {
+      uploadId: inFlightUpload.upload_id,
+      uploadKey: inFlightUpload.upload_key,
+      createdAt: inFlightUpload.created_at,
+      expiresAt: inFlightUpload.expires_at,
+      chunkSize: inFlightUpload.chunk_size
+        ? +inFlightUpload.chunk_size
+        : undefined,
+      failedReason: isMultipartUploadFailedReason(inFlightUpload.failed_reason)
+        ? inFlightUpload.failed_reason
+        : undefined,
+    };
+  }
+
+  public async failInflightMultiPartUpload({
+    uploadId,
+    failedReason,
+  }: {
+    uploadId: UploadId;
+    failedReason: MultipartUploadFailedReason;
+  }): Promise<InFlightMultiPartUpload> {
+    this.log.info("Failing in flight multipart upload...", {
+      uploadId,
+      failedReason,
+    });
+
+    return this.writer.transaction(async (knexTransaction) => {
+      // begin by failing the in flight upload
+      const updatedInFlightUpload = (
+        await knexTransaction<InFlightMultiPartUploadDBResult>(
+          tableNames.inFlightMultiPartUpload
+        )
+          .update({
+            failed_reason: failedReason,
+          })
+          .where({ upload_id: uploadId })
+          .returning("*")
+      )[0];
+
+      // end by cleaning up all in flight uploads that are past their expires_at date
+      const numDeletedRows =
+        await knexTransaction<InFlightMultiPartUploadDBResult>(
+          tableNames.inFlightMultiPartUpload
+        )
+          .whereRaw("expires_at < NOW()")
+          .del();
+
+      this.log.info(
+        `Deleted ${numDeletedRows} in flight uploads past their expired dates.`
+      );
+
+      return {
+        uploadId: updatedInFlightUpload.upload_id,
+        uploadKey: updatedInFlightUpload.upload_key,
+        createdAt: updatedInFlightUpload.created_at,
+        expiresAt: updatedInFlightUpload.expires_at,
+        chunkSize: updatedInFlightUpload.chunk_size
+          ? +updatedInFlightUpload.chunk_size
+          : undefined,
+        failedReason: isMultipartUploadFailedReason(
+          updatedInFlightUpload.failed_reason
+        )
+          ? updatedInFlightUpload.failed_reason
+          : undefined,
+      };
+    });
+  }
+
+  public async failFinishedMultiPartUpload({
+    uploadId,
+    failedReason,
+  }: {
+    uploadId: UploadId;
+    failedReason: MultipartUploadFailedReason;
+  }): Promise<FinishedMultiPartUpload> {
+    this.log.info("Failing finished multipart upload...", {
+      uploadId,
+      failedReason,
+    });
+
+    return this.writer.transaction(async (knexTransaction) => {
+      // begin by failing the finished upload
+      const updatedFinishedUpload = (
+        await knexTransaction<FinishedMultiPartUploadDBResult>(
+          tableNames.finishedMultiPartUpload
+        )
+          .update({
+            failed_reason: failedReason,
+          })
+          .where({ upload_id: uploadId })
+          .returning("*")
+      )[0];
+
+      // end by cleaning up all in flight uploads that are past their expires_at date
+      const numDeletedRows =
+        await knexTransaction<InFlightMultiPartUploadDBResult>(
+          tableNames.inFlightMultiPartUpload
+        )
+          .whereRaw("expires_at < NOW()")
+          .del();
+
+      this.log.info(
+        `Deleted ${numDeletedRows} in flight uploads past their expired dates.`
+      );
+
+      return {
+        uploadId: updatedFinishedUpload.upload_id,
+        uploadKey: updatedFinishedUpload.upload_key,
+        createdAt: updatedFinishedUpload.created_at,
+        expiresAt: updatedFinishedUpload.expires_at,
+        chunkSize: updatedFinishedUpload.chunk_size
+          ? +updatedFinishedUpload.chunk_size
+          : undefined,
+        finalizedAt: updatedFinishedUpload.finalized_at,
+        etag: updatedFinishedUpload.etag,
+        dataItemId: updatedFinishedUpload.data_item_id,
+        failedReason: isMultipartUploadFailedReason(
+          updatedFinishedUpload.failed_reason
+        )
+          ? updatedFinishedUpload.failed_reason
+          : undefined,
+      };
+    });
+  }
+
+  public async getFinalizedMultiPartUpload(
+    uploadId: UploadId
+  ): Promise<FinishedMultiPartUpload> {
+    this.log.debug("Getting finalized multipart upload...", {
+      uploadId,
+    });
+
+    const finalizedUpload = await this.reader<FinishedMultiPartUploadDBResult>(
+      tableNames.finishedMultiPartUpload
+    )
+      .where({ upload_id: uploadId })
+      .first();
+
+    if (!finalizedUpload) {
+      this.log.debug("Finalized multipart upload not found!", {
+        uploadId,
+      });
+      throw new MultiPartUploadNotFound(uploadId);
+    }
+
+    return {
+      uploadId: finalizedUpload.upload_id,
+      uploadKey: finalizedUpload.upload_key,
+      createdAt: finalizedUpload.created_at,
+      expiresAt: finalizedUpload.expires_at,
+      finalizedAt: finalizedUpload.finalized_at,
+      etag: finalizedUpload.etag,
+      dataItemId: finalizedUpload.data_item_id,
+      failedReason: isMultipartUploadFailedReason(finalizedUpload.failed_reason)
+        ? finalizedUpload.failed_reason
+        : undefined,
+    };
+  }
+
+  public async updateMultipartChunkSize(
+    chunkSize: number,
+    uploadId: UploadId
+  ): Promise<void> {
+    this.log.debug("Updating multipart chunk size...", {
+      chunkSize,
+    });
+
+    await this.writer<InFlightMultiPartUploadDBInsert>(
+      tableNames.inFlightMultiPartUpload
+    )
+      .update({
+        chunk_size: chunkSize.toString(),
+      })
+      .where({ upload_id: uploadId })
+      .forUpdate();
+  }
+}
+
+function isMultipartUploadFailedReason(
+  reason: string | undefined
+): reason is MultipartUploadFailedReason {
+  return ["INVALID", "UNDERFUNDED"].includes(reason ?? "");
 }

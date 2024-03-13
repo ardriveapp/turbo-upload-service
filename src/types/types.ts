@@ -21,6 +21,7 @@ export type Base64String = string;
 export type PublicArweaveAddress = Base64String;
 export type TransactionId = Base64String;
 export type DataItemId = TransactionId;
+export type UploadId = string;
 
 export type ByteCount = number;
 

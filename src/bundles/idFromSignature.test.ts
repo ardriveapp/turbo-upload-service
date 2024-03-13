@@ -16,28 +16,50 @@
  */
 import { expect } from "chai";
 
-import { stubDataItemRawSignatureReadStream } from "../../tests/stubs";
-import { toB64Url } from "../utils/base64";
-import { rawIdFromRawSignature } from "./rawIdFromRawSignature";
+import {
+  stubDataItemRawReadStream,
+  stubDataItemRawSignatureReadStream,
+} from "../../tests/stubs";
+import { fromB64Url, toB64Url } from "../utils/base64";
+import {
+  bufferIdFromBufferSignature,
+  bufferIdFromReadableSignature,
+} from "./idFromSignature";
+import { StreamingDataItem } from "./streamingDataItem";
+
+// cspell:disable
+const expectedId = "QpmY8mZmFEC8RxNsgbxSV6e36OF6quIYaPRKzvUco0o"; // cspell:enable
 
 describe("rawIdFromRawSignature function", () => {
   it("returns the expected rawId buffer when signature length is not specified", async () => {
     const rawDataItemSig = stubDataItemRawSignatureReadStream();
 
-    const rawIdBuffer = await rawIdFromRawSignature(rawDataItemSig);
+    const rawIdBuffer = await bufferIdFromReadableSignature(rawDataItemSig);
 
-    expect(toB64Url(rawIdBuffer)).to.equal(
-      "QpmY8mZmFEC8RxNsgbxSV6e36OF6quIYaPRKzvUco0o"
-    );
+    expect(toB64Url(rawIdBuffer)).to.equal(expectedId);
   });
 
   it("returns the expected rawId buffer when signature length is specified", async () => {
     const rawDataItemSig = stubDataItemRawSignatureReadStream();
 
-    const rawIdBuffer = await rawIdFromRawSignature(rawDataItemSig, 512);
-
-    expect(toB64Url(rawIdBuffer)).to.equal(
-      "QpmY8mZmFEC8RxNsgbxSV6e36OF6quIYaPRKzvUco0o"
+    const rawIdBuffer = await bufferIdFromReadableSignature(
+      rawDataItemSig,
+      512
     );
+
+    expect(toB64Url(rawIdBuffer)).to.equal(expectedId);
+  });
+});
+
+describe("rawIdFromSignature function", () => {
+  it("returns the expected rawId buffer", async () => {
+    const stubDataItemStream = stubDataItemRawReadStream();
+    const streamingDataItem = new StreamingDataItem(stubDataItemStream);
+    const signature = await streamingDataItem.getSignature();
+    const rawIdBuffer = await bufferIdFromBufferSignature(
+      fromB64Url(signature)
+    );
+
+    expect(toB64Url(rawIdBuffer)).to.equal(expectedId);
   });
 });

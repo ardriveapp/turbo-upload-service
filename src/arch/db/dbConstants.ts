@@ -26,6 +26,10 @@ export const tableNames = {
   seededBundle: "seeded_bundle",
   /** @deprecated */
   seedResult: "seed_result",
+
+  // multipart
+  inFlightMultiPartUpload: "in_flight_multi_part_upload",
+  finishedMultiPartUpload: "finished_multi_part_upload",
 } as const;
 
 export const columnNames = {
@@ -48,12 +52,24 @@ export const columnNames = {
   postedDate: "posted_date",
   reward: "reward",
   seededDate: "seeded_date",
+  signature: "signature",
   signatureType: "signature_type",
   signedDate: "signed_date",
   transactionByteCount: "transaction_byte_count",
   winstonPrice: "assessed_winston_price",
   uploadedDate: "uploaded_date",
   usdToArRate: "usd_to_ar_rate",
+
+  // multipart
+  uploadId: "upload_id",
+  uploadKey: "upload_key",
+  createdAt: "created_at",
+  expiresAt: "expires_at",
+  finalizedAt: "finalized_at",
+  etag: "etag",
+  chunkSize: "chunk_size",
+
+  premiumFeatureType: "premium_feature_type",
 
   /** @deprecated */
   seedResultStatus: "seed_result_status",

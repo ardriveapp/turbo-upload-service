@@ -29,9 +29,13 @@ Developers can alternatively use `yarn start:watch` to run the app in developmen
 
 ### Scripts
 
-- `db:up`: Starts a local docker PostgreSQL container on port 5432
-- `db:migrate:latest`: Runs migrations on a local PostgreSQL database
-- `db:down`: Tears down local docker PostgreSQL container and deletes the db volume
+- `yarn db:up`: Starts a local docker PostgreSQL container on port 5432
+- `yarn db:down`: Tears down local docker PostgreSQL container and deletes the db volume
+- `yarn db:migrate:list` - lists all the migrations applied to the database
+- `yarn db:migrate:up MIGRATION_NAME`: Runs a specific migration on a local PostgreSQL database
+- `yarn db:migrate:latest`: Runs migrations on a local PostgreSQL database
+- `yarn db:migrate:new MIGRATION_NAME`: Generates a new migration file
+- `yarn dotenv -e .env.dev ...`: run any of the above commands against a specific environment file
 
 ### Migrations
 
@@ -40,13 +44,19 @@ Knex is used to create and run migrations. To make a migration follow these step
 1. Add migration function and logic to `schema.ts`
 2. Run the yarn command to stage the migration, which generates a new migration script in `migrations/` directory
 
-- `yarn db:make:migration MIGRATION_NAME`
+   - `yarn db:migrate:new MIGRATION_NAME` (e.g. `yarn db:migrate:new add_id_to_table`)
 
-3. Update the new migration to call the static function created in step 1.
+3. Construct the migration queries in [src/db/arch/migrator.ts](src/db/arch/migrator.ts)
 
-4. Run the migration
+4. Update the generated migration file to call the proper migration script.
 
-- `yarn db:migration:latest` or `yarn knex migration:up MIGRATION_NAME.TS`
+5. Run the migration:
+
+   - `yarn db:migration:latest` or `yarn knex migration:up MIGRATION_NAME.TS`
+
+6. Alternatively, run the migration against a specific environment file:
+
+   - `yarn dotenv -e .env.dev yarn db:migrate:latest`
 
 ### Rollbacks
 
@@ -54,8 +64,7 @@ You can rollback knex migrations using the following command:
 
 - `yarn db:migrate:rollback` - rolls back the most recent migration
 - `yarn db:migrate:rollback --all` - rolls back all migrations
-- `yarn knex migrate:list` - lists all the migrations applied to the database
-- `yarn knex migrate:down MIGRATION_NAME.ts --knexfile src/database/knexfile.ts` - rolls back a specific migration
+- `yarn db:migrate:down MIGRATION_NAME` - rolls back a specific migration
 
 Additional `knex` documentation can be found [here](https://knexjs.org/guide/migrations.html).
 
@@ -86,6 +95,8 @@ docker compose up upload-service --build
 ## Tests
 
 Unit and integration tests can be run locally or via docker. For either, you can set environment variables for the service via a `.env` file:
+
+- `yarn test:local` - runs unit and integration tests locally against postgres and arlocal docker containers
 
 ### Unit Tests
 

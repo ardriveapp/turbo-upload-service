@@ -19,9 +19,7 @@ import { expect } from "chai";
 import { tableNames } from "../src/arch/db/dbConstants";
 import {
   failedBundleDbResultToFailedBundleMap,
-  newDataItemDbResultToNewDataItemMap,
   permanentBundleDbResultToPermanentBundleMap,
-  permanentDataItemDbResultToPermanentDataItemMap,
   plannedDataItemDbResultToPlannedDataItemMap,
 } from "../src/arch/db/dbMaps";
 import { PostgresDatabase } from "../src/arch/db/postgres";
@@ -31,7 +29,6 @@ import {
   NewBundleDBResult,
   NewDataItemDBResult,
   PermanentBundleDBResult,
-  PermanentDataItemDBResult,
   PlannedDataItemDBResult,
   PostedBundleDBResult,
   SeededBundleDBResult,
@@ -40,15 +37,14 @@ import { DbTestHelper } from "./helpers/dbTestHelpers";
 import {
   failedBundleExpectations,
   newBundleDbResultExpectations,
-  newDataItemExpectations,
   permanentBundleExpectations,
-  permanentDataItemExpectations,
   plannedDataItemExpectations,
   postedBundleDbResultExpectations,
 } from "./helpers/expectations";
 import {
   stubBlockHeight,
   stubByteCount,
+  stubDataItemBufferSignature,
   stubDates,
   stubOwnerAddress,
   stubPlanId,
@@ -81,11 +77,13 @@ describe("PostgresDatabase class", () => {
       ownerPublicAddress: stubOwnerAddress,
       byteCount: stubByteCount,
       assessedWinstonPrice: stubWinstonPrice,
-      dataStart: 1500,
+      payloadDataStart: 1500,
       failedBundles: [],
       signatureType: 1,
       uploadedDate: stubDates.earliestDate,
-      contentType: "application/json",
+      payloadContentType: "application/json",
+      premiumFeatureType: "default",
+      signature: stubDataItemBufferSignature,
     });
 
     const newDataItems = await db["writer"]<NewDataItemDBResult>(
@@ -179,12 +177,20 @@ describe("PostgresDatabase class", () => {
     ).whereIn("data_item_id", [stubTxId4, stubTxId5]);
     expect(plannedDataItems.length).to.equal(2);
 
+    // Items come back in any order when we batch insert
+    const plannedDataItem4 = plannedDataItems.filter(
+      (p) => p.data_item_id === stubTxId4
+    )[0];
+    const plannedDataItem5 = plannedDataItems.filter(
+      (p) => p.data_item_id === stubTxId5
+    )[0];
+
     plannedDataItemExpectations(
-      plannedDataItemDbResultToPlannedDataItemMap(plannedDataItems[0]),
+      plannedDataItemDbResultToPlannedDataItemMap(plannedDataItem4),
       { expectedDataItemId: stubTxId4, expectedPlanId: stubPlanId }
     );
     plannedDataItemExpectations(
-      plannedDataItemDbResultToPlannedDataItemMap(plannedDataItems[1]),
+      plannedDataItemDbResultToPlannedDataItemMap(plannedDataItem5),
       { expectedDataItemId: stubTxId5, expectedPlanId: stubPlanId }
     );
 
@@ -332,9 +338,8 @@ describe("PostgresDatabase class", () => {
   });
 
   it("updateBundleAsPermanent method  deletes existing seeded_bundle, inserts permanent_bundle, deletes each planned_data_item, and inserts them as permanent_data_items", async () => {
-    const bundleId = stubTxId13;
-    const planId = stubPlanId;
-    const dataItemIds = [stubTxId1, stubTxId2, stubTxId3];
+    const bundleId = "Unique updateBundleAsPermanent Bundle ID";
+    const planId = "Unique updateBundleAsPermanent Plan ID";
     const indexedOnGQL = true;
     const blockHeight = stubBlockHeight;
     const usdToArRate = stubUsdToArRate;
@@ -342,7 +347,6 @@ describe("PostgresDatabase class", () => {
     await dbTestHelper.insertStubSeededBundle({
       planId,
       bundleId,
-      dataItemIds,
       usdToArRate,
     });
     await db.updateBundleAsPermanent(planId, blockHeight, indexedOnGQL);
@@ -365,54 +369,17 @@ describe("PostgresDatabase class", () => {
       permanentBundleDbResultToPermanentBundleMap(permanentBundleDbResult[0]),
       {
         expectedBundleId: bundleId,
-        expectedPlanId: stubPlanId,
+        expectedPlanId: planId,
       }
     );
     expect(permanentBundleDbResult[0].block_height).to.equal(
       blockHeight.toString()
     );
-
-    // Planned data items are removed
-    await Promise.all([
-      dataItemIds.map(async (data_item_id) => {
-        expect(
-          (
-            await db["writer"](tableNames.plannedDataItem).where({
-              data_item_id,
-            })
-          ).length
-        ).to.equal(0);
-      }),
-    ]);
-
-    // Permanent data items are inserted as expected
-    await Promise.all([
-      dataItemIds.map(async (data_item_id) => {
-        permanentDataItemExpectations(
-          permanentDataItemDbResultToPermanentDataItemMap(
-            (
-              await db["writer"]<PermanentDataItemDBResult>(
-                tableNames.permanentDataItem
-              ).where({
-                data_item_id,
-              })
-            )[0]
-          ),
-          { expectedDataItemId: data_item_id, expectedPlanId: planId }
-        );
-      }),
-    ]);
-
-    await dbTestHelper.cleanUpSeededBundleInDb({
-      bundleId,
-      dataItemIds,
-      bundleTable: "permanent_bundle",
-    });
   });
 
-  it("updateBundleAsDropped method deletes existing seeded_bundle, inserts failed_bundle, deletes each planned_data_item, and inserts them as new_data_items", async () => {
-    const bundleId = stubTxId4;
-    const planId = stubPlanId2;
+  it("updateSeededBundleToDropped method deletes existing seeded_bundle, inserts failed_bundle, deletes each planned_data_item, and inserts them as new_data_items", async () => {
+    const bundleId = "Stub bundle ID updateSeededBundleToDropped";
+    const planId = "Stub plan ID updateSeededBundleToDropped";
     const dataItemIds = [stubTxId5, stubTxId13, stubTxId4];
     const usdToArRate = stubUsdToArRate;
 
@@ -421,8 +388,9 @@ describe("PostgresDatabase class", () => {
       bundleId,
       dataItemIds,
       usdToArRate,
+      failedBundles: ["testOne", "testTwo"],
     });
-    await db.updateBundleAsDropped(planId);
+    await db.updateSeededBundleToDropped(planId, bundleId);
 
     // Seeded bundle is removed
     expect(
@@ -460,27 +428,77 @@ describe("PostgresDatabase class", () => {
     ]);
 
     // New data items are inserted as expected
-    await Promise.all([
+    await Promise.all(
       dataItemIds.map(async (data_item_id) => {
-        newDataItemExpectations(
-          newDataItemDbResultToNewDataItemMap(
-            (
-              await db["writer"]<NewDataItemDBResult>(
-                tableNames.newDataItem
-              ).where({
-                data_item_id,
-              })
-            )[0]
-          ),
-          { expectedDataItemId: data_item_id }
+        const dbResult = await db["writer"]<NewDataItemDBResult>(
+          tableNames.newDataItem
+        ).where({
+          data_item_id,
+        });
+        expect(dbResult.length).to.equal(1);
+        expect(dbResult[0].data_item_id).to.equal(data_item_id);
+        expect(dbResult[0].failed_bundles).to.equal(
+          `testOne,testTwo,${bundleId}`
         );
-      }),
-    ]);
+      })
+    );
 
     await dbTestHelper.cleanUpSeededBundleInDb({
       bundleId,
       dataItemIds,
       bundleTable: "failed_bundle",
+    });
+  });
+
+  describe("updateNewBundleToFailedToPost method", () => {
+    it("updates the expected new bundle", async () => {
+      const bundleId = "updateNewBundleToFailedToPost Bundle ID";
+      const planId = "updateNewBundleToFailedToPost Plan ID";
+      const dataItemIds = [
+        "testOne  updateNewBundleToFailedToPost",
+        "testTwo  updateNewBundleToFailedToPost",
+        "testThree  updateNewBundleToFailedToPost",
+      ];
+
+      await dbTestHelper.insertStubNewBundle({
+        planId,
+        bundleId,
+        dataItemIds,
+      });
+
+      await db.updateNewBundleToFailedToPost(planId, bundleId);
+
+      // Get and cleanup data items immediately from new data item table to avoid test race conditions
+      const dataItems = await db["writer"]<NewDataItemDBResult>(
+        tableNames.newDataItem
+      )
+        .whereIn("data_item_id", dataItemIds)
+        .del()
+        .returning("*");
+      expect(dataItems.length).to.equal(3);
+      dataItems.forEach((dataItem) => {
+        expect(dataItem.failed_bundles).to.equal(bundleId);
+      });
+
+      // New bundle is removed
+      expect(
+        (
+          await db["writer"](tableNames.newBundle).where({
+            bundle_id: bundleId,
+          })
+        ).length
+      ).to.equal(0);
+
+      // Failed bundle exists as expected
+      const failedBundleDbResult = await db["writer"]<FailedBundleDBResult>(
+        tableNames.failedBundle
+      ).where({ bundle_id: bundleId });
+      expect(failedBundleDbResult.length).to.equal(1);
+      expect(failedBundleDbResult[0].bundle_id).to.equal(bundleId);
+      expect(failedBundleDbResult[0].plan_id).to.equal(planId);
+      expect(failedBundleDbResult[0].failed_date).to.exist;
+
+      await dbTestHelper.cleanUpEntityInDb(tableNames.failedBundle, bundleId);
     });
   });
 
@@ -491,6 +509,7 @@ describe("PostgresDatabase class", () => {
       await dbTestHelper.insertStubNewDataItem({ dataItemId });
 
       const { status, assessedWinstonPrice, bundleId } =
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
         (await db.getDataItemInfo(dataItemId))!;
 
       expect(status).to.equal("new");
@@ -506,9 +525,14 @@ describe("PostgresDatabase class", () => {
       const dataItemId = stubTxId8;
       const planId = stubPlanId;
 
-      await dbTestHelper.insertStubPlannedDataItem({ dataItemId, planId });
+      await dbTestHelper.insertStubPlannedDataItem({
+        dataItemId,
+        planId,
+        signature: stubDataItemBufferSignature, // may not work depending on invariants checked
+      });
 
       const { status, assessedWinstonPrice, bundleId } =
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
         (await db.getDataItemInfo(dataItemId))!;
 
       expect(status).to.equal("pending");
@@ -538,6 +562,7 @@ describe("PostgresDatabase class", () => {
         status,
         assessedWinstonPrice,
         bundleId: bundleIdInDb,
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       } = (await db.getDataItemInfo(dataItemId))!;
 
       expect(status).to.equal("permanent");
@@ -554,6 +579,100 @@ describe("PostgresDatabase class", () => {
 
     it("non existent data item", async () => {
       expect(await db.getDataItemInfo(stubTxId9)).to.be.undefined;
+    });
+  });
+
+  describe("updateDataItemBatchAsPermanent method", () => {
+    it("updates the expected data items", async () => {
+      const dataItemIds = [
+        "permanent data item test 1",
+        "permanent data item test 2",
+        "permanent data item test 3",
+      ];
+      const blockHeight = stubBlockHeight;
+      const bundleId = stubTxId13;
+
+      await Promise.all(
+        dataItemIds.map((dataItemId) =>
+          dbTestHelper.insertStubPlannedDataItem({
+            dataItemId,
+            planId: "Unique plan ID",
+          })
+        )
+      );
+
+      await db.updateDataItemsAsPermanent({
+        dataItemIds,
+        blockHeight,
+        bundleId,
+      });
+
+      // Planned data items are removed
+      const plannedDbResult = await db["writer"](
+        tableNames.plannedDataItem
+      ).whereIn("data_item_id", dataItemIds);
+      expect(plannedDbResult.length).to.equal(0);
+
+      // Permanent data items are inserted as expected
+      const permanentDbResult = await db["writer"](
+        tableNames.permanentDataItem
+      ).whereIn("data_item_id", dataItemIds);
+      expect(permanentDbResult.length).to.equal(3);
+
+      await Promise.all(
+        dataItemIds.map((dataItemId) =>
+          dbTestHelper.cleanUpEntityInDb(
+            tableNames.permanentDataItem,
+            dataItemId
+          )
+        )
+      );
+    });
+  });
+
+  describe("updateDataItemBatchToBeRePacked method", () => {
+    it("updates the expected data items", async () => {
+      const dataItemIds = [
+        "re pack data item test 1",
+        "re pack data item test 2",
+        "re pack data item test 3",
+      ];
+      const bundleId = stubTxId13;
+
+      const previouslyFailedBundle = "already has a failed bundle";
+      await Promise.all(
+        dataItemIds.map((dataItemId) =>
+          dbTestHelper.insertStubPlannedDataItem({
+            dataItemId,
+            planId: "A great Unique plan ID",
+            failedBundles: [previouslyFailedBundle],
+          })
+        )
+      );
+
+      await db.updateDataItemsToBeRePacked(dataItemIds, bundleId);
+
+      // Planned data items are removed
+      const plannedDbResult = await db["writer"](
+        tableNames.plannedDataItem
+      ).whereIn("data_item_id", dataItemIds);
+      expect(plannedDbResult.length).to.equal(0);
+
+      // New data items are inserted as expected
+      const newDbResult = await db["writer"](tableNames.newDataItem).whereIn(
+        "data_item_id",
+        dataItemIds
+      );
+      expect(newDbResult.length).to.equal(3);
+      expect(newDbResult[0].failed_bundles).to.equal(
+        previouslyFailedBundle + "," + bundleId
+      );
+
+      await Promise.all(
+        dataItemIds.map((dataItemId) =>
+          dbTestHelper.cleanUpEntityInDb(tableNames.newDataItem, dataItemId)
+        )
+      );
     });
   });
 });

@@ -14,6 +14,7 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+import { defaultPremiumFeatureType } from "../../constants";
 import {
   FailedBundle,
   FailedBundleDBResult,
@@ -104,6 +105,9 @@ export function newDataItemDbResultToNewDataItemMap({
   data_start,
   failed_bundles,
   signature_type,
+  content_type,
+  premium_feature_type,
+  signature,
 }: NewDataItemDBResult): NewDataItem {
   return {
     assessedWinstonPrice: W(assessed_winston_price),
@@ -111,10 +115,12 @@ export function newDataItemDbResultToNewDataItemMap({
     ownerPublicAddress: owner_public_address,
     byteCount: +byte_count,
     uploadedDate: uploaded_date,
-
+    premiumFeatureType: premium_feature_type ?? defaultPremiumFeatureType,
     failedBundles: failed_bundles ? failed_bundles.split(",") : [],
     signatureType: signature_type ?? undefined,
-    dataStart: data_start ?? undefined,
+    payloadDataStart: data_start ?? undefined,
+    payloadContentType: content_type ?? undefined,
+    signature: signature ?? undefined,
   };
 }
 
@@ -128,13 +134,38 @@ export function plannedDataItemDbResultToPlannedDataItemMap(
   };
 }
 
-export function permanentDataItemDbResultToPermanentDataItemMap(
-  dbResult: PermanentDataItemDBResult
-): PermanentDataItem {
+export function permanentDataItemDbResultToPermanentDataItemMap({
+  assessed_winston_price,
+  byte_count,
+  data_item_id,
+  owner_public_address,
+  uploaded_date,
+  data_start,
+  failed_bundles,
+  signature_type,
+  content_type,
+  premium_feature_type,
+  plan_id,
+  planned_date,
+  bundle_id,
+  permanent_date,
+  block_height,
+}: PermanentDataItemDBResult): PermanentDataItem {
   return {
-    ...plannedDataItemDbResultToPlannedDataItemMap(dbResult),
-    bundleId: dbResult.bundle_id,
-    permanentDate: dbResult.permanent_date,
-    blockHeight: +dbResult.block_height,
+    assessedWinstonPrice: W(assessed_winston_price),
+    dataItemId: data_item_id,
+    ownerPublicAddress: owner_public_address,
+    byteCount: +byte_count,
+    uploadedDate: uploaded_date,
+    premiumFeatureType: premium_feature_type ?? defaultPremiumFeatureType,
+    failedBundles: failed_bundles ? failed_bundles.split(",") : [],
+    signatureType: signature_type ?? undefined,
+    payloadDataStart: data_start ?? undefined,
+    payloadContentType: content_type ?? undefined,
+    planId: plan_id,
+    plannedDate: planned_date,
+    bundleId: bundle_id,
+    permanentDate: permanent_date,
+    blockHeight: +block_height,
   };
 }

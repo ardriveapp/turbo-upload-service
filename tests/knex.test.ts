@@ -89,7 +89,7 @@ describe("Knex connected to postgreSQL database", () => {
     expect(testItemsAfterDel).to.deep.equal([testInsert2]);
   });
 
-  describe("notNullable() column", async () => {
+  describe("notNullable() column", () => {
     const tableName = "not_nullable_test_table";
     const columnName = "best_test_column";
     const notNullableColumn = "not_nullable_test_column";
@@ -124,7 +124,7 @@ describe("Knex connected to postgreSQL database", () => {
     });
   });
 
-  describe("length constraints on string columns  when length constraint of a string columns is not met", async () => {
+  describe("length constraints on string columns  when length constraint of a string columns is not met", () => {
     const tableName = "string_length_test_table";
     const columnName = "string_length_test_column";
 

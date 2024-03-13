@@ -18,8 +18,19 @@ import { Tag, byteArrayToLong, deserializeTags } from "arbundles";
 import { Readable } from "stream";
 import winston from "winston";
 
+import {
+  anchorLength,
+  emptyAnchorLength,
+  emptyTargetLength,
+  signatureTypeLength,
+  targetLength,
+} from "../constants";
+import { ParsedDataItemHeader } from "../types/types";
 import { ownerToAddress, sha256B64Url, toB64Url } from "../utils/base64";
-import { createVerifiedDataItemStream } from "./verifyDataItem";
+import {
+  createVerifiedDataItemStream,
+  signatureTypeInfo,
+} from "./verifyDataItem";
 
 // Takes a Readable stream of data item bytes and provides Promise interfaces for its member data
 export class StreamingDataItem {
@@ -157,10 +168,10 @@ export class StreamingDataItem {
     emitter.once("tagsBytes", (tagsBytesBuffer: Buffer) => {
       this.tagsBytesResolver?.(tagsBytesBuffer);
     });
-    emitter.once("payloadStream", async (payloadStream: Readable) => {
+    emitter.once("payloadStream", (payloadStream: Readable) => {
       this.payloadStreamResolver?.(payloadStream);
     });
-    emitter.once("payloadSize", async (payloadSize: number) => {
+    emitter.once("payloadSize", (payloadSize: number) => {
       this.payloadSizeResolver?.(payloadSize);
     });
     emitter.once("isValid", (isValid: boolean) => {
@@ -357,7 +368,7 @@ export class StreamingDataItem {
   getPayloadStream(): Promise<Readable> {
     return this.payloadStreamPromise
       .then((payloadStream) =>
-        // TODO: Necessary?
+        // Necessary because the payloadStream is in a paused state when emitted
         payloadStream.resume()
       )
       .then((payloadStream) => {
@@ -370,20 +381,57 @@ export class StreamingDataItem {
 
   // NOTE: Will only resolve if the payloadStream has been fully consumed or an error is thrown
   getPayloadSize(): Promise<number> {
-    return this.payloadSizePromise.then((payloadSize) => {
-      if (!this.lastError) {
-        return payloadSize;
-      }
-      throw this.lastError;
+    return this.payloadStreamPromise.then((payloadStream) => {
+      // Necessary because the payloadStream is in a paused state when emitted
+      payloadStream.resume();
+      return this.payloadSizePromise.then((payloadSize) => {
+        if (!this.lastError) {
+          return payloadSize;
+        }
+        throw this.lastError;
+      });
     });
   }
 
   isValid(): Promise<boolean> {
-    return this.isValidPromise.then((isValid) => {
-      if (!this.lastError) {
-        return isValid;
-      }
-      throw this.lastError;
+    return this.payloadStreamPromise.then((payloadStream) => {
+      // Necessary because the payloadStream is in a paused state when emitted
+      payloadStream.resume();
+
+      return this.isValidPromise.then((isValid) => {
+        if (!this.lastError) {
+          return isValid;
+        }
+        throw this.lastError;
+      });
     });
+  }
+
+  async getHeaders(): Promise<Omit<ParsedDataItemHeader, "dataSize">> {
+    const signatureType = await this.getSignatureType();
+    const signature = await this.getSignature();
+    const owner = await this.getOwner();
+    const dataItemId = await this.getDataItemId();
+    const anchor = await this.getAnchor();
+    const target = await this.getTarget();
+    const numTagsBytes = await this.getNumTagsBytes();
+    const tags = await this.getTags();
+    const tagsStart =
+      signatureTypeLength +
+      signatureTypeInfo[signatureType].signatureLength +
+      signatureTypeInfo[signatureType].pubkeyLength +
+      (target === undefined ? emptyTargetLength : targetLength) +
+      (anchor === undefined ? emptyAnchorLength : anchorLength);
+    const payloadDataStart = tagsStart + 16 + numTagsBytes;
+    return {
+      id: dataItemId,
+      sigName: signatureTypeInfo[signatureType].name,
+      signature,
+      target: target ?? "",
+      anchor: anchor ?? "",
+      owner,
+      tags,
+      dataOffset: payloadDataStart,
+    };
   }
 }

@@ -18,10 +18,11 @@ import { ArweaveSigner, bundleAndSignData, createData } from "arbundles";
 import Arweave from "arweave";
 import axios from "axios";
 import { expect } from "chai";
-import { randomBytes, randomUUID } from "crypto";
+import { randomBytes } from "crypto";
 import { describe } from "mocha";
 
 import { ArweaveGateway } from "../src/arch/arweaveGateway";
+import { ExponentialBackoffRetryStrategy } from "../src/arch/retryStrategy";
 import { gatewayUrl } from "../src/constants";
 import { TransactionId } from "../src/types/types";
 import { jwkToPublicArweaveAddress } from "../src/utils/base64";
@@ -32,7 +33,12 @@ import {
 } from "./test_helpers";
 
 describe("ArweaveGateway Class", function () {
-  const gateway = new ArweaveGateway({ endpoint: gatewayUrl });
+  const gateway = new ArweaveGateway({
+    endpoint: gatewayUrl,
+    retryStrategy: new ExponentialBackoffRetryStrategy({
+      maxRetriesPerRequest: 0,
+    }),
+  });
   let validDataItemId: TransactionId;
   let validAnchor: string;
 
@@ -52,15 +58,16 @@ describe("ArweaveGateway Class", function () {
     await mineArLocalBlock(arweave);
   });
 
-  it("Given a valid txId checkIfDataItemCanBeQueriedOnGQL returns true", async () => {
-    const result = await gateway.isTransactionQueryableOnGQL(validDataItemId);
-    expect(result).to.be.true;
+  it("getDataItemsFromGQL can get blocks for valid data items from GQL", async () => {
+    const result = await gateway.getDataItemsFromGQL([validDataItemId]);
+    expect(result).to.have.lengthOf(1);
+    expect(result[0]).to.have.property("id", validDataItemId);
+    expect(result[0]).to.have.property("blockHeight");
   });
 
-  it("Given an invalid txId checkIfDataItemCanBeQueriedOnGQL returns false", async () => {
-    const testDataItemId = randomUUID();
-    const result = await gateway.isTransactionQueryableOnGQL(testDataItemId);
-    expect(result).to.be.false;
+  it("getDataItemsFromGQL returns empty array for invalid data items", async () => {
+    const result = await gateway.getDataItemsFromGQL(["invalid item"]);
+    expect(result).to.have.lengthOf(0);
   });
 
   it("Given a valid txAnchor getBlockHeightForTxAnchor returns correct height", async () => {

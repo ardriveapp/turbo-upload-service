@@ -26,7 +26,7 @@ import * as https from "https";
 
 import logger from "../logger";
 import { PlanId } from "../types/dbTypes";
-import { DataItemId } from "../types/types";
+import { DataItemId, UploadId } from "../types/types";
 import { isTestEnv } from "../utils/common";
 import { SignedDataItemHeader } from "../utils/opticalUtils";
 
@@ -35,7 +35,8 @@ type QueueType =
   | "post-bundle"
   | "seed-bundle"
   | "optical-post"
-  | "unbundle-bdi";
+  | "unbundle-bdi"
+  | "finalize-upload";
 
 type SQSQueueUrl = string;
 
@@ -47,6 +48,7 @@ type QueueTypeToMessageType = {
   "seed-bundle": PlanMessage;
   "optical-post": SignedDataItemHeader;
   "unbundle-bdi": DataItemId;
+  "finalize-upload": { uploadId: UploadId };
 };
 
 const sqs = new SQSClient({
@@ -60,11 +62,18 @@ const sqs = new SQSClient({
 
 export const getQueueUrl = (type: QueueType): SQSQueueUrl => {
   const queues: { [key in QueueType]: SQSQueueUrl } = {
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     "prepare-bundle": process.env.SQS_PREPARE_BUNDLE_URL!,
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     "post-bundle": process.env.SQS_POST_BUNDLE_URL!,
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     "seed-bundle": process.env.SQS_SEED_BUNDLE_URL!,
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     "optical-post": process.env.SQS_OPTICAL_URL!,
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     "unbundle-bdi": process.env.SQS_UNBUNDLE_BDI_URL!,
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    "finalize-upload": process.env.SQS_FINALIZE_UPLOAD_URL!,
   };
   return queues[type];
 };
@@ -127,7 +136,7 @@ export const createQueueHandler = <T extends QueueType>(
     }
     try {
       if (!event) {
-        logger.info(`[sqs-handler] invalid SQS messages received`, { event });
+        logger.error(`[sqs-handler] invalid SQS messages received`, { event });
         throw new Error("Queue handler: invalid SQS messages received");
       }
 

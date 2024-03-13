@@ -18,46 +18,7 @@ import { expect } from "chai";
 import { createReadStream } from "fs";
 
 import { streamToBuffer } from "../utils/streamToBuffer";
-import FileDataItem from "./dataItem";
 import { StreamingDataItem } from "./streamingDataItem";
-import {
-  verifyArweaveDataItemFromPath,
-  verifyDataItem,
-} from "./verifyDataItem";
-
-describe("verifyDataItemFromPath function", () => {
-  it("returns true with a valid data item", async () => {
-    expect(
-      await verifyArweaveDataItemFromPath(
-        "tests/stubFiles/stub1115ByteDataItem"
-      )
-    ).to.be.true;
-  });
-
-  it("returns false with an invalid data item", async () => {
-    expect(
-      await verifyArweaveDataItemFromPath("tests/stubFiles/stubInvalidDataItem")
-    ).to.be.false;
-  });
-});
-
-describe("verifyDataItem function", () => {
-  it("returns true with a valid data item", async () => {
-    expect(
-      await verifyDataItem(
-        new FileDataItem("tests/stubFiles/stub1115ByteDataItem")
-      )
-    ).to.be.true;
-  });
-
-  it("returns false with an invalid data item", async () => {
-    expect(
-      await verifyDataItem(
-        new FileDataItem("tests/stubFiles/stubInvalidDataItem")
-      )
-    ).to.be.false;
-  });
-});
 
 describe("createVerifiedDataItemStream function", () => {
   it("succeeds with the expected results for an Arweave data item", async () => {

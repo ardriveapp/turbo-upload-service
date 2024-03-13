@@ -25,13 +25,16 @@ import {
   bundleHeaderInfoFromBuffer,
   totalBundleSizeFromHeaderInfo,
 } from "./assembleBundleHeader";
-import { rawIdFromRawSignature } from "./rawIdFromRawSignature";
+import { bufferIdFromReadableSignature } from "./idFromSignature";
 
 describe("assembleBundleHeader", () => {
   it("returns the expected bundleHeader when provided a single data item's raw signature", async () => {
     const dataItemRawSig = stubDataItemRawSignatureReadStream();
 
-    const stubDataItemRawId = await rawIdFromRawSignature(dataItemRawSig, 512);
+    const stubDataItemRawId = await bufferIdFromReadableSignature(
+      dataItemRawSig,
+      512
+    );
     const bundleHeaderStream = await assembleBundleHeader([
       { dataItemRawId: stubDataItemRawId, byteCount: 1115 },
     ]);
@@ -47,7 +50,10 @@ describe("bundleHeaderInfoFromBuffer", () => {
     // TODO: Use a bundle header with multiple data items
     const dataItemRawSig = stubDataItemRawSignatureReadStream();
 
-    const stubDataItemRawId = await rawIdFromRawSignature(dataItemRawSig, 512);
+    const stubDataItemRawId = await bufferIdFromReadableSignature(
+      dataItemRawSig,
+      512
+    );
     const bundleHeaderStream = await assembleBundleHeader([
       { dataItemRawId: stubDataItemRawId, byteCount: 1115 },
     ]);

@@ -7,9 +7,95 @@ info:
 
 servers:
   - url: /v1
+  - url: /
 
 components:
+  parameters:
+    byteCount:
+      name: byteCount
+      in: path
+      description: The byte count of the data item.
+      required: true
+      schema:
+        type: integer
+        example: 1000
+    currency:
+      name: currency
+      in: path
+      description: The token to use for validating the transaction.
+      required: true
+      schema:
+        type: string
+        enum:
+          - arweave
+          - ethereum
+          - solana
+    id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        description: A data item id.
+        example: "QpmY8mZmFEC8RxNsgbxSV6e36OF6quIYaPRKzvUco0o"
+    uploadId:
+      name: uploadId
+      in: path
+      description: The upload id of the multi-part upload.
+      required: true
+      schema:
+        type: string
+        example: "QpmY8mZmFEC8RxNsgbxSV6e36OF6quIYaPRKzvUco0o"
+    chunkOffset:
+      name: chunkOffset
+      in: query
+      description: The offset of the chunk in bytes. If -1, that will finalize an existing multi-part upload.
+      required: true
+      schema:
+        type: integer
+        example: 0
+  headers:
+    Content-Length:
+      name: content-length
+      schema:
+        type: integer
+        format: int64
+        maximum: 10737418240 # 10GiB
+      required: false
+    Content-Type:
+      name: content-type
+      schema:
+        type: string
+        enum:
+          - application/octet-stream
+      required: false
   schemas:
+    DataItemStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          description: The status of the data item.
+          example: "CONFIRMED"
+          enum:
+            - "CONFIRMED"
+            - "FINALIZED"
+        bundleId:
+          type: string
+          description: The bundle id of the data item.
+          example: "QpmY8mZmFEC8RxNsgbxSV6e36OF6quIYaPRKzvUco0o"
+        info:
+          type: string
+          description: The info of the data item.
+          example: "pending"
+          enum:
+            - "new"
+            - "pending"
+            - "permanent"
+        winc:
+          type: string
+          description: The winston price of the data item.
+          example: "1000000"
     DataItemPost:
       type: object
       properties:
@@ -49,15 +135,215 @@ components:
           example: "0.1.0"
         signature:
           type: string
-          description: The base64URL signature of the receipt
+          description: The base64URL signature of the receipt. Includes id, version, timestamp, public key, deadlineHeight and owner.
           example: "iU_S6uuG1OD8k0XqMGOmbcKfysDckEMUy4R9-ODPXiQjKXuT4lTngRFBFKO5NQT1iIfqSDKcbTRL6gJowM_L7bBQZRGkojzXD0PNNU2F0bNNJ80VtUktHifGTXbCgz5kiFciL19n0P3nX6ZfXnOn-H8ALZzRJV69apdvwqitpNKxLMPyc-QA0QBxmC3CKPz_7fy2Qg0QHr5g_ZT2Of-YJ_RsZTEoc3g1fgzsEmMBPOsx4XtPrhV6llnA3pncngzHbPdFvypdWiO8Bvr0EWmazNsoanuwK5uKJ_ROIGXW_dBBGN8Vrfv5U6dJnhJVn5IE7JFlixpFTluF_ICRzbUq2pk_re6jEtW1H3ItH2iN0UeFUw1uDbq3HJW6lDc8aOwDwDspJI11KEI6uCz5QmQy2V8DvRknoqcxmuihF6XmmJIZgTVeo6LNufEis9kFxqtc3Dh_gn8z0cDXKEKFycudckmcHP7vkWD68uSssMMJIdVgwvPZss06svfRnI-E33j3MrQI9FzMIv-7Df8iYATyeyldM1v3gexG0kQm0AMG1_8_SLqwu2QlqzM41mrK5vNmQxOVdIQSOPWPvzbF-YGRwpCjlveRBuARGC9JNC4UipvDYri2gRWuBx2uDL7dmVFv1gRll3dYNMYaMULHYngtrrCynB3Cyfhh7cyPlwuNlk0"
         public:
           type: string
           description: The public key of the wallet that signed the receipt
           example: "qREovbmD6oxgHYNCzOeTei07lSz0-YLcjnvgSDzqptsCiqNOtB3RKUToSX5hkPD45fJDY4057XkkcsQRuGsU8y9rgm37i-Kiyd5Z_iy6pJXrwi9XnAgGL118lIV790GZ7xe5o3DvPV3Px74C0ABsfL9lW86D4t_qClJ6wSQksKNd7rnUImIvHW0vxLswST7dfUngevzKt4kv48VTub4951XdUHjb45Uurf7xFYSCizAGtGqr5GYDFrVk-mNrzFH5bXt06PJfxe9E5ujIE5Uq1Az6vqEOO0E1mWmXqdTPluAxcjmgktkoNLHZnnU-BsYuFaTWW5NU3aS-RgJKXYs9O6Dc1-2SITl-H_wtdGNSj31fj72UkaAbkpA1mionK-8bOIkSpYgKCyTC42oHh1Fw4SLXPyLxBj1w6F32LSLjpse5dmKymj4fJPezCMdi709uIiVT7XOm4LZBCzFOxS6-UNxgE57dBFpcWkcqNO3p00biYqH5d5bzvK3bwd-4j0KyKlqPYTProSnd3P6ROZuuJaLoLD_Or5-L_dUjawHz-DFlzmckYaf8l3XdzPM4JSsE8CEDZl0NCN0AidXt_wjbr6k9JsO7cnLB226AjxhcyuxZOlhgkIn7EbxpVXx-O2mXkcXF8PixCP0k5brtriLeF1MAdspgd_S-LKQeGVr7-mk"
-
+    CreateMultipartUpload:
+      type: object
+      properties:
+        id:
+          type: string
+          description: The id of the multi-part upload.
+          example: "QpmY8mZmFEC8RxNsgbxSV6e36OF6quIYaPRKzvUco0o"
+        min:
+          type: number
+          description: The minimum chunk size allowed in bytes (e.g. 25KB)
+          example: 2500
+        max:
+          type: number
+          description: The maximum chunk size allowed in bytes (e.g. 500MB)
+          example: 500_000_000
+    InFlightMultipartUpload:
+      type: object
+      properties:
+        id:
+          type: string
+          description: The id of the multi-part upload.
+          example: "QpmY8mZmFEC8RxNsgbxSV6e36OF6quIYaPRKzvUco0o"
+        min:
+          type: number
+          description: The minimum chunk size allowed in bytes (e.g. 25KB)
+          example: 2500
+        max:
+          type: number
+          description: The maximum chunk size allowed in bytes (e.g. 500MB)
+          example: 500000000
+        size:
+          type: number
+          description: The chunk size for the multi-part upload in bytes. (e.g. 25MB)
+          example: 25000000
+        chunks:
+          type: array
+          description: A multi-dimensional array containing the chunk offset and chunk size (e.g. [chunkOffset, chunkSize] for each chunk that has been uploaded for the respective upload id, sorted in ascending order respective to the chunk offset.
+          example:
+            [
+              [25000000, 25000000],
+              [50000000, 25000000],
+              [75000000, 25000000],
+              [100000000, 4858676],
+            ]
+    CompleteMultipartUpload:
+      type: object
+      properties:
+        id:
+          type: string
+          description: The id of the multi-part upload.
+          example: "QpmY8mZmFEC8RxNsgbxSV6e36OF6quIYaPRKzvUco0o"
+        data:
+          $ref: "#/components/schemas/DataItemPost"
+    ServiceInfo:
+      type: object
+      properties:
+        version:
+          type: string
+          description: The version of the service
+          example: "0.1.0"
+        addresses:
+          type: object
+          description: The wallet addresses of the service
+          properties:
+            arweave:
+              type: string
+              description: The Arweave wallet address of the service
+              example: "8wgRDgvYOrtSaWEIV21g0lTuWDUnTu4_iYj4hmA7PI0"
+            ethereum:
+              type: string
+              description: The Ethereum wallet address of the service
+              example: "0x8wgRDgvYOrtSaWEIV21g0lTuWDUnTu4_iYj4hmA7PI0"
+            solana:
+              type: string
+              description: The Solana wallet address of the service
+              example: "8wgRDgvYOrtSaWEIV21g0lTuWDUnTu4_iYj4hmA7PI0"
+            matic:
+              type: string
+              description: The Matic wallet address of the service
+              example: "0x8wgRDgvYOrtSaWEIV21g0lTuWDUnTu4_iYj4hmA7PI0"
+          gateway:
+            type: string
+            description: The gateway address of the service
+            example: arweave.net
 paths:
+  /:
+    servers:
+      - url: /
+    get:
+      summary: Gets the info of the service
+      responses:
+        "200":
+          description: The info of the service
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceInfo"
+  /info:
+    servers:
+      - url: /
+    get:
+      summary: Gets the info of the service
+      responses:
+        "200":
+          description: The info of the service
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceInfo"
+  /price/:currency/:byteCount:
+    servers:
+      - url: /
+    get:
+      summary: Gets the price in winc to upload a data item
+      parameters:
+        - $ref: "#/components/parameters/currency"
+        - name: byteCount
+          in: path
+          description: The byte count of the data item.
+          required: true
+          schema:
+            type: integer
+            example: 1000
+      responses:
+        "200":
+          description: The price of the data item
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                Price:
+                  value: 1000000
+        "400":
+          description: Invalid byte count
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                InvalidByteCount:
+                  value: Invalid byte count
+  /price/:currency:
+    servers:
+      - url: /
+    get:
+      summary: Gets the price in winc to upload a data item
+      parameters:
+        - $ref: "#/components/parameters/currency"
+      responses:
+        "200":
+          description: The price of the data item
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                Price:
+                  value: 1000000
+        "400":
+          description: Invalid byte count
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                InvalidByteCount:
+                  value: Invalid byte count
+  /account/balance/:id:
+    servers:
+      - url: /
+    get:
+      summary: Gets the balance of a wallet
+      parameters:
+        - $ref: "#/components/parameters/id"
+      responses:
+        "200":
+          description: The balance of the wallet
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                Balance:
+                  value: 1000000
+        "404":
+          description: Not found
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Not found
+        "503":
+          description: Internal server error
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Internal server error
   /tx:
+    servers:
+      - url: /v1
+      - url: /
     post:
       summary: Posts a signed data item to Arweave
       requestBody:
@@ -69,18 +355,8 @@ paths:
               type: string
               format: binary
       headers:
-        Content-Length:
-          schema:
-            type: integer
-            format: int64
-            maximum: 10737418240 # 10GiB
-          required: false
-        Content-Type:
-          schema:
-            type: string
-            enum:
-              - application/octet-stream
-          required: false
+        - $ref: "#/components/headers/Content-Length"
+        - $ref: "#/components/headers/Content-Type"
 
       responses:
         "200":
@@ -122,3 +398,196 @@ paths:
                   value: Data item is too large, this service only accepts data items up to 2147483648 bytes!
                 InvalidDataItem:
                   value: Data item parsing error!
+  /tx/:currency:
+    servers:
+      - url: /v1
+      - url: /
+    post:
+      summary: Posts a signed data item to arewave for a specifc token
+      parameters:
+        - $ref: "#/components/parameters/currency"
+      requestBody:
+        required: true
+        description: A signed data item
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      headers:
+        - $ref: "#/components/headers/Content-Length"
+        - $ref: "#/components/headers/Content-Type"
+      responses:
+        "200":
+          description: The receipt of the uploaded data item.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataItemPost"
+        "202":
+          description: Data item has already been posted to this service.
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                DataItemExists:
+                  value: Data Item Exists
+        "402":
+          description: Insufficient balance
+          content:
+            text/plain:
+              schema:
+                type: string
+                default: "Insufficient balance"
+  /tx/:id/status:
+    servers:
+      - url: /v1
+      - url: /
+    get:
+      summary: Gets the status of a data item
+      responses:
+        "200":
+          description: The status of the data item
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/DataItemStatus"
+        "404":
+          description: Data item not found
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                DataItemNotFound:
+                  value: Data Item Not Found
+  /chunks/-1/-1:
+    servers:
+      - url: /v1
+      - url: /
+    get:
+      summary: Creates a new multi-part upload. Chunks should be posted to /chunks/:uploadId/:chunkOffset using the returned uploadId. Irys compatible.
+      parameters:
+        - $ref: "#/components/parameters/uploadId"
+        - $ref: "#/components/parameters/chunkOffset"
+      responses:
+        "200":
+          description: Creates a new multi-part upload. The returned upload id can then be used to send chunks.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateMultipartUpload"
+        "503":
+          description: Internal server error
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "Internal server error"
+  /chunks/:uploadId/-1:
+    servers:
+      - url: /
+    get:
+      summary: Gets an existing multi-part upload, including all existing chunks that have been uploaded. Irys compatible.
+      parameters:
+        - $ref: "#/components/parameters/uploadId"
+      responses:
+        "200":
+          description: The existing multipart upload, including all existing chunks that have been uploaded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InFlightMultipartUpload"
+        "404":
+          description: Multi-part upload not found
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                MultipartUploadNotFound:
+                  value: Multi-part upload not found
+        "503":
+          description: Internal server error
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "Internal server error"
+    post:
+      summary: Finalizes a multi-part upload. Irys compatible.
+      parameters:
+        - $ref: "#/components/parameters/uploadId"
+      responses:
+        "200":
+          description: The multi-part upload was successfully finalized. The receipt includes a signature of the id, version, timestamp, public key, deadlineHeight and owner.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CompleteMultipartUpload"
+        "402":
+          description: Insufficient balance
+          content:
+            text/plain:
+              schema:
+                type: string
+                default: "Insufficient balance"
+        "404":
+          description: Multi-part upload not found
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                MultipartUploadNotFound:
+                  value: Multi-part upload not found
+        "503":
+          description: Internal server error
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "Internal server error"
+  /chunks/:uploadId/:chunkOffset:
+    servers:
+      - url: /
+    post:
+      summary: Posts a chunk of a multi-part upload. Irys compatible.
+      parameters:
+        - $ref: "#/components/parameters/uploadId"
+        - $ref: "#/components/parameters/chunkOffset"
+      requestBody:
+        required: true
+        description: A chunk of a multi-part upload
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "200":
+          description: The chunk was successfully posted.
+        "402":
+          description: Insufficient balance
+          content:
+            text/plain:
+              schema:
+                type: string
+                default: "Insufficient balance"
+        "404":
+          description: Multi-part upload not found
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                MultipartUploadNotFound:
+                  value: Multi-part upload not found
+        "503":
+          description: Internal server error
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "Internal server error"

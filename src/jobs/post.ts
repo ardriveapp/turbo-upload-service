@@ -61,7 +61,7 @@ export async function postBundleHandler(
     transactionByteCount
   );
 
-  logger.info(`Bundle Transaction details.`, { planId, bundleTx });
+  logger.debug(`Bundle Transaction details.`, { planId, bundleTx });
 
   try {
     // post bundle, throw error on failure
@@ -108,7 +108,7 @@ export async function postBundleHandler(
     // For other failure reasons, insert as a failed to post bundle without throwing error
     // The planned_data_items in the bundle will be demoted to new_data_items
     // We also do not care about the USD/AR rate if posting fails, so we do not pass it in
-    return database.insertFailedToPostBundle(bundleId);
+    return database.updateNewBundleToFailedToPost(planId, bundleId);
   }
 }
 export const handler = createQueueHandler(
@@ -116,7 +116,7 @@ export const handler = createQueueHandler(
   (message) => postBundleHandler(message.planId, defaultArchitecture),
   {
     before: async () => {
-      defaultLogger.info("Post bundle job has been triggered.");
+      defaultLogger.debug("Post bundle job has been triggered.");
     },
   }
 );

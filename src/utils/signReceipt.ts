@@ -32,7 +32,17 @@ export type UnsignedReceipt = {
   winc: string;
 };
 
+export type IrysUnsignedReceipt = Omit<
+  UnsignedReceipt,
+  "dataCaches" | "fastFinalityIndexes" | "winc"
+>;
+
 export type SignedReceipt = UnsignedReceipt & {
+  public: string;
+  signature: string;
+};
+
+export type IrysSignedReceipt = IrysUnsignedReceipt & {
   public: string;
   signature: string;
 };
@@ -40,13 +50,18 @@ export type SignedReceipt = UnsignedReceipt & {
 // TODO: Add receipt version input and use it to prepare hashes for different versions
 export function prepareHash(receipt: UnsignedReceipt): DeepHashChunk {
   return [
+    stringToBuffer("Bundlr"),
     stringToBuffer(receipt.version),
     stringToBuffer(receipt.id),
-    stringToBuffer(receipt.winc),
     stringToBuffer(receipt.deadlineHeight.toString()),
     stringToBuffer(receipt.timestamp.toString()),
-    stringToBuffer(receipt.dataCaches.join(",")),
-    stringToBuffer(receipt.fastFinalityIndexes.join(",")),
+
+    /**
+     * Temporarily excluded for irys migration
+     */
+    // stringToBuffer(receipt.dataCaches.join(",")),
+    // stringToBuffer(receipt.fastFinalityIndexes.join(",")),
+    // stringToBuffer(receipt.winc),
   ];
 }
 
@@ -55,6 +70,26 @@ export async function signReceipt(
   privateKey: JWKInterface
 ): Promise<SignedReceipt> {
   const dh = await deepHash(prepareHash(receipt));
+
+  const signatureBuffer = await getCryptoDriver().sign(privateKey, dh, {
+    saltLength: 0,
+  });
+  const signature = toB64Url(Buffer.from(signatureBuffer));
+
+  return { ...receipt, public: getPublicKeyFromJwk(privateKey), signature };
+}
+
+export async function signIrysReceipt(
+  receipt: IrysUnsignedReceipt,
+  privateKey: JWKInterface
+): Promise<IrysSignedReceipt> {
+  const dh = await deepHash([
+    stringToBuffer("Bundlr"),
+    stringToBuffer(receipt.version),
+    stringToBuffer(receipt.id),
+    stringToBuffer(receipt.deadlineHeight.toString()),
+    stringToBuffer(receipt.timestamp.toString()),
+  ]);
 
   const signatureBuffer = await getCryptoDriver().sign(privateKey, dh, {
     saltLength: 0,

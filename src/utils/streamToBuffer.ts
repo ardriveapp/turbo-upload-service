@@ -24,7 +24,7 @@ export const streamToBuffer = async (
   encoding?: BufferEncoding
 ): Promise<Buffer> => {
   let offset = 0;
-  logger.info(
+  logger.debug(
     `Converting stream of expected data size ${data_size} to Buffer...`
   );
   let buffer: Buffer = Buffer.alloc(data_size, undefined, encoding);

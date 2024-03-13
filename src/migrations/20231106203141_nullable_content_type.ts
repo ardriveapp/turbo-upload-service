@@ -16,7 +16,7 @@
  */
 import { Knex } from "knex";
 
-import { NullableContentTypeMigrator } from "../../src/arch/db/migrator";
+import { NullableContentTypeMigrator } from "../arch/db/migrator";
 
 export async function up(knex: Knex): Promise<void> {
   return new NullableContentTypeMigrator(knex).migrate();

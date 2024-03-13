@@ -18,10 +18,11 @@ import { AxiosInstance } from "axios";
 import { sign } from "jsonwebtoken";
 import winston from "winston";
 
+import { allowListedSignatureTypes } from "../bundles/verifyDataItem";
 import {
   allowArFSData,
   allowListPublicAddresses,
-  freeArfsDataAllowLimit,
+  freeUploadLimitBytes,
   testPrivateRouteSecret,
 } from "../constants";
 import defaultLogger from "../logger";
@@ -58,6 +59,7 @@ interface PaymentServiceCheckBalanceResponse {
 interface CheckBalanceParams {
   size: ByteCount;
   ownerPublicAddress: PublicArweaveAddress;
+  signatureType: number;
 }
 
 interface ReserveBalanceParams extends CheckBalanceParams {
@@ -83,6 +85,7 @@ export interface PaymentService {
   ): Promise<ReserveBalanceResponse>;
   refundBalanceForData(params: RefundBalanceParams): Promise<void>;
   getFiatToARConversionRate(currency: "usd"): Promise<number>; // TODO: create type for currency
+  paymentServiceURL: string;
 }
 
 const allowedReserveBalanceResponse: ReserveBalanceResponse = {
@@ -98,8 +101,10 @@ export class TurboPaymentService implements PaymentService {
     // TODO: create a client config with base url pointing at the base url of the payment service
     private readonly axios: AxiosInstance = createAxiosInstance({}),
     private readonly logger: winston.Logger = defaultLogger,
-    private readonly paymentServiceURL: string = process.env
-      .PAYMENT_SERVICE_BASE_URL ?? "payment.ardrive.dev"
+    readonly paymentServiceURL: string = process.env.PAYMENT_SERVICE_BASE_URL ??
+      "payment.ardrive.dev",
+    paymentServiceProtocol: string = process.env.PAYMENT_SERVICE_PROTOCOL ??
+      "https"
   ) {
     this.logger = logger.child({
       class: this.constructor.name,
@@ -107,19 +112,26 @@ export class TurboPaymentService implements PaymentService {
       shouldAllowArFSData,
     });
     this.axios = axios;
-    this.paymentServiceURL = `https://${paymentServiceURL}`;
+    this.paymentServiceURL = `${paymentServiceProtocol}://${paymentServiceURL}`;
   }
 
   public async checkBalanceForData({
     size,
     ownerPublicAddress,
+    signatureType,
   }: CheckBalanceParams): Promise<CheckBalanceResponse> {
     const logger = this.logger.child({ ownerPublicAddress, size });
 
-    logger.info("Checking balance for wallet.");
+    logger.debug("Checking balance for wallet.");
 
-    if (await this.checkBalanceForDataInternal({ size, ownerPublicAddress })) {
-      logger.info(
+    if (
+      await this.checkBalanceForDataInternal({
+        size,
+        ownerPublicAddress,
+        signatureType,
+      })
+    ) {
+      logger.debug(
         "Data was allowed via internal upload service business logic. Not calling payment service to check balance..."
       );
       return {
@@ -128,7 +140,7 @@ export class TurboPaymentService implements PaymentService {
       };
     }
 
-    logger.info("Calling payment service to check balance...");
+    logger.debug("Calling payment service to check balance...");
 
     const token = sign({}, secret, {
       expiresIn: "1h",
@@ -149,7 +161,7 @@ export class TurboPaymentService implements PaymentService {
       },
     });
 
-    logger.info("Payment service response.", {
+    logger.debug("Payment service response.", {
       status,
       statusText,
       data,
@@ -167,24 +179,33 @@ export class TurboPaymentService implements PaymentService {
   private async checkBalanceForDataInternal({
     size,
     ownerPublicAddress,
+    signatureType,
   }: CheckBalanceParams): Promise<boolean> {
     const logger = this.logger.child({ ownerPublicAddress, size });
 
-    logger.info("Checking balance for wallet.");
+    logger.debug("Checking balance for wallet.");
 
     if (allowListPublicAddresses.includes(ownerPublicAddress)) {
-      logger.info(
+      logger.debug(
         "The owner's address is on the arweave public address allow list. Allowing data item to be bundled by the service..."
       );
       return true;
     }
 
-    if (this.shouldAllowArFSData && size <= freeArfsDataAllowLimit) {
+    if (this.shouldAllowArFSData && size <= freeUploadLimitBytes) {
       // TODO: Add limitations PE-2603
-      logger.info(
+      logger.debug(
         "This data item is under the free ArFS data limit. Allowing data item to be bundled by the service..."
       );
 
+      return true;
+    }
+
+    if (allowListedSignatureTypes.has(signatureType)) {
+      logger.info(
+        "Allow listed signature detected. Allowing data item to be bundled by the service...",
+        { signatureType }
+      );
       return true;
     }
 
@@ -195,19 +216,26 @@ export class TurboPaymentService implements PaymentService {
     size,
     ownerPublicAddress,
     dataItemId,
+    signatureType,
   }: ReserveBalanceParams): Promise<ReserveBalanceResponse> {
     const logger = this.logger.child({ ownerPublicAddress, size });
 
-    logger.info("Reserving balance for wallet.");
+    logger.debug("Reserving balance for wallet.");
 
-    if (await this.checkBalanceForDataInternal({ size, ownerPublicAddress })) {
-      logger.info(
+    if (
+      await this.checkBalanceForDataInternal({
+        size,
+        ownerPublicAddress,
+        signatureType,
+      })
+    ) {
+      logger.debug(
         "Data was allowed via internal upload service business logic. Not calling payment service to reserve balance..."
       );
       return allowedReserveBalanceResponse;
     }
 
-    logger.info("Calling payment service to reserve balance...");
+    logger.debug("Calling payment service to reserve balance...");
 
     const token = sign({}, secret, {
       expiresIn: "1h",
@@ -226,7 +254,7 @@ export class TurboPaymentService implements PaymentService {
       },
     });
 
-    logger.info("Payment service response.", {
+    logger.debug("Payment service response.", {
       status,
       statusText,
       data,
@@ -249,7 +277,7 @@ export class TurboPaymentService implements PaymentService {
     const logger = this.logger.child({ ...params });
     const { ownerPublicAddress, winston, dataItemId } = params;
 
-    logger.info("Refunding balance for wallet.", {
+    logger.debug("Refunding balance for wallet.", {
       ownerPublicAddress,
       winston,
     });
@@ -274,7 +302,7 @@ export class TurboPaymentService implements PaymentService {
           },
         }
       );
-      logger.info("Successfully refunded balance for wallet.");
+      logger.debug("Successfully refunded balance for wallet.");
     } catch (error) {
       // TODO: add prometheus metric for when this fails - we may need to manually intervene to distribute the refund
       MetricRegistry.refundBalanceFail.inc();

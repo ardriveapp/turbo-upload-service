@@ -14,7 +14,11 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+import logger from "./logger";
 import { createServer } from "./server";
 
 // Here is our server 🙌
-createServer({});
+createServer({}).catch((error) => {
+  logger.error("Failed to start server.", error);
+  process.exit(1);
+});

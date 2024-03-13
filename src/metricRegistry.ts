@@ -67,6 +67,7 @@ export class MetricRegistry {
     return this.registry;
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   public registerMetric(metric: promClient.Metric<any>): void {
     this.registry.registerMetric(metric);
   }

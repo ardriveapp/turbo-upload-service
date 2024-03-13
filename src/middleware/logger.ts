@@ -27,11 +27,26 @@ export async function loggerMiddleware(ctx: KoaContext, next: Next) {
     path: ctx.path,
     method: ctx.method,
     params: ctx.params,
+
+    // Put headers we are interested on the logger child
+    xForwardedFor: ctx.get("x-forwarded-for"),
+    referer: ctx.get("referer"),
+    userAgent: ctx.get("user-agent"),
+    origin: ctx.get("origin"),
+    xAmznTraceId: ctx.get("x-amzn-trace-id"),
+    xAmzCloudfrontId: ctx.get("x-amz-cf-id"),
   });
-  // TODO: replace with opentelemetry middleware, log the request headers once to track SDK usage.
-  log.info("Request headers", { headers: ctx.headers });
+
   ctx.state.logger = log;
   ctx.state.trace = trace;
+
+  // Skip logging for metrics and health checks
+  if (ctx.path === "/bundler_metrics" || ctx.path === "/health") {
+    return next();
+  }
+
+  // TODO: replace with open telemetry middleware, log the request headers once to track SDK usage.
+  log.debug("Request headers", { headers: ctx.headers });
   const startTime = Date.now();
   log.debug("Received request.");
   await next();

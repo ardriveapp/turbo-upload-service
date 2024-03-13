@@ -14,6 +14,7 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+import { Tracer } from "@opentelemetry/api";
 import { JWKInterface } from "arbundles";
 import knex from "knex";
 import winston from "winston";
@@ -38,6 +39,7 @@ export interface Architecture {
   logger: winston.Logger;
   arweaveGateway: ArweaveGateway;
   getArweaveWallet: () => Promise<JWKInterface>;
+  tracer?: Tracer;
 }
 
 export const defaultArchitecture: Architecture = {

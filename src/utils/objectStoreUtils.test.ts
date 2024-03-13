@@ -26,7 +26,7 @@ import {
   bundleHeaderInfoFromBuffer,
   totalBundleSizeFromHeaderInfo,
 } from "../bundles/assembleBundleHeader";
-import { rawIdFromRawSignature } from "../bundles/rawIdFromRawSignature";
+import { bufferIdFromReadableSignature } from "../bundles/idFromSignature";
 import logger from "../logger";
 import { PlanId } from "../types/dbTypes";
 import { TransactionId } from "../types/types";
@@ -47,7 +47,7 @@ describe("Bundle buffer functions", () => {
     const headerBuffer = await streamToBuffer(
       await assembleBundleHeader([
         {
-          dataItemRawId: await rawIdFromRawSignature(
+          dataItemRawId: await bufferIdFromReadableSignature(
             await getRawSignatureOfDataItem(
               objectStore,
               dataItemId,
@@ -59,7 +59,7 @@ describe("Bundle buffer functions", () => {
       ])
     );
 
-    const stream = await assembleBundlePayload(objectStore, headerBuffer);
+    const stream = assembleBundlePayload(objectStore, headerBuffer);
     const bufferFromStream = await streamToBuffer(stream);
     const headerSize = totalBundleSizeFromHeaderInfo(
       bundleHeaderInfoFromBuffer(headerBuffer)
@@ -130,17 +130,17 @@ async function getBundlePLimitBuffer(
       return parallelLimit(async () => {
         const storeKey = `${dataItemPrefix}/${dataItemId}`;
         const rawDataItemSize = await objectStore.getObjectByteCount(storeKey);
-        return streamToBuffer(
-          await objectStore.getObject(storeKey),
-          rawDataItemSize
-        );
+        const { readable } = await objectStore.getObject(storeKey);
+        return streamToBuffer(readable, rawDataItemSize);
       });
     })
   );
 
   const headerStoreKey = `header/${planId}`;
   const bundleHeaderBuffer = await streamToBuffer(
-    await objectStore.getObject(headerStoreKey),
+    (
+      await objectStore.getObject(headerStoreKey)
+    ).readable,
     await objectStore.getObjectByteCount(headerStoreKey)
   );
 
@@ -153,19 +153,19 @@ async function getBundleBufferAlloc(
   planId: PlanId,
   bundleHeaderBuffer: Buffer
 ): Promise<Buffer> {
-  logger.info(`Preparing bundle buffer for plan ID ${planId}...`);
+  logger.debug(`Preparing bundle buffer for plan ID ${planId}...`);
 
   // Figure out how large a buffer we'll need by utilizing the bundle header info
   const bundleHeaderInfo = bundleHeaderInfoFromBuffer(bundleHeaderBuffer);
   const totalBundleSize = totalBundleSizeFromHeaderInfo(bundleHeaderInfo);
 
-  logger.info(
+  logger.debug(
     `Allocating bundle buffer of size ${totalBundleSize} bytes for plan ID ${planId}...`
   );
   const bundleBuffer = Buffer.alloc(totalBundleSize);
   bundleHeaderBuffer.copy(bundleBuffer);
 
-  logger.info(
+  logger.debug(
     `Copied bundle header of size ${bundleHeaderBuffer.byteLength} into bundle buffer of size ${bundleBuffer.byteLength} for plan ID ${planId}...`
   );
 
@@ -176,9 +176,9 @@ async function getBundleBufferAlloc(
       return parallelLimit(async () => {
         let objReadable: Readable;
         try {
-          objReadable = await objectStore.getObject(
-            `${dataItemPrefix}/${dataItemId}`
-          );
+          objReadable = (
+            await objectStore.getObject(`${dataItemPrefix}/${dataItemId}`)
+          ).readable;
         } catch (error) {
           logger.error(
             `Failed to get readable for '${dataItemPrefix}/${dataItemId}' from object store!`,

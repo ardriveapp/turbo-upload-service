@@ -16,16 +16,67 @@
  */
 import { Readable } from "stream";
 
+import { UploadId } from "../types/types";
+
+export interface PayloadInfo {
+  payloadDataStart: number;
+  payloadContentType: string;
+}
+
+export interface ObjectStoreOptions {
+  contentType?: string;
+  contentLength?: number;
+  payloadInfo?: PayloadInfo;
+}
+
+export interface MoveObjectParams {
+  sourceKey: string;
+  destinationKey: string;
+  Options: ObjectStoreOptions;
+}
+
 export interface ObjectStore {
   putObject(
     Key: string,
     Body: Readable,
-    Options?: {
-      contentType?: string;
-      contentLength?: number;
-    }
+    Options?: ObjectStoreOptions
   ): Promise<void>;
-  getObject(Key: string, Range?: string): Promise<Readable>;
+  getObject(
+    Key: string,
+    Range?: string
+  ): Promise<{ readable: Readable; etag: string | undefined }>;
+  headObject(Key: string): Promise<{
+    etag: string | undefined;
+    ContentLength: number;
+    ContentType: string | undefined;
+  }>;
   getObjectByteCount(Key: string): Promise<number>;
   removeObject(Key: string): Promise<void>;
+  moveObject(params: {
+    sourceKey: string;
+    destinationKey: string;
+    Options?: ObjectStoreOptions;
+  }): Promise<void>;
+  getObjectPayloadInfo(Key: string): Promise<PayloadInfo>;
+
+  // multipart uploads
+  createMultipartUpload(Key: string): Promise<string>;
+  completeMultipartUpload(key: string, uploadId: UploadId): Promise<string>;
+  uploadPart(
+    Key: string,
+    Body: Readable,
+    uploadId: UploadId,
+    partNumber: number,
+    ContentLength: number
+  ): Promise<string>;
+  // NOTE: this may be better moved to database interface. We may not want to make object stores responsible for keep tracking of their parts.
+  getMultipartUploadParts(
+    Key: string,
+    uploadId: UploadId
+  ): Promise<
+    {
+      size: number;
+      partNumber: number;
+    }[]
+  >;
 }

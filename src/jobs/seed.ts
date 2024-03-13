@@ -22,6 +22,7 @@ import { createQueueHandler } from "../arch/queues";
 import { ArweaveInterface } from "../arweaveJs";
 import defaultLogger from "../logger";
 import { PlanId } from "../types/dbTypes";
+import { filterKeysFromObject } from "../utils/common";
 import {
   getBundlePayload,
   getBundleTx,
@@ -47,12 +48,11 @@ export async function seedBundleHandler(
     planId
   );
   const { bundleToSeed, dataItemsToSeed } = dbResult;
-  const { bundleId, transactionByteCount, headerByteCount, payloadByteCount } =
-    bundleToSeed;
+  const { bundleId, transactionByteCount } = bundleToSeed;
 
   logger.info("Getting transaction to seed...", {
     bundleToSeed,
-    dataItemsToSeed,
+    dataItemCount: dataItemsToSeed.length,
   });
   const bundleTx = await getBundleTx(
     objectStore,
@@ -60,17 +60,18 @@ export async function seedBundleHandler(
     transactionByteCount
   );
 
-  logger.info("Retrieved bundle tx : ", { bundleTx });
+  logger.info("Retrieved bundle tx : ", {
+    bundleTx: filterKeysFromObject(bundleTx, [
+      "data",
+      "chunks",
+      "owner",
+      "tags",
+    ]),
+  });
 
   try {
     await arweave.uploadChunksFromPayloadStream(
-      () =>
-        getBundlePayload(
-          objectStore,
-          planId,
-          headerByteCount,
-          payloadByteCount
-        ),
+      () => getBundlePayload(objectStore, planId),
       bundleTx
     );
   } catch (error) {
