@@ -1,5 +1,5 @@
 # env files
-.env
+.env*
 
 # Coverage and nyc_output directories used by tools like istanbul
 coverage

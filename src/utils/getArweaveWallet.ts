@@ -42,8 +42,7 @@ const opticalPubKeyCache = new PromiseCache<string, string>({
   cacheTTL: sixtyMinutes,
 });
 
-// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-const awsRegion = process.env.AWS_REGION!;
+const awsRegion = process.env.AWS_REGION ?? "us-east-1";
 
 const secretsMgrClient = new SecretsManagerClient({
   region: awsRegion,
@@ -136,4 +135,22 @@ export async function getOpticalPubKey(): Promise<Base64UrlString> {
       })()
     )
   );
+}
+
+const ssmParamCache = new ReadThroughPromiseCache<string, string>({
+  cacheParams: {
+    cacheCapacity: 100,
+    cacheTTL: sixtyMinutes,
+  },
+  readThroughFunction: async (parameterName) => {
+    const command = new GetParameterCommand({
+      Name: parameterName,
+    });
+    const parameter = await svcsSystemsMgrClient.send(command);
+    return parameter.Parameter?.Value ?? "";
+  },
+});
+
+export async function getSSMParameter(parameterName: string): Promise<string> {
+  return ssmParamCache.get(parameterName);
 }

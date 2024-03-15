@@ -18,6 +18,7 @@ import cors from "@koa/cors";
 import Koa, { DefaultState, Next, ParameterizedContext } from "koa";
 
 import { Architecture, defaultArchitecture } from "./arch/architecture";
+import { OTELExporter } from "./arch/tracing";
 import { port as defaultPort } from "./constants";
 import globalLogger from "./logger";
 import { MetricRegistry } from "./metricRegistry";
@@ -27,6 +28,7 @@ import {
   requestMiddleware,
 } from "./middleware";
 import router from "./router";
+import { loadConfig } from "./utils/config";
 
 type KoaState = DefaultState & Architecture;
 export type KoaContext = ParameterizedContext<KoaState>;
@@ -41,36 +43,43 @@ process.on("uncaughtException", (error) => {
   globalLogger.error("Uncaught exception:", error);
 });
 
-export function createServer(
+export async function createServer(
   arch: Partial<Architecture>,
   port: number = defaultPort
 ) {
-  const app = new Koa();
+  // load ssm parameters
+  await loadConfig();
 
+  const app = new Koa();
   const uploadDatabase = arch.database ?? defaultArchitecture.database;
   const objectStore = arch.objectStore ?? defaultArchitecture.objectStore;
   const paymentService =
     arch.paymentService ?? defaultArchitecture.paymentService;
-  const logger = arch.logger ?? defaultArchitecture.logger;
+
   const getArweaveWallet =
     arch.getArweaveWallet ?? defaultArchitecture.getArweaveWallet;
   const arweaveGateway =
     arch.arweaveGateway ?? defaultArchitecture.arweaveGateway;
+  const tracer =
+    arch.tracer ??
+    new OTELExporter({
+      apiKey: process.env.HONEYCOMB_API_KEY,
+    }).getTracer("upload-service");
 
   // attach logger to context including trace id
   app.use(loggerMiddleware);
   // attaches listeners related to request streams for debugging
   app.use(requestMiddleware);
-  app.use(cors({ allowMethods: "POST" }));
+  app.use(cors({ credentials: true }));
   // attach our primary architecture
   app.use((ctx: KoaContext, next: Next) =>
     architectureMiddleware(ctx, next, {
       database: uploadDatabase,
-      logger,
       objectStore,
       paymentService,
       arweaveGateway,
       getArweaveWallet,
+      tracer,
     })
   );
   app.use(router.routes());
@@ -78,8 +87,11 @@ export function createServer(
   server.keepAliveTimeout = 120_000; // intentionally larger than ALB idle timeout
   server.requestTimeout = 0; // disable request timeout
 
-  logger.info(`Listening on port ${port}...`);
-  logger.info(`Keep alive is: ${server.keepAliveTimeout}`);
-  logger.info(`Request timeout is: ${server.requestTimeout}`);
+  globalLogger.info(`Listening on port ${port}...`);
+  globalLogger.info(
+    `Communicating with payment service at ${paymentService.paymentServiceURL}...`
+  );
+  globalLogger.info(`Keep alive is: ${server.keepAliveTimeout}`);
+  globalLogger.info(`Request timeout is: ${server.requestTimeout}`);
   return server;
 }

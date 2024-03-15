@@ -16,7 +16,6 @@
  */
 import { Tag } from "arbundles";
 import { Next } from "koa";
-import { Readable } from "stream";
 
 import { CheckBalanceResponse, ReserveBalanceResponse } from "../arch/payment";
 import { enqueue } from "../arch/queues";
@@ -24,28 +23,33 @@ import { StreamingDataItem } from "../bundles/streamingDataItem";
 import { signatureTypeInfo } from "../bundles/verifyDataItem";
 import {
   anchorLength,
+  blocklistedAddresses,
   dataCaches,
   deadlineHeightIncrement,
   emptyAnchorLength,
   emptyTargetLength,
   fastFinalityIndexes,
-  maxDataItemSize,
+  maxSingleDataItemByteCount,
   octetStreamContentType,
   receiptVersion,
   signatureTypeLength,
+  skipOpticalPostAddresses,
   targetLength,
 } from "../constants";
 import { MetricRegistry } from "../metricRegistry";
 import { KoaContext } from "../server";
 import { TransactionId } from "../types/types";
 import { W } from "../types/winston";
-import { errorResponse, tapStream } from "../utils/common";
-import { DataItemExistsWarning } from "../utils/errors";
+import { fromB64Url } from "../utils/base64";
 import {
-  putDataItemData,
-  putDataItemRaw,
-  removeDataItem,
-} from "../utils/objectStoreUtils";
+  errorResponse,
+  filterKeysFromObject,
+  getPremiumFeatureType,
+  payloadContentTypeFromDecodedTags,
+  tapStream,
+} from "../utils/common";
+import { DataItemExistsWarning } from "../utils/errors";
+import { putDataItemRaw, removeDataItem } from "../utils/objectStoreUtils";
 import {
   containsAns104Tags,
   encodeTagsForOptical,
@@ -73,8 +77,6 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
   };
 
   const requestStartTime = Date.now();
-  logger.info("New Data Item posting...");
-
   const {
     objectStore,
     database,
@@ -85,24 +87,19 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
 
   // Validate the content-length header
   const contentLength = ctx.req.headers?.["content-length"];
-  logger.info("request content length: ", { contentLength });
   if (contentLength === undefined) {
-    logger.warn("Request has no content length header!");
-  } else if (+contentLength > maxDataItemSize) {
+    logger.debug("Request has no content length header!");
+  } else if (+contentLength > maxSingleDataItemByteCount) {
     return errorResponse(ctx, {
-      errorMessage: `Data item is too large, this service only accepts data items up to ${maxDataItemSize} bytes!`,
+      errorMessage: `Data item is too large, this service only accepts data items up to ${maxSingleDataItemByteCount} bytes!`,
     });
   }
 
   // Inspect, but do not validate, the content-type header
   const requestContentType = ctx.req.headers?.["content-type"];
   if (!requestContentType) {
-    logger.warn("Missing request content type!");
+    logger.debug("Missing request content type!");
   } else if (requestContentType !== octetStreamContentType) {
-    logger.warn(
-      `Request content type is unexpected... Rejecting this request with a 400 status!`,
-      { requestContentType, contentLength }
-    );
     errorResponse(ctx, {
       errorMessage: "Invalid Content Type",
     });
@@ -146,14 +143,13 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
     return next();
   }
 
-  logger.info("Retrieved data item signature type, owner, and ID.");
-
   // Catch duplicate data item attacks via in memory cache (for single instance of service)
   if (dataItemIdCache.has(dataItemId)) {
-    logger.info("Data item already uploaded to this service instance.");
+    // create the error for consistent responses
+    const error = new DataItemExistsWarning(dataItemId);
+    logger.debug("Data item already uploaded to this service instance.");
     ctx.status = 202;
-    ctx.res.statusMessage = "Data Item Exists";
-
+    ctx.res.statusMessage = error.message;
     return next();
   }
   addToDataItemCache(dataItemId);
@@ -162,10 +158,11 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
   if (contentLength !== undefined) {
     let checkBalanceResponse: CheckBalanceResponse;
     try {
-      logger.info("Checking balance for upload...");
+      logger.debug("Checking balance for upload...");
       checkBalanceResponse = await paymentService.checkBalanceForData({
         ownerPublicAddress,
         size: +contentLength,
+        signatureType,
       });
     } catch (error) {
       errorResponse(ctx, {
@@ -177,7 +174,7 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
     }
 
     if (checkBalanceResponse.userHasSufficientBalance) {
-      logger.info("User can afford bytes", checkBalanceResponse);
+      logger.debug("User can afford bytes", checkBalanceResponse);
     } else {
       errorResponse(ctx, {
         status: 402,
@@ -190,41 +187,30 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
   }
 
   // Parse out the content type and the payload stream
-  let contentType: string;
-  let dataStart: number;
+  let payloadContentType: string;
+  let payloadDataStart: number;
   let anchor: string | undefined;
   let target: string | undefined;
   let tags: Tag[];
-  let payloadStream: Readable;
   try {
     // Log some useful debugging info
     anchor = await streamingDataItem.getAnchor();
     target = await streamingDataItem.getTarget();
-    logger.info(`Target and anchor parsed:`, {
-      anchor,
-      target,
-    });
-
     const numTags = await streamingDataItem.getNumTags();
-    logger.info("Parsed tag count", {
-      numTags,
-    });
-
     const numTagsBytes = await streamingDataItem.getNumTagsBytes();
     tags = await streamingDataItem.getTags();
+    payloadContentType = payloadContentTypeFromDecodedTags(tags);
 
-    logger.info(`Tags parsed:`, {
+    // Log tags and other useful info for log parsing
+    logger = logger.child({
+      payloadContentType,
+      numTags,
       tags,
-      numTagsBytes,
-      dataItemId,
     });
-
-    contentType =
-      tags.filter((tag) => tag.name.toLowerCase() === "content-type").shift()
-        ?.value || octetStreamContentType;
-
-    logger.info(`Awaiting a payload stream for caching...`, {
-      contentType,
+    logger.debug(`Data Item parsed, awaiting payload stream...`, {
+      numTagsBytes,
+      anchor,
+      target,
     });
 
     const tagsStart =
@@ -233,9 +219,7 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
       signatureTypeInfo[signatureType].pubkeyLength +
       (target === undefined ? emptyTargetLength : targetLength) +
       (anchor === undefined ? emptyAnchorLength : anchorLength);
-    dataStart = tagsStart + 16 + numTagsBytes;
-
-    payloadStream = await streamingDataItem.getPayloadStream();
+    payloadDataStart = tagsStart + 16 + numTagsBytes;
   } catch (error) {
     errorResponse(ctx, {
       errorMessage: "Data item parsing error!",
@@ -246,31 +230,19 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
     return next();
   }
 
-  logger.info(`Tapping payload stream for caching...`);
-
-  const extractedDataItemStream = tapStream({
-    readable: payloadStream,
-    logger: logger.child({ context: "extractedDataItemStream" }),
-  });
-
   // Cache the raw and extracted data item streams
   const objectStoreCacheStart = Date.now();
   try {
     await Promise.allSettled([
-      putDataItemRaw(objectStore, dataItemId, rawDataItemStream).then(() => {
-        durations.cacheDuration = Date.now() - objectStoreCacheStart;
-        logger.info(`Cache full item duration: ${durations.cacheDuration}ms`);
-      }),
-      putDataItemData(
+      putDataItemRaw(
         objectStore,
         dataItemId,
-        contentType,
-        extractedDataItemStream // TODO: IS THERE ENOUGH HIGH WATER BUFFER IN THE PASS-THROUGH TO GET HERE?
+        rawDataItemStream,
+        payloadContentType,
+        payloadDataStart
       ).then(() => {
-        durations.extractDuration = Date.now() - objectStoreCacheStart;
-        logger.info(
-          `Cache extracted item duration: ${durations.extractDuration}ms`
-        );
+        durations.cacheDuration = Date.now() - objectStoreCacheStart;
+        logger.debug(`Cache full item duration: ${durations.cacheDuration}ms`);
       }),
     ]).then((results) => {
       for (const result of results) {
@@ -278,7 +250,7 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
           throw result.reason;
         }
       }
-      logger.info(
+      logger.debug(
         `Finished uploading raw and extracted data item to object stores!`
       );
     });
@@ -293,7 +265,7 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
     return next();
   }
 
-  logger.info(`Assessing data item validity...`);
+  logger.debug(`Assessing data item validity...`);
   let isValid: boolean;
   try {
     isValid = await streamingDataItem.isValid();
@@ -304,10 +276,10 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
     });
 
     removeFromDataItemCache(dataItemId);
-    removeDataItem(objectStore, dataItemId); // no need to await - just invoke and forget
+    void removeDataItem(objectStore, dataItemId); // no need to await - just invoke and forget
     return next();
   }
-  logger.info(`Got data item validity.`, { isValid });
+  logger.debug(`Got data item validity.`, { isValid });
   if (!isValid) {
     errorResponse(ctx, {
       errorMessage: "Invalid Data Item!",
@@ -318,15 +290,29 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
   }
 
   // NOTE: Safe to get payload size now that payload has been fully consumed
-  const data_size = await streamingDataItem.getPayloadSize();
-  const totalSize = data_size + dataStart;
+  const payloadDataByteCount = await streamingDataItem.getPayloadSize();
+  const totalSize = payloadDataByteCount + payloadDataStart;
 
-  if (totalSize > maxDataItemSize) {
+  if (totalSize > maxSingleDataItemByteCount) {
     errorResponse(ctx, {
-      errorMessage: `Data item is too large, this service only accepts data items up to ${maxDataItemSize} bytes!`,
+      errorMessage: `Data item is too large, this service only accepts data items up to ${maxSingleDataItemByteCount} bytes!`,
     });
     removeFromDataItemCache(dataItemId);
-    removeDataItem(objectStore, dataItemId);
+    void removeDataItem(objectStore, dataItemId);
+    return next();
+  }
+
+  if (blocklistedAddresses.includes(ownerPublicAddress)) {
+    logger.info(
+      "The owner's address is on the arweave public address block list. Rejecting data item..."
+    );
+    errorResponse(ctx, {
+      status: 403,
+      errorMessage: "Forbidden",
+    });
+
+    removeFromDataItemCache(dataItemId);
+    void removeDataItem(objectStore, dataItemId); // don't need to await this - just invoke and move on
     return next();
   }
 
@@ -334,12 +320,14 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
   let paymentResponse: ReserveBalanceResponse;
 
   try {
-    logger.info("Reserving balance for upload...");
+    logger.debug("Reserving balance for upload...");
     paymentResponse = await paymentService.reserveBalanceForData({
       ownerPublicAddress,
       size: totalSize,
       dataItemId,
+      signatureType,
     });
+    logger = logger.child({ paymentResponse });
   } catch (error) {
     errorResponse(ctx, {
       status: 503,
@@ -350,12 +338,12 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
   }
 
   if (paymentResponse.isReserved) {
-    logger.info("Balance successfully reserved", {
+    logger.debug("Balance successfully reserved", {
       assessedWinstonPrice: paymentResponse.costOfDataItem,
     });
   } else {
     if (!paymentResponse.walletExists) {
-      logger.info("Wallet does not exist.");
+      logger.debug("Wallet does not exist.");
     }
 
     errorResponse(ctx, {
@@ -376,23 +364,28 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
     fastFinalityIndexes: [],
   };
   try {
-    logger.info("Enqueuing data item to optical...");
-    await enqueue(
-      "optical-post",
-      await signDataItemHeader(
-        encodeTagsForOptical({
-          id: dataItemId,
-          signature,
-          owner,
-          owner_address: ownerPublicAddress,
-          target: target ?? "",
-          content_type: contentType,
-          data_size,
-          tags,
-        })
-      )
-    );
-    confirmedFeatures.fastFinalityIndexes = fastFinalityIndexes;
+    if (!skipOpticalPostAddresses.includes(ownerPublicAddress)) {
+      logger.debug("Enqueuing data item to optical...");
+      await enqueue(
+        "optical-post",
+        await signDataItemHeader(
+          encodeTagsForOptical({
+            id: dataItemId,
+            signature,
+            owner,
+            owner_address: ownerPublicAddress,
+            target: target ?? "",
+            content_type: payloadContentType,
+            data_size: payloadDataByteCount,
+            tags,
+          })
+        )
+      );
+      confirmedFeatures.fastFinalityIndexes = fastFinalityIndexes;
+    } else {
+      // Attach skip feature to logger for log parsing in final receipt log statement
+      logger = logger.child({ skipOpticalPost: true });
+    }
   } catch (opticalError) {
     // Soft error, just log
     logger.error(
@@ -405,7 +398,7 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
   // Enqueue data item for unbundling if it appears to be a BDI
   if (containsAns104Tags(tags)) {
     try {
-      logger.info("Enqueuing BDI for unbundling...");
+      logger.debug("Enqueuing BDI for unbundling...");
       await enqueue("unbundle-bdi", dataItemId);
     } catch (bdiEnqueueError) {
       // Soft error, just log
@@ -433,7 +426,11 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
       ...confirmedFeatures,
     };
     signedReceipt = await signReceipt(receipt, jwk);
-    logger.info("Receipt signed!", signedReceipt);
+    // Log the signed receipt for log parsing
+    logger.info(
+      "Receipt signed!",
+      filterKeysFromObject(signedReceipt, ["public"])
+    );
   } catch (error) {
     errorResponse(ctx, {
       status: 503,
@@ -441,35 +438,44 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
       error,
     });
     removeFromDataItemCache(dataItemId);
-    removeDataItem(objectStore, dataItemId); // don't need to await this - just invoke and move on
+    void removeDataItem(objectStore, dataItemId); // don't need to await this - just invoke and move on
     return next();
   }
+
+  const premiumFeatureType = getPremiumFeatureType(ownerPublicAddress, tags);
 
   const dbInsertStart = Date.now();
   try {
     await database.insertNewDataItem({
       dataItemId,
-      ownerPublicAddress: ownerPublicAddress,
+      ownerPublicAddress,
       assessedWinstonPrice: paymentResponse.costOfDataItem,
       byteCount: totalSize,
-      dataStart,
+      payloadDataStart,
       signatureType,
       failedBundles: [],
       uploadedDate: new Date(uploadTimestamp).toISOString(),
-      contentType,
+      payloadContentType,
+      premiumFeatureType,
+      signature: fromB64Url(signature),
     });
     durations.dbInsertDuration = Date.now() - dbInsertStart;
-    logger.info(`DB insert duration: ${durations.dbInsertDuration}ms`);
+    logger.debug(`DB insert duration: ${durations.dbInsertDuration}ms`);
   } catch (error) {
     if (error instanceof DataItemExistsWarning) {
-      logger.info(`DB insert exists duration: ${Date.now() - dbInsertStart}ms`);
+      // TODO: REFUND BALANCE! PE-5710
+      logger.debug(
+        `DB insert exists duration: ${Date.now() - dbInsertStart}ms`
+      );
       ctx.status = 202;
       const message = (error as DataItemExistsWarning).message;
-      logger.warn(message);
+      logger.debug(message);
       ctx.res.statusMessage = message;
       return next();
     } else {
-      logger.info(`DB insert failed duration: ${Date.now() - dbInsertStart}ms`);
+      logger.debug(
+        `DB insert failed duration: ${Date.now() - dbInsertStart}ms`
+      );
       errorResponse(ctx, {
         status: 503,
         errorMessage: `Data Item: ${dataItemId}. Upload Service is Unavailable. Cloud Database is unreachable`,
@@ -481,12 +487,12 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
           winston: paymentResponse.costOfDataItem,
           dataItemId,
         });
-        logger.info(`Balance refunded due to database error.`, {
+        logger.warn(`Balance refunded due to database error.`, {
           assessedWinstonPrice: paymentResponse.costOfDataItem,
         });
       }
       removeFromDataItemCache(dataItemId);
-      removeDataItem(objectStore, dataItemId); // don't need to await this - just invoke and move on
+      void removeDataItem(objectStore, dataItemId); // don't need to await this - just invoke and move on
       return next();
     }
   }
@@ -499,8 +505,8 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
 
   durations.totalDuration = Date.now() - requestStartTime;
   // TODO: our logger middleware now captures total request time, so these can logs can be removed if they are not being used for any reporting/alerting
-  logger.info(`Total request duration: ${durations.totalDuration}ms`);
-  logger.info(`Durations (ms):`, durations);
+  logger.debug(`Total request duration: ${durations.totalDuration}ms`);
+  logger.debug(`Durations (ms):`, durations);
 
   // Avoid DIV0
   if (durations.totalDuration > 0) {
@@ -512,7 +518,7 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
       },
       {} as Record<string, number>
     );
-    logger.info(`Duration proportions:`, proportionalDurations);
+    logger.debug(`Duration proportions:`, proportionalDurations);
 
     const toMiBPerSec = 1000 / 1048576;
     const throughputs = {
@@ -520,7 +526,7 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
       cacheThroughput: (totalSize / durations.cacheDuration) * toMiBPerSec,
       extractThroughput: (totalSize / durations.extractDuration) * toMiBPerSec,
     };
-    logger.info(`Throughputs (MiB/sec):`, throughputs);
+    logger.debug(`Throughputs (MiB/sec):`, throughputs);
   }
 
   return next();

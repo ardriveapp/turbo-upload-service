@@ -14,22 +14,14 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-import { PathLike } from "fs";
+import { Knex } from "knex";
 
-import FileDataItem from "./dataItem";
+import { IndexUploadDateMigrator } from "../arch/db/migrator";
 
-export class VerifiedDataItem extends FileDataItem {
-  private constructor(fileName: PathLike) {
-    super(fileName);
-  }
+export async function up(knex: Knex): Promise<void> {
+  return new IndexUploadDateMigrator(knex).migrate();
+}
 
-  static async newVerifiedDataItem(
-    fileName: PathLike
-  ): Promise<VerifiedDataItem | undefined> {
-    const dataItem = new VerifiedDataItem(fileName);
-    if (!(await dataItem.isValid())) {
-      return undefined;
-    }
-    return dataItem;
-  }
+export async function down(knex: Knex): Promise<void> {
+  return new IndexUploadDateMigrator(knex).rollback();
 }

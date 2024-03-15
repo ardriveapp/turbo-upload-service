@@ -24,7 +24,6 @@ import {
 } from "fs";
 import { rename, unlink } from "fs/promises";
 
-import { VerifiedDataItem } from "../bundles/verifiedDataItem";
 import logger from "../logger";
 import { cleanUpTempFile } from "./common";
 
@@ -39,16 +38,12 @@ export class TempDataItem {
     return createReadStream(this.tempDataItemPath);
   }
 
-  public async newVerifiedDataItem(): Promise<VerifiedDataItem | undefined> {
-    return VerifiedDataItem.newVerifiedDataItem(this.tempDataItemPath);
-  }
-
   public async renameTo(objectStoreKeyPath: PathLike) {
     return rename(this.tempDataItemPath, objectStoreKeyPath);
   }
 
   public async unlink(): Promise<void> {
-    return unlink(this.tempDataItemPath).catch((error: any) => {
+    return unlink(this.tempDataItemPath).catch((error: unknown) => {
       logger.error(error);
     });
   }

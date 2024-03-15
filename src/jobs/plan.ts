@@ -21,8 +21,11 @@ import { defaultArchitecture } from "../arch/architecture";
 import { Database } from "../arch/db/database";
 import { PostgresDatabase } from "../arch/db/postgres";
 import { enqueue } from "../arch/queues";
-import { BundlePacker } from "../bundles/bundlePacker";
+import { BundlePacker, PackerBundlePlan } from "../bundles/bundlePacker";
+import { dedicatedBundleTypes } from "../constants";
 import defaultLogger from "../logger";
+import { NewDataItem } from "../types/dbTypes";
+import { factorBundlesByTargetSize } from "../utils/planningUtils";
 
 const PARALLEL_LIMIT = 5;
 export async function planBundleHandler(
@@ -41,10 +44,67 @@ export async function planBundleHandler(
     return;
   }
 
+  const splitDataItemsByFeatureType = dbDataItems.reduce(
+    (acc, dataItem) => {
+      const premiumFeatureType = dataItem.premiumFeatureType;
+      if (Object.keys(dedicatedBundleTypes).includes(premiumFeatureType)) {
+        acc[premiumFeatureType]
+          ? acc[premiumFeatureType].push(dataItem)
+          : (acc[premiumFeatureType] = [dataItem]);
+      } else {
+        acc["default"].push(dataItem);
+      }
+      return acc;
+    },
+    { default: [] } as Record<string, NewDataItem[]>
+  );
+
   logger.info("Planning data items.", {
-    dataItems: dbDataItems,
+    dataItemCount: dbDataItems.length,
   });
-  const bundlePlans = bundlePacker.packDataItemsIntoBundlePlans(dbDataItems);
+
+  const allBundlePlans: PackerBundlePlan[] = [];
+  for (const featureType in splitDataItemsByFeatureType) {
+    const dataItems = splitDataItemsByFeatureType[featureType];
+    const bundlePlans = bundlePacker.packDataItemsIntoBundlePlans(dataItems);
+    allBundlePlans.push(...bundlePlans);
+  }
+
+  // Separate out the plans that contain overdue data items for expedited preparation
+  const { overdueBundlePlans, onTimeBundlePlans } = allBundlePlans.reduce(
+    (acc, bundlePlan) => {
+      if (bundlePlan.containsOverdueDataItems) {
+        acc.overdueBundlePlans.push(bundlePlan);
+      } else {
+        acc.onTimeBundlePlans.push(bundlePlan);
+      }
+      return acc;
+    },
+    {
+      overdueBundlePlans: new Array<PackerBundlePlan>(),
+      onTimeBundlePlans: new Array<PackerBundlePlan>(),
+    }
+  );
+
+  // Separate out the plans that aren't the target size
+  const { underweightBundlePlans, bundlePlans } = factorBundlesByTargetSize(
+    onTimeBundlePlans,
+    bundlePacker
+  );
+
+  underweightBundlePlans.forEach((underweightBundlePlan) => {
+    logger.info(`Not sending under-packed bundle plan for preparation.`, {
+      underweightBundlePlan,
+    });
+  });
+
+  // Expedite the plans containing overdue data item
+  overdueBundlePlans.forEach((overdueBundlePlan) => {
+    logger.info(`Expediting bundle plan due to overdue data item.`, {
+      overdueBundlePlan,
+    });
+    bundlePlans.push(overdueBundlePlan);
+  });
 
   const parallelLimit = pLimit(PARALLEL_LIMIT);
   const insertPromises = bundlePlans.map(({ dataItemIds }) =>

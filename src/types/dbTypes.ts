@@ -18,6 +18,7 @@ import {
   ByteCount,
   PublicArweaveAddress,
   TransactionId,
+  UploadId,
   Winston,
 } from "./types";
 
@@ -28,6 +29,7 @@ export type Timestamp = string;
 export type PlanId = string;
 
 export type SignatureType = number;
+export type Signature = Buffer;
 export type DataStart = number;
 export type BlockHeight = number;
 
@@ -41,11 +43,13 @@ export interface NewDataItem {
   byteCount: ByteCount;
   assessedWinstonPrice: Winston;
   uploadedDate: Timestamp;
+  premiumFeatureType: string;
 
   failedBundles: TransactionId[];
   signatureType?: SignatureType;
-  contentType?: ContentType;
-  dataStart?: DataStart;
+  payloadContentType?: ContentType;
+  payloadDataStart?: DataStart;
+  signature?: Signature;
 }
 export type PostedNewDataItem = Required<NewDataItem>;
 
@@ -54,7 +58,7 @@ export interface PlannedDataItem extends NewDataItem {
   plannedDate: Timestamp;
 }
 
-export interface PermanentDataItem extends PlannedDataItem {
+export interface PermanentDataItem extends Omit<PlannedDataItem, "signature"> {
   bundleId: TransactionId;
   permanentDate: Timestamp;
   blockHeight: BlockHeight;
@@ -146,7 +150,18 @@ export interface NewDataItemDBInsert extends NewDataItemDB {
   data_start: number;
   failed_bundles: string;
   content_type: string;
+  premium_feature_type: string;
+  signature: Buffer;
 }
+
+export type RePackDataItemDbInsert = NewDataItemDB & {
+  signature_type: number | null;
+  data_start: number | null;
+  failed_bundles: string | null;
+  content_type: string | null;
+  premium_feature_type: string | null;
+  signature: Buffer | null;
+};
 
 export interface NewDataItemDBResult extends NewDataItemDB {
   uploaded_date: string;
@@ -155,18 +170,20 @@ export interface NewDataItemDBResult extends NewDataItemDB {
   data_start: number | null;
   failed_bundles: string | null;
   content_type: string | null;
+  premium_feature_type: string | null;
+  signature: Buffer | null;
 }
 
-export interface PlannedDataItemDBInsert extends NewDataItemDBInsert {
+export interface PlannedDataItemDBInsert extends NewDataItemDBResult {
   plan_id: string;
   uploaded_date: string;
-}
-
-export interface PlannedDataItemDBResult extends PlannedDataItemDBInsert {
   planned_date: string;
 }
 
-export interface PermanentDataItemDBInsert extends PlannedDataItemDBResult {
+export type PlannedDataItemDBResult = PlannedDataItemDBInsert;
+
+export interface PermanentDataItemDBInsert
+  extends Omit<PlannedDataItemDBResult, "signature"> {
   block_height: string;
   bundle_id: string;
 }
@@ -254,3 +271,47 @@ export interface SeedResultDBInsert {
 
 /** @deprecated */
 export type SeedResultDBResult = SeedResultDBInsert;
+
+export interface InFlightMultiPartUploadDBInsert {
+  upload_id: string;
+  upload_key: string;
+  created_at: string;
+  expires_at: string;
+  chunk_size?: string;
+  failed_reason?: string;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface InFlightMultiPartUploadDBResult
+  extends InFlightMultiPartUploadDBInsert {}
+
+export interface FinishedMultiPartUploadDBInsert
+  extends InFlightMultiPartUploadDBResult {
+  finalized_at: string;
+  data_item_id: TransactionId;
+  etag: string;
+}
+
+export type FinishedMultiPartUploadDBResult = FinishedMultiPartUploadDBInsert;
+
+export interface InFlightMultiPartUploadParams {
+  uploadId: UploadId;
+  uploadKey: string;
+}
+
+export interface InFlightMultiPartUpload {
+  uploadId: UploadId;
+  uploadKey: string;
+  createdAt: Timestamp;
+  expiresAt: Timestamp;
+  chunkSize?: number;
+  failedReason?: MultipartUploadFailedReason;
+}
+
+export interface FinishedMultiPartUpload extends InFlightMultiPartUpload {
+  finalizedAt: Timestamp;
+  dataItemId: TransactionId;
+  etag: string;
+}
+
+export type MultipartUploadFailedReason = "INVALID" | "UNDERFUNDED";

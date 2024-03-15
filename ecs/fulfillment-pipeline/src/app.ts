@@ -15,34 +15,52 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 import { Message, SQSClient, SQSClientConfig } from "@aws-sdk/client-sqs";
-import { config } from "dotenv";
 import { Consumer, ConsumerOptions } from "sqs-consumer";
 import winston from "winston";
 
 import { Architecture } from "../../../src/arch/architecture";
+import { ArweaveGateway } from "../../../src/arch/arweaveGateway";
 import { PostgresDatabase } from "../../../src/arch/db/postgres";
 import { FileSystemObjectStore } from "../../../src/arch/fileSystemObjectStore";
 import { TurboPaymentService } from "../../../src/arch/payment";
+import { getQueueUrl } from "../../../src/arch/queues";
 import { migrateOnStartup } from "../../../src/constants";
+import { opticalPostHandler } from "../../../src/jobs/optical-post";
 import { prepareBundleHandler } from "../../../src/jobs/prepare";
 import { seedBundleHandler } from "../../../src/jobs/seed";
 import globalLogger from "../../../src/logger";
+import { finalizeMultipartUploadWithQueueMessage } from "../../../src/routes/multiPartUploads";
 import { isTestEnv } from "../../../src/utils/common";
+import { loadConfig } from "../../../src/utils/config";
+import { getArweaveWallet } from "../../../src/utils/getArweaveWallet";
 import { getS3ObjectStore } from "../../../src/utils/objectStoreUtils";
-
-config();
 
 type Queue = {
   queueUrl: string;
   handler: (
     planId: string,
-    // TODO: Provide defaults for these vs generating them for each handler
-    arch: Partial<Architecture>,
-    logger?: winston.Logger
+    arch: Partial<Omit<Architecture, "logger">>,
+    logger: winston.Logger
   ) => Promise<void>;
   logger: winston.Logger;
   consumerOptions?: Partial<ConsumerOptions>;
 };
+
+// let otelExporter: OTELExporter | undefined; // eslint-disable-line
+
+// TODO: move to top level await
+loadConfig()
+  .then(() => {
+    // TODO: enable OTEL when we have a clear set of desired traces
+    // sets up our OTEL exporter
+    // otelExporter = new OTELExporter({
+    //   apiKey: process.env.HONEYCOMB_API_KEY,
+    //   serviceName: "fulfillment-pipeline",
+    // });
+  })
+  .catch(() => {
+    globalLogger.error("Failed to load config!");
+  });
 
 const prepareBundleQueueUrl = process.env.SQS_PREPARE_BUNDLE_URL;
 const seedBundleQueueUrl = process.env.SQS_SEED_BUNDLE_URL;
@@ -55,6 +73,7 @@ if (!seedBundleQueueUrl) {
 
 const uploadDatabase = new PostgresDatabase({
   migrate: migrateOnStartup,
+  // todo: pass otel exporter
 });
 const objectStore =
   // If on test NODE_ENV or if no DATA_ITEM_BUCKET variable is set, use Local File System
@@ -86,40 +105,74 @@ export const queues: Queue[] = [
   },
 ];
 
-const planIdMessageHandler = (message: Message, { handler, logger }: Queue) => {
-  logger.info("new message", message);
+const planIdMessageHandler = ({
+  message,
+  logger,
+  queue,
+}: {
+  message: Message;
+  logger: winston.Logger;
+  queue: Queue;
+}) => {
+  const messageLogger = logger.child({
+    messageId: message.MessageId,
+  });
 
   let planId = undefined;
+
+  if (!message.Body) throw new Error("message body is undefined");
+
   try {
-    planId = JSON.parse(message.Body!).planId;
+    planId = JSON.parse(message.Body).planId;
   } catch (error) {
-    logger.error("error caught while parsing message body", error, message);
+    messageLogger.error(
+      "error caught while parsing message body",
+      error,
+      message
+    );
   }
 
-  if (planId) {
-    return handler(
-      planId,
-      { logger, database: uploadDatabase, objectStore, paymentService },
-      logger
-    );
-  } else {
+  if (!planId) {
     throw new Error("message did NOT include an 'planId' field!");
   }
+
+  // attach plan id to queue logger
+  return queue.handler(
+    planId,
+    {
+      database: uploadDatabase,
+      objectStore,
+      paymentService,
+    },
+    // provide our message logger to the handler
+    messageLogger.child({ planId })
+  );
+};
+
+const defaultSQSOptions = {
+  region: "us-east-1",
+  maxAttempts: 3,
 };
 
 function createSQSConsumer({
   queue,
-  sqsOptions = { region: "us-east-1", maxAttempts: 3 },
+  sqsOptions = defaultSQSOptions,
 }: {
   queue: Queue;
   sqsOptions?: Partial<SQSClientConfig>;
 }) {
-  const { queueUrl, consumerOptions } = queue;
+  const { queueUrl, consumerOptions, logger } = queue;
   return Consumer.create({
     queueUrl,
-    handleMessage: (message: Message) => planIdMessageHandler(message, queue),
+    handleMessage: (message: Message) =>
+      planIdMessageHandler({
+        message,
+        logger,
+        queue,
+      }),
     sqs: new SQSClient(sqsOptions),
     batchSize: 1,
+    // NOTE: this causes messages that experience processing_error to be reprocessed right away, we may want to create a small delay to avoid them constantly failing and blocking the queue
     terminateVisibilityTimeout: true,
     ...consumerOptions,
   });
@@ -151,25 +204,106 @@ const maybeExit = () => {
   }
 };
 
+const stubQueueHandler = async (
+  _: string,
+  __: Partial<Omit<Architecture, "logger">>,
+  ___: winston.Logger
+) => {
+  return;
+};
+
+function createOpticalConsumerQueue() {
+  const opticalQueueUrl = getQueueUrl("optical-post");
+  const opticalPostLogger = globalLogger.child({ queue: "optical-post" });
+  return {
+    consumer: Consumer.create({
+      queueUrl: opticalQueueUrl,
+      handleMessageBatch: async (messages: Message[]) => {
+        opticalPostLogger.info("Optical post sqs handler has been triggered.", {
+          messages,
+        });
+        return opticalPostHandler({
+          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+          stringifiedDataItemHeaders: messages.map((message) => message.Body!),
+          logger: opticalPostLogger,
+        });
+      },
+      sqs: new SQSClient(defaultSQSOptions),
+      batchSize: 10, // TODO: Tune as needed - starting with value in terraform
+      // NOTE: this causes messages that experience processing_error to be reprocessed right away, we may want to create a small delay to avoid them constantly failing and blocking the queue
+      terminateVisibilityTimeout: true,
+      pollingWaitTimeMs: 1000,
+      visibilityTimeout: 120,
+    }),
+    queueUrl: opticalQueueUrl, // unused
+    handler: stubQueueHandler, // unused
+    logger: opticalPostLogger,
+  };
+}
+
+function createFinalizeUploadConsumerQueue() {
+  const finalizeUploadQueueUrl = getQueueUrl("finalize-upload");
+  const finalizeUploadLogger = globalLogger.child({ queue: "finalize-upload" });
+  return {
+    consumer: Consumer.create({
+      queueUrl: finalizeUploadQueueUrl,
+      handleMessage: async (message: Message) => {
+        finalizeUploadLogger.info(
+          "Finalize upload sqs handler has been triggered.",
+          {
+            message,
+          }
+        );
+        return finalizeMultipartUploadWithQueueMessage({
+          message,
+          logger: finalizeUploadLogger,
+          objectStore,
+          paymentService,
+          database: uploadDatabase,
+          getArweaveWallet,
+          arweaveGateway: new ArweaveGateway({}),
+        });
+      },
+      sqs: new SQSClient(defaultSQSOptions),
+      // NOTE: this causes messages that experience processing_error to be reprocessed right away, we may want to create a small delay to avoid them constantly failing and blocking the queue
+      terminateVisibilityTimeout: true,
+      heartbeatInterval: 20,
+      visibilityTimeout: 30,
+      pollingWaitTimeMs: 500,
+    }),
+    queueUrl: finalizeUploadQueueUrl, // unused
+    handler: stubQueueHandler, // unused
+    logger: finalizeUploadLogger,
+  };
+}
+
 function registerEventHandlers({ consumer, logger }: ConsumerQueue) {
-  consumer.on("error", (error, message) => {
-    logger.error(`[SQS] ERROR`, error, message);
-  });
+  consumer.on(
+    "error",
+    (error: unknown, message: void | Message | Message[]) => {
+      logger.error(`[SQS] ERROR`, error, message);
+    }
+  );
 
-  consumer.on("processing_error", (error: { message: string }, message) => {
-    numInflightMessages -= 1;
-    logger.error(`[SQS] PROCESSING ERROR`, error, message);
-    maybeExit();
-  });
+  consumer.on(
+    "processing_error",
+    (error: { message: string }, message: void | Message | Message[]) => {
+      numInflightMessages -= 1;
+      logger.error(`[SQS] PROCESSING ERROR`, error, message);
+      maybeExit();
+    }
+  );
 
-  consumer.on("message_received", (message) => {
+  consumer.on("message_received", (message: void | Message | Message[]) => {
     numInflightMessages += 1;
-    logger.info(`[SQS] Message received`, message);
+    logger.info(`[SQS] Message received`);
+    logger.debug(`[SQS] Received message contents:`, message);
   });
 
-  consumer.on("message_processed", (message) => {
+  consumer.on("message_processed", (message: void | Message | Message[]) => {
     numInflightMessages -= 1;
-    logger.info(`[SQS] Message processed`, message);
+    logger.info(`[SQS] Message processed`);
+    logger.debug(`[SQS] Processed message contents:`, message);
     maybeExit();
   });
 
@@ -185,7 +319,7 @@ function registerEventHandlers({ consumer, logger }: ConsumerQueue) {
   });
 
   consumer.on("empty", () => {
-    logger.info(`[SQS] Queue is empty!`);
+    logger.debug(`[SQS] Queue is empty!`);
   });
 }
 
@@ -239,7 +373,19 @@ process.on("beforeExit", (exitCode) => {
   );
 });
 
-(() => {
-  globalLogger.info("Starting fulfillment-pipeline service...");
-  startQueueListeners(consumers);
-})();
+// start the listeners
+const numFinalizeUploadConsumers = +(
+  process.env.NUM_FINALIZE_UPLOAD_CONSUMERS ?? 10
+);
+const finalizeUploadConsumers: ConsumerQueue[] = Array.from(
+  { length: numFinalizeUploadConsumers },
+  createFinalizeUploadConsumerQueue
+);
+consumers.push(createOpticalConsumerQueue());
+globalLogger.info(
+  `Starting up ${finalizeUploadConsumers.length} finalize-upload consumers...`
+);
+consumers.push(...finalizeUploadConsumers);
+
+globalLogger.info("Starting fulfillment-pipeline service...");
+startQueueListeners(consumers);

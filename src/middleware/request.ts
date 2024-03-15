@@ -27,7 +27,7 @@ export async function requestMiddleware(ctx: KoaContext, next: Next) {
     logger.debug("Request ended");
   });
   ctx.req.on("error", (error) => {
-    logger.debug("Request errored", {
+    logger.error("Request errored", {
       error,
     });
   });

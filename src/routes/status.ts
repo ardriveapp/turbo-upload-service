@@ -14,18 +14,31 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-import Arweave from "arweave";
-import { Readable } from "stream";
+import { Next } from "koa";
 
-import { streamToBuffer } from "../utils/streamToBuffer";
+import { KoaContext } from "../server";
 
-export async function rawIdFromRawSignature(
-  signatureReadable: Readable,
-  signatureLength?: number
-): Promise<Buffer> {
-  return Buffer.from(
-    await Arweave.crypto.hash(
-      await streamToBuffer(signatureReadable, signatureLength)
-    )
-  );
+export async function statusHandler(ctx: KoaContext, next: Next) {
+  const { logger, database } = ctx.state;
+  try {
+    const info = await database.getDataItemInfo(ctx.params.id);
+    if (info === undefined) {
+      ctx.status = 404;
+      ctx.body = "TX doesn't exist";
+      return next();
+    }
+
+    ctx.body = {
+      status: info.status === "permanent" ? "FINALIZED" : "CONFIRMED",
+      bundleId: info.bundleId,
+      info: info.status,
+      winc: info.assessedWinstonPrice,
+    };
+  } catch (error) {
+    logger.error(`Error getting data item status: ${error}`);
+    ctx.status;
+    ctx.throw(503, "Internal Server Error");
+  }
+
+  return next();
 }

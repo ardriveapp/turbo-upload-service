@@ -33,20 +33,26 @@ export const allowListPublicAddresses: PublicArweaveAddress[] =
 
 export const migrateOnStartup = process.env.MIGRATE_ON_STARTUP === "true";
 
+export const otelSampleRate = process.env.OTEL_SAMPLE_RATE
+  ? +process.env.OTEL_SAMPLE_RATE
+  : 200;
+
 const oneGiB = 1_073_741_824;
 const twoGiB = oneGiB * 2;
 const fourGiB = oneGiB * 4;
 const oneKiB = 1024;
 
-export const maxDataItemLimit = 1_000;
+export const maxDataItemsPerBundle = process.env.MAX_DATA_ITEM_LIMIT
+  ? +process.env.MAX_DATA_ITEM_LIMIT
+  : 10_000;
 
 /** Target max size for bundle packing. If data item is larger than this, it will bundle by itself */
-export const maxBundleSize = process.env.MAX_BUNDLE_SIZE
+export const maxBundleDataItemsByteCount = process.env.MAX_BUNDLE_SIZE
   ? +process.env.MAX_BUNDLE_SIZE
   : twoGiB;
 
 /** Max allowed data item limit on data post ingest */
-export const maxDataItemSize = process.env.MAX_DATA_ITEM_SIZE
+export const maxSingleDataItemByteCount = process.env.MAX_DATA_ITEM_SIZE
   ? +process.env.MAX_DATA_ITEM_SIZE
   : fourGiB;
 
@@ -54,7 +60,7 @@ export const tickArnsContractEnabled =
   process.env.TICK_ARNS_REGISTRY_ENABLED === "true";
 export const arnsContractTxId = process.env.ARNS_CONTRACT_TX_ID;
 
-export const freeArfsDataAllowLimit = +(
+export const freeUploadLimitBytes = +(
   process.env.FREE_UPLOAD_LIMIT ?? oneKiB * 505
 ); // Extra to account for the header sizes
 
@@ -94,7 +100,9 @@ export const txPermanentThreshold = 50;
 export const txWellSeededThreshold = 30;
 export const txConfirmationThreshold = 1;
 
-export const dropTxThresholdNumberOfBlocks = 50;
+export const dropBundleTxThresholdNumberOfBlocks = 50;
+export const rePostDataItemThresholdNumberOfBlocks = 125;
+
 export const defaultMaxConcurrentChunks = 32;
 
 export const testPrivateRouteSecret = "test-secret";
@@ -113,3 +121,91 @@ export const emptyTargetLength = 1;
 export const targetLength = 33;
 export const emptyAnchorLength = 1;
 export const anchorLength = 33;
+
+export const defaultPremiumFeatureType = "default";
+
+export const warpWalletAddresses = process.env.WARP_ADDRESSES?.split(",") ?? [
+  // cspell:disable
+  "jnioZFibZSCcV8o-HkBXYPYEYNib4tqfexP0kCBXX_M",
+];
+export const redstoneOracleAddresses =
+  process.env.REDSTONE_ORACLE_ADDRESSES?.split(",") ?? [
+    "I-5rWUehEv-MjdK9gFw09RxfSLQX9DIHxG614Wf8qo0", // cspell:enable
+  ];
+
+export const firstBatchAddresses = process.env.FIRST_BATCH_ADDRESSES?.split(
+  "," // cspell:disable
+) ?? ["8NyeR4GiwbneFMNfCNz2Q84Xbd2ks9QrlAD85QabQrw"]; // cspell:enable
+
+export const aoAddresses = process.env.AO_ADDRESSES?.split(
+  "," // cspell:disable
+) ?? ["fcoN_xJeisVsPXA-trzVAuIiqO3ydLQxM-L4XbrQKzY"]; // cspell:enable
+
+export const skipOpticalPostAddresses: string[] =
+  process.env.SKIP_OPTICAL_POST_ADDRESSES?.split(",") ??
+  redstoneOracleAddresses;
+
+export const warpDedicatedBundlesPremiumFeatureType = "warp_dedicated_bundles";
+export const redstoneOracleDedicatedBundlesPremiumFeatureType =
+  "redstone_oracle_dedicated_bundles";
+export const firstBatchDedicatedBundlesPremiumFeatureType =
+  "first_batch_dedicated_bundles";
+export const aoDedicatedBundlesPremiumFeatureType = "ao_dedicated_bundles";
+
+export const premiumPaidFeatureTypes = [
+  warpDedicatedBundlesPremiumFeatureType,
+  redstoneOracleDedicatedBundlesPremiumFeatureType,
+  firstBatchDedicatedBundlesPremiumFeatureType,
+  aoDedicatedBundlesPremiumFeatureType,
+] as const;
+export type PremiumPaidFeatureType = (typeof premiumPaidFeatureTypes)[number];
+
+export const allFeatureTypes = [
+  ...premiumPaidFeatureTypes,
+  defaultPremiumFeatureType,
+] as const;
+export type PremiumFeatureType = (typeof allFeatureTypes)[number];
+
+export const dedicatedBundleTypes: Record<
+  PremiumPaidFeatureType,
+  {
+    allowedWallets: string[];
+    bundlerAppName?: string;
+  }
+> = {
+  [warpDedicatedBundlesPremiumFeatureType]: {
+    allowedWallets: warpWalletAddresses,
+    bundlerAppName: "Warp",
+  },
+
+  [redstoneOracleDedicatedBundlesPremiumFeatureType]: {
+    allowedWallets: redstoneOracleAddresses,
+    bundlerAppName: "Redstone",
+  },
+
+  [firstBatchDedicatedBundlesPremiumFeatureType]: {
+    allowedWallets: firstBatchAddresses,
+    bundlerAppName: "FirstBatch",
+  },
+
+  [aoDedicatedBundlesPremiumFeatureType]: {
+    allowedWallets: aoAddresses,
+    bundlerAppName: "AO",
+  },
+} as const;
+
+/**
+ * This is the limit of `signature` on `new_data_item` and `planned_data_item`
+ * If this value needs to be changed, a migration will be required to update the column type
+ */
+export const maxSignatureLength = 2055; // 2052 is MULTIAPTOS signature length
+
+export const batchingSize = 100;
+
+export const payloadDataStartS3MetaDataTag = "payload-data-start";
+export const payloadContentTypeS3MetaDataTag = "payload-content-type";
+
+export const defaultOverdueThresholdMs = 5 * 60 * 1000; // 5 minutes
+
+export const blocklistedAddresses =
+  process.env.BLOCKLISTED_ADDRESSES?.split(",") ?? [];

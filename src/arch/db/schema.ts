@@ -29,6 +29,39 @@ import { TransactionId } from "../../types/types";
 import { createAxiosInstance } from "../axiosClient";
 import { columnNames, tableNames } from "./dbConstants";
 
+const {
+  bundlePlan,
+  failedBundle,
+  newBundle,
+  newDataItem,
+  permanentBundle,
+  permanentDataItem,
+  plannedDataItem,
+  postedBundle,
+  seededBundle,
+  seedResult,
+} = tableNames;
+
+const {
+  blockHeight,
+  bundleId,
+  byteCount,
+  dataItemId,
+  failedDate,
+  owner,
+  permanentDate,
+  planId,
+  plannedDate,
+  postedDate,
+  reward,
+  seedResultStatus,
+  seededDate,
+  signedDate,
+  uploadedDate,
+  winstonPrice,
+  indexedOnGQL,
+} = columnNames;
+
 export class Schema {
   private constructor(private readonly pg: Knex) {}
 
@@ -781,36 +814,3 @@ export class Schema {
 
   private noTimeZone = { useTz: false };
 }
-
-const {
-  bundlePlan,
-  failedBundle,
-  newBundle,
-  newDataItem,
-  permanentBundle,
-  permanentDataItem,
-  plannedDataItem,
-  postedBundle,
-  seededBundle,
-  seedResult,
-} = tableNames;
-
-const {
-  blockHeight,
-  bundleId,
-  byteCount,
-  dataItemId,
-  failedDate,
-  owner,
-  permanentDate,
-  planId,
-  plannedDate,
-  postedDate,
-  reward,
-  seedResultStatus,
-  seededDate,
-  signedDate,
-  uploadedDate,
-  winstonPrice,
-  indexedOnGQL,
-} = columnNames;

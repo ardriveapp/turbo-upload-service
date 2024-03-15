@@ -19,13 +19,14 @@ import { SQSEvent, SQSRecord } from "aws-lambda";
 import pLimit from "p-limit";
 
 import { deleteMessages } from "../arch/queues";
-import { octetStreamContentType } from "../constants";
+import { rawDataItemStartFromParsedHeader } from "../bundles/rawDataItemStartFromParsedHeader";
 import baseLogger from "../logger";
 import { ParsedDataItemHeader } from "../types/types";
+import { payloadContentTypeFromDecodedTags } from "../utils/common";
 import {
   getDataItemData,
   getS3ObjectStore,
-  putDataItemData,
+  putDataItemRaw,
 } from "../utils/objectStoreUtils";
 
 export const handler = async (event: SQSEvent) => {
@@ -50,7 +51,7 @@ export const handler = async (event: SQSEvent) => {
             bdiIdToUnpack
           );
 
-          bdiLogger.info("Processing BDI stream...");
+          bdiLogger.debug("Processing BDI stream...");
 
           // Process it as a bundle and get all the data item info
           const parsedDataItemHeaders = (await processStream(
@@ -64,34 +65,39 @@ export const handler = async (event: SQSEvent) => {
           const nestedDataItemParallelLimit = pLimit(10);
           await Promise.all(
             parsedDataItemHeaders.map((parsedDataItemHeader) => {
+              const { id, tags, dataOffset, dataSize } = parsedDataItemHeader;
               const nestedItemLogger = bdiLogger.child({
-                nestedDataItemId: parsedDataItemHeader.id,
+                nestedDataItemId: id,
               });
               return nestedDataItemParallelLimit(async () => {
                 // Discern a content type for the data item if possible
-                const contentType =
-                  parsedDataItemHeader.tags
-                    .filter((tag) => tag.name.toLowerCase() === "content-type")
-                    .shift()?.value || octetStreamContentType;
+                const payloadContentType =
+                  payloadContentTypeFromDecodedTags(tags);
 
-                // Stash the data item payload in the object store
-                const payloadStartOffset = parsedDataItemHeader.dataOffset;
-                const payloadEndOffset =
-                  payloadStartOffset + parsedDataItemHeader.dataSize - 1;
-                const rangeString = `bytes=${payloadStartOffset}-${payloadEndOffset}`;
+                // Stash the full raw data item in the object store
+                const rawDataItemDataStart =
+                  rawDataItemStartFromParsedHeader(parsedDataItemHeader);
+                const payloadEndOffset = dataOffset + dataSize - 1; // -1 because the range is INCLUSIVE
+                const rangeString = `bytes=${rawDataItemDataStart}-${payloadEndOffset}`;
 
-                nestedItemLogger.info("Caching nested data item...", {
-                  contentType,
+                nestedItemLogger.debug("Caching nested data item...", {
+                  payloadContentType,
                   rangeString,
                 });
-                await putDataItemData(
+                await putDataItemRaw(
                   objectStore,
-                  parsedDataItemHeader.id,
-                  contentType,
-                  await getDataItemData(objectStore, bdiIdToUnpack, rangeString)
+                  id,
+                  await getDataItemData(
+                    objectStore,
+                    bdiIdToUnpack,
+                    rangeString
+                  ),
+                  payloadContentType,
+                  dataOffset - rawDataItemDataStart
                 );
-                nestedItemLogger.info("Finished caching nested data item.", {
-                  contentType,
+
+                nestedItemLogger.debug("Finished caching nested data item.", {
+                  payloadContentType,
                   rangeString,
                 });
               });
@@ -115,11 +121,11 @@ export const handler = async (event: SQSEvent) => {
   const unhandledRecords = event.Records.filter((record) => {
     !recordsToDelete.includes(record);
   });
-  handlerLogger.info("Cleaning up records...", {
+  handlerLogger.debug("Cleaning up records...", {
     recordsToDelete,
     unhandledRecords,
   });
-  deleteMessages(
+  void deleteMessages(
     "unbundle-bdi",
     recordsToDelete.map((record) => {
       return {

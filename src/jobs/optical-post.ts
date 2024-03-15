@@ -16,6 +16,7 @@
  */
 import { SQSEvent } from "aws-lambda";
 import axios from "axios";
+import winston from "winston";
 
 import logger from "../logger";
 import { getOpticalPubKey } from "../utils/getArweaveWallet";
@@ -26,19 +27,20 @@ import {
   signDataItemHeader,
 } from "../utils/opticalUtils";
 
-export const handler = async (event: SQSEvent) => {
-  let childLogger = logger.child({ job: "optical-post-job" });
-  childLogger.info("Optical post job has been triggered.", event);
-
-  let stringifiedDataItemHeaders = event.Records.map((record) => record.body);
-
+export const opticalPostHandler = async ({
+  stringifiedDataItemHeaders,
+  logger,
+}: {
+  stringifiedDataItemHeaders: string[];
+  logger: winston.Logger;
+}) => {
   // Convert the stringified headers back into objects for nested bundle inspection
   const dataItemHeaders = stringifiedDataItemHeaders.map(
     (headerString) => JSON.parse(headerString) as SignedDataItemHeader
   );
 
   const dataItemIds = dataItemHeaders.map((header) => header.id);
-  childLogger = childLogger.child({ dataItemIds });
+  let childLogger = logger.child({ dataItemIds });
 
   // If any BDIs are detected, unpack them 1 nested level deep
   // and include the nested data items in the optical post
@@ -50,10 +52,10 @@ export const handler = async (event: SQSEvent) => {
         logger: childLogger,
       })
     ).map(async (nestedHeader) => {
-      const opticalizedNestedHeader = await signDataItemHeader(
+      const opticalNestedHeader = await signDataItemHeader(
         encodeTagsForOptical(nestedHeader)
       );
-      return JSON.stringify(opticalizedNestedHeader);
+      return JSON.stringify(opticalNestedHeader);
     })
   );
   const nestedDataItemIds = nestedStringifiedHeaders.map(
@@ -68,7 +70,7 @@ export const handler = async (event: SQSEvent) => {
   const postBody = `[${stringifiedDataItemHeaders.join(",")}]`;
   const opticalPubKey = await getOpticalPubKey();
 
-  childLogger.info(`Posting to optical bridge...`);
+  childLogger.debug(`Posting to optical bridge...`);
   try {
     const { status, statusText } = await axios.post(
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
@@ -88,4 +90,15 @@ export const handler = async (event: SQSEvent) => {
     childLogger.error("Failed to post to optical bridge!", error);
     throw error;
   }
+};
+
+// Lambda version with batched records
+export const handler = async (sqsEvent: SQSEvent) => {
+  const childLogger = logger.child({ job: "optical-post-job" });
+  childLogger.info("Optical post lambda handler has been triggered.");
+  childLogger.debug("Optical post sqsEvent:", sqsEvent);
+  return opticalPostHandler({
+    stringifiedDataItemHeaders: sqsEvent.Records.map((record) => record.body),
+    logger: childLogger,
+  });
 };

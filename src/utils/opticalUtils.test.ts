@@ -143,9 +143,14 @@ describe("The filterForNestedBundles function", () => {
 describe("The getNestedDataItemHeaders function", () => {
   const objectStore = new FileSystemObjectStore();
   before(() => {
-    stub(objectStore, "getObject").resolves(
-      createReadStream("tests/stubFiles/bdiDataItem")
-    );
+    stub(objectStore, "getObject").resolves({
+      readable: createReadStream("tests/stubFiles/bdiDataItem"),
+      etag: "stubEtag",
+    });
+    stub(objectStore, "getObjectPayloadInfo").resolves({
+      payloadContentType: "application/octet-stream",
+      payloadDataStart: 1100,
+    });
   });
 
   it("returns correct nested data item headers for a real bundled data item", async () => {

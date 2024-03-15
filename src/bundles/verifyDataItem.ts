@@ -14,26 +14,18 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-import {
-  byteArrayToLong,
-  deepHash,
-  deserializeTags,
-  indexToType,
-} from "arbundles";
+import { byteArrayToLong, deepHash, indexToType } from "arbundles";
 import { stringToBuffer } from "arweave/node/lib/utils";
-import { PathLike, createReadStream, read as fsRead, promises } from "fs";
 import { EventEmitter, PassThrough, Readable } from "stream";
-import { promisify } from "util";
 import winston from "winston";
 
-import logger from "../logger";
 import { CircularBuffer } from "../utils/circularBuffer";
 import { tapStream } from "../utils/common";
-import FileDataItem, { dataItemTagsByteLimit, readFileMode } from "./dataItem";
+import { InvalidDataItem } from "../utils/errors";
 
-const read = promisify(fsRead);
-
-interface SigInfo {
+export const arweaveSignatureLength = 512;
+export const dataItemTagsByteLimit = 4096;
+export interface SigInfo {
   signatureLength: number;
   pubkeyLength: number;
   name: string;
@@ -46,34 +38,79 @@ const arweaveSigInfo = {
   name: "arweave",
 };
 
+export enum SignatureConfig {
+  ARWEAVE = 1,
+  ED25519,
+  ETHEREUM,
+  SOLANA,
+  INJECTEDAPTOS = 5,
+  MULTIAPTOS = 6,
+  TYPEDETHEREUM = 7,
+}
+
 export const signatureTypeInfo: Record<number, SigInfo> = {
-  [1]: arweaveSigInfo,
-  [2]: {
+  [SignatureConfig.ARWEAVE]: {
+    signatureLength: 512,
+    pubkeyLength: 512,
+    name: "arweave",
+  },
+  [SignatureConfig.ED25519]: {
     signatureLength: 64,
     pubkeyLength: 32,
     name: "ed25519",
   },
-  [3]: {
+  [SignatureConfig.ETHEREUM]: {
     signatureLength: 65,
     pubkeyLength: 65,
     name: "ethereum",
   },
-  [4]: {
+  [SignatureConfig.SOLANA]: {
     signatureLength: 64,
     pubkeyLength: 32,
     name: "solana",
   },
-  [5]: {
+  [SignatureConfig.INJECTEDAPTOS]: {
     signatureLength: 64,
     pubkeyLength: 32,
     name: "injectedAptos",
   },
-  [6]: {
-    signatureLength: 2052, // max 32 64 byte signatures, +4 for 32-bit bitmap
-    pubkeyLength: 1025, // max 32 32 byte keys, +1 for 8-bit threshold value
+  [SignatureConfig.MULTIAPTOS]: {
+    signatureLength: 64 * 32 + 4, // max 32 64 byte signatures, +4 for 32-bit bitmap
+    pubkeyLength: 32 * 32 + 1, // max 64 32 byte keys, +1 for 8-bit threshold value
     name: "multiAptos",
   },
+  [SignatureConfig.TYPEDETHEREUM]: {
+    signatureLength: 65,
+    pubkeyLength: 42,
+    name: "typedEthereum",
+  },
 };
+
+export const allowListedSignatureTypes = process.env
+  .ALLOW_LISTED_SIGNATURE_TYPES
+  ? new Set(process.env.ALLOW_LISTED_SIGNATURE_TYPES.split(",").map((s) => +s))
+  : new Set([
+      SignatureConfig.SOLANA,
+      SignatureConfig.ED25519,
+      SignatureConfig.ETHEREUM,
+    ]);
+
+export const sigNameToSigInfo: Record<string, SigInfo> = Object.values(
+  signatureTypeInfo
+).reduce((acc, info) => {
+  acc[info.name] = info;
+  return acc;
+}, {} as Record<string, SigInfo>);
+
+function streamDebugLog(
+  logger: winston.Logger | undefined,
+  message: string,
+  meta?: any
+) {
+  if (process.env.STREAM_DEBUG === "true") {
+    logger?.debug(message, meta);
+  }
+}
 
 /**
  * Creates an EventEmitter that emits DataItem fields as they pass through a readable stream.
@@ -128,13 +165,13 @@ export function createVerifiedDataItemStream(
       name: "signature",
       length: () => {
         if (!signatureType) {
-          lastParsingError = new Error("signatureType never parsed!");
+          lastParsingError = new InvalidDataItem("signatureType never parsed!");
           emitter.emit("error", lastParsingError);
           return arweaveSigInfo.signatureLength;
         }
         const sigCfg = signatureTypeInfo[signatureType];
         if (!sigCfg) {
-          lastParsingError = new Error(
+          lastParsingError = new InvalidDataItem(
             `Signature with value ${signatureType} not supported!`
           );
           emitter.emit("error", lastParsingError);
@@ -148,13 +185,13 @@ export function createVerifiedDataItemStream(
       name: "owner",
       length: () => {
         if (!signatureType) {
-          lastParsingError = new Error("signatureType never parsed!");
+          lastParsingError = new InvalidDataItem("signatureType never parsed!");
           emitter.emit("error", lastParsingError);
           return arweaveSigInfo.pubkeyLength;
         }
         const sigCfg = signatureTypeInfo[signatureType];
         if (!sigCfg) {
-          lastParsingError = new Error(
+          lastParsingError = new InvalidDataItem(
             `Signature with value ${signatureType} not supported!`
           );
           emitter.emit("error", lastParsingError);
@@ -173,7 +210,7 @@ export function createVerifiedDataItemStream(
       name: "tagsBytes",
       length: () => {
         if (parsedNumTagsBytes === undefined) {
-          lastParsingError = new Error("numTagBytes never parsed!");
+          lastParsingError = new InvalidDataItem("numTagBytes never parsed!");
           emitter.emit("error", lastParsingError);
           return 0;
         }
@@ -195,14 +232,18 @@ export function createVerifiedDataItemStream(
       // Keep parsing the same event or else parse a potential next event
       nextEventToParse ??= offsetQueue.shift();
       if (nextEventToParse?.length() === 0) {
-        logger?.debug(`Skipping 0-length event ${offsetQueue[0].name}`);
+        streamDebugLog(
+          logger,
+          `Skipping 0-length event ${offsetQueue[0].name}`
+        );
       }
     } while (
       nextEventToParse?.length() === 0 // skip any events with 0 expected bytes incoming
     );
 
     if (nextEventToParse) {
-      logger?.debug(
+      streamDebugLog(
+        logger,
         `Parsing ${nextEventToParse.name}. Progress: ${
           searchBuffer.usedCapacity
         } of ${nextEventToParse.length()} expected bytes`
@@ -210,7 +251,8 @@ export function createVerifiedDataItemStream(
 
       // Since data is at the end of the data item and unbounded in size, we just emit chunks immediately
       if (nextEventToParse.name === "data") {
-        logger?.debug(
+        streamDebugLog(
+          logger,
           `Emitting ${chunk.byteLength} bytes of data item payload data.`
         );
         emitter.emit(nextEventToParse.name, chunk);
@@ -227,13 +269,14 @@ export function createVerifiedDataItemStream(
         chunk.byteLength > nextEventToParse.length();
 
       if (useChunkAsBuffer) {
-        logger?.debug(`Using incoming chunk as event emission buffer`);
+        streamDebugLog(logger, `Using incoming chunk as event emission buffer`);
       } else {
         const numBytesToAppend = Math.min(
           chunk.byteLength - chunkOffset,
           searchBuffer.remainingCapacity
         );
-        logger?.debug(
+        streamDebugLog(
+          logger,
           `Adding ${numBytesToAppend} bytes of incoming ${chunk.byteLength} byte chunk to the search buffer with remaining capacity ${searchBuffer.remainingCapacity} bytes...`
         );
         // Append the incoming chunk to the search buffer
@@ -257,7 +300,8 @@ export function createVerifiedDataItemStream(
         byteQueue.usedCapacity >= nextEventToParse.length() &&
         !lastParsingError
       ) {
-        logger?.debug(
+        streamDebugLog(
+          logger,
           `Emitting event '${nextEventToParse.name}' at offset ${currentOffset}`
         );
         const eventBuffer = byteQueue.shift(nextEventToParse.length());
@@ -266,7 +310,10 @@ export function createVerifiedDataItemStream(
 
         // Skip any 0 size events
         while (offsetQueue[0] && offsetQueue[0].length() === 0) {
-          logger?.debug(`Skipping 0-length event ${offsetQueue[0].name}`);
+          streamDebugLog(
+            logger,
+            `Skipping 0-length event ${offsetQueue[0].name}`
+          );
           offsetQueue.shift();
         }
 
@@ -289,12 +336,13 @@ export function createVerifiedDataItemStream(
         }
 
         if (nextEventToParse.length() <= byteQueue.usedCapacity) {
-          logger?.debug(`Have enough bytes to emit the next event`);
+          streamDebugLog(logger, `Have enough bytes to emit the next event`);
           // Event gets emitted in the next loop iteration
         } else {
           // If we're not on the "data" event, preserve remaining parsed bytes for next input stream on("data") event
           if (nextEventToParse.name !== "data") {
-            logger?.debug(
+            streamDebugLog(
+              logger,
               `Remaining ${
                 byteQueue.usedCapacity
               } bytes not enough for next event ${
@@ -303,7 +351,8 @@ export function createVerifiedDataItemStream(
             );
 
             if (useChunkAsBuffer) {
-              logger?.debug(
+              streamDebugLog(
+                logger,
                 `Stashing remaining ${byteQueue.usedCapacity} bytes of incoming buffer in search buffer`
               );
               // Stash the rest of whatever's left in the buffer into the searchBuffer for next iteration
@@ -311,7 +360,8 @@ export function createVerifiedDataItemStream(
                 srcBuffer: byteQueue.shift(byteQueue.usedCapacity),
               });
             } else if (chunkOffset > 0) {
-              logger?.debug(
+              streamDebugLog(
+                logger,
                 `ATTEMPTING TO SAVE THE REMAINING ${
                   chunk.byteLength - chunkOffset
                 } CHUNK BYTES INTO SEARCH BUFFER WITH REMAINING CAPACITY ${
@@ -329,7 +379,8 @@ export function createVerifiedDataItemStream(
             // Just emit data now since that's the only event we have left to process
             if (byteQueue.usedCapacity) {
               currentOffset += byteQueue.usedCapacity;
-              logger?.debug(
+              streamDebugLog(
+                logger,
                 `Emitting ${byteQueue.usedCapacity} remaining searchBuffer bytes of data item payload data.`
               );
               emitter.emit("data", byteQueue.shift(byteQueue.usedCapacity));
@@ -338,7 +389,8 @@ export function createVerifiedDataItemStream(
             // Also emit any remaining data in the chunk
             if (chunkOffset > 0) {
               const remainingChunkBytes = chunk.byteLength - chunkOffset;
-              logger?.debug(
+              streamDebugLog(
+                logger,
                 `Emitting ${remainingChunkBytes} remaining chunk bytes of data item payload data.`
               );
               emitter.emit(nextEventToParse.name, chunk.slice(chunkOffset));
@@ -348,7 +400,10 @@ export function createVerifiedDataItemStream(
           break;
         }
       }
-      logger?.debug(`No longer have enough bytes to emit the next event.`);
+      streamDebugLog(
+        logger,
+        `No longer have enough bytes to emit the next event.`
+      );
     }
 
     currentOffset += chunk.byteLength;
@@ -365,16 +420,17 @@ export function createVerifiedDataItemStream(
 
   inputStream.once("close", () => {
     clearTimeout(timeoutId);
-    logger?.debug("Input stream closed");
+    streamDebugLog(logger, "Input stream closed");
     payloadStream?.end();
   });
 
   inputStream.once("end", () => {
     clearTimeout(timeoutId);
-    logger?.debug("Input stream ended");
+    streamDebugLog(logger, "Input stream ended");
 
     if (tagsBytes !== undefined && !emittedData) {
-      logger?.info(
+      streamDebugLog(
+        logger,
         "Zero length data item payload found! Emitting empty data buffer..."
       );
       emitter.emit("data", Buffer.alloc(0));
@@ -440,7 +496,7 @@ export function createVerifiedDataItemStream(
     tagsBytes = Buffer.from(bufferedTags);
   });
 
-  emitter.on("data", async (bufferedData: Buffer) => {
+  emitter.on("data", (bufferedData: Buffer) => {
     emittedData = true;
 
     if (!payloadStream) {
@@ -477,12 +533,13 @@ export function createVerifiedDataItemStream(
   emitter.once("numTagsBytes", (bufferedNumTagBytes: Buffer) => {
     const numTagsBytes = byteArrayToLong(bufferedNumTagBytes);
     if (numTagsBytes > dataItemTagsByteLimit) {
-      lastParsingError = new Error(
+      lastParsingError = new InvalidDataItem(
         `Data item total tags size must not exceed ${dataItemTagsByteLimit} bytes! Parser expected ${numTagsBytes} bytes!`
       );
       emitter.emit("error", lastParsingError);
     }
-    logger?.debug(
+    streamDebugLog(
+      logger,
       `Got numTagsBytes emission. Tags should be ${numTagsBytes} bytes`
     );
     parsedNumTagsBytes = numTagsBytes;
@@ -491,6 +548,7 @@ export function createVerifiedDataItemStream(
     }
   });
 
+  // eslint-disable-next-line @typescript-eslint/no-misused-promises
   emitter.once("payloadStream", async (emittedPayloadStream: Readable) => {
     // We should now be able to start verifying the data item
     if (
@@ -517,7 +575,7 @@ export function createVerifiedDataItemStream(
 
     // HACK: Pause payloadStream while this listener is attached to prevent
     // data from starting to flow past any other would-be payloadStream listeners.
-    logger?.debug("Pausing emitted payload stream");
+    streamDebugLog(logger, "Pausing emitted payload stream");
     emittedPayloadStream.pause();
     const deepHashStream = tapStream({
       readable: emittedPayloadStream,
@@ -532,7 +590,7 @@ export function createVerifiedDataItemStream(
       }
     });
 
-    logger?.debug("Starting deep hashing...");
+    streamDebugLog(logger, "Starting deep hashing...");
     try {
       const signatureData = await deepHash([
         stringToBuffer("dataitem"),
@@ -551,89 +609,13 @@ export function createVerifiedDataItemStream(
         signatureData,
         signatureBytes
       );
-      logger?.debug(`IS VALID EMITTING ${isValid}`);
+      streamDebugLog(logger, `IS VALID EMITTING ${isValid}`);
       emitter.emit("isValid", isValid);
     } catch (error) {
-      logger?.debug("Failed to deepHash stream", error);
+      streamDebugLog(logger, "Failed to deepHash stream", error);
       emitter.emit("isValid", false);
     }
   });
 
   return emitter;
-}
-
-export async function verifyArweaveDataItemFromPath(
-  filename: PathLike
-): Promise<boolean> {
-  return verifyDataItem(new FileDataItem(filename));
-}
-
-export async function verifyDataItem(item: FileDataItem): Promise<boolean> {
-  const filename = item.filename;
-  const handle = await promises.open(filename, readFileMode);
-  const sigType = await item.signatureType();
-  const tagsStart = await item.getTagsStart();
-
-  const numberOfTags = await read(
-    handle.fd,
-    Buffer.allocUnsafe(8),
-    0,
-    8,
-    tagsStart
-  ).then((r) => byteArrayToLong(r.buffer));
-  const numberOfTagsBytes = await read(
-    handle.fd,
-    Buffer.allocUnsafe(8),
-    0,
-    8,
-    tagsStart + 8
-  ).then((r) => byteArrayToLong(r.buffer));
-  if (numberOfTagsBytes > dataItemTagsByteLimit) {
-    await handle.close();
-    logger.error("Data Item Tags are Too Large");
-    return false;
-  }
-
-  const tagsBytes = await read(
-    handle.fd,
-    Buffer.allocUnsafe(numberOfTagsBytes),
-    0,
-    numberOfTagsBytes,
-    tagsStart + 16
-  ).then((r) => r.buffer);
-  if (numberOfTags > 0) {
-    try {
-      deserializeTags(tagsBytes);
-    } catch (e) {
-      await handle.close();
-      logger.error("Data Item Tags Could Not Be Parsed");
-      return false;
-    }
-  }
-  const owner = await item.rawOwner();
-
-  const signatureData = await deepHash([
-    stringToBuffer("dataitem"),
-    stringToBuffer("1"),
-    stringToBuffer(sigType.toString()),
-    owner,
-    await item.rawTarget(),
-    await item.rawAnchor(),
-    await item.rawTags(),
-    createReadStream(filename, {
-      start: await item.dataStart(),
-    }),
-  ]);
-  const sig = await item.rawSignature();
-
-  const signer = indexToType[sigType];
-  if (!(await signer.verify(owner, signatureData, sig))) {
-    logger.error("Data Item Signature Could Not be Verified");
-    await handle.close();
-    return false;
-  }
-
-  await handle.close();
-
-  return true;
 }

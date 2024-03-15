@@ -28,6 +28,11 @@ import {
   TransactionId,
 } from "../src/types/types";
 import { W, Winston } from "../src/types/winston";
+import { fromB64Url } from "../src/utils/base64";
+
+// cspell:disable
+export const validBundleIdOnFileSystem =
+  "uMguurlEh9a7MKYiauKGlbxG6OjP2xaGmWa1-vrHVh8"; // cspell:enable
 
 export const stubTxId1 = "0000000000000000000000000000000000000000001";
 export const stubTxId2 = "0000000000000000000000000000000000000000002";
@@ -83,6 +88,7 @@ export function stubNewDataItem(
     ownerPublicAddress: stubOwnerAddress,
     uploadedDate: stubDates.earliestDate,
     failedBundles: [],
+    premiumFeatureType: "default",
   };
 }
 
@@ -108,8 +114,17 @@ export function stubNextBundleToPost(): NewBundle {
   };
 }
 
+/** Stub signature will fail bundling verification */
 export const stubDataItemBase64Signature = // cspell:disable
   "wUIlPaBflf54QyfiCkLnQcfakgcS5B4Pld-hlOJKyALY82xpAivoc0fxBJWjoeg3zy9aXz8WwCs_0t0MaepMBz2bQljRrVXnsyWUN-CYYfKv0RRglOl-kCmTiy45Ox13LPMATeJADFqkBoQKnGhyyxW81YfuPnVlogFWSz1XHQgHxrFMAeTe9epvBK8OCnYqDjch4pwyYUFrk48JFjHM3-I2kcQnm2dAFzFTfO-nnkdQ7ulP3eoAUr-W-KAGtPfWdJKFFgWFCkr_FuNyHYQScQo-FVOwIsvj_PVWEU179NwiqfkZtnN8VoBgCSxbL1Wmh4NYL-GsRbKz_94hpcj5RiIgq0_H5dzAp-bIb49M4SP-DcuIJ5oT2v2AfPWvznokDDVTeikQJxCD2n9usBOJRpLw_P724Yurbl30eNow0U-Jmrl8S6N64cjwKVLI-hBUfcpviksKEF5_I4XCyciW0TvZj1GxK6ET9lx0s6jFMBf27-GrFx6ZDJUBncX6w8nDvuL6A8TG_ILGNQU_EDoW7iil6NcHn5w11yS_yLkqG6dw_zuC1Vkg1tbcKY3703tmbF-jMEZUvJ6oN8vRwwodinJjzGdj7bxmkUPThwVWedCc8wCR3Ak4OkIGASLMUahSiOkYmELbmwq5II-1Txp2gDPjCpAf9gT6Iu0heAaXhjk"; // cspell:enable
+
+/** Stub signature will fail bundling verification */
+export const stubDataItemBufferSignature = fromB64Url(
+  stubDataItemBase64Signature
+);
+
+export const stubDataItemRawReadStream = () =>
+  createReadStream("tests/stubFiles/stub1115ByteDataItem");
 
 export const stubDataItemRawSignatureReadStream = () =>
   createReadStream("tests/stubFiles/stub1115ByteDataItem", {

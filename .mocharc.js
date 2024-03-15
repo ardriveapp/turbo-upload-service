@@ -2,7 +2,9 @@
 
 process.env.NODE_ENV ??= "test";
 process.env.PORT ??= 1234;
-process.env.ARWEAVE_GATEWAY ??= "http://arlocal:1984";
+process.env.ARWEAVE_GATEWAY ??= "http://localhost:1984";
+process.env.BLOCKLISTED_ADDRESSES ??= // cspell:disable
+  "xnbLpqfiRIInqrxkhV7M-iSr8YUtm9aoezGjSnXnOFo"; // cspell:enable
 
 // Mocha configuration file
 // Reference for options: https://github.com/mochajs/mocha/blob/master/example/config/.mocharc.js

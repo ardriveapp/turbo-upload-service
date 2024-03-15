@@ -15,7 +15,10 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 import {
+  FinishedMultiPartUpload,
+  InFlightMultiPartUpload,
   InsertNewBundleParams,
+  MultipartUploadFailedReason,
   NewBundle,
   NewDataItem,
   PlanId,
@@ -24,7 +27,7 @@ import {
   PostedNewDataItem,
   SeededBundle,
 } from "../../types/dbTypes";
-import { TransactionId, Winston } from "../../types/types";
+import { TransactionId, UploadId, Winston } from "../../types/types";
 
 // TODO: this could be an interface since no functions have a default implementation
 export interface Database {
@@ -44,6 +47,10 @@ export interface Database {
   insertBundlePlan(planId: PlanId, dataItemIds: TransactionId[]): Promise<void>;
 
   getPlannedDataItemsForPlanId(planId: PlanId): Promise<PlannedDataItem[]>;
+
+  getPlannedDataItemsForVerification(
+    planId: PlanId
+  ): Promise<PlannedDataItem[]>;
 
   /**
    * Creates a new bundle transaction
@@ -93,7 +100,23 @@ export interface Database {
     blockHeight: number,
     indexedOnGQL: boolean
   ): Promise<void>;
-  updateBundleAsDropped(planId: PlanId): Promise<void>;
+
+  updateDataItemsAsPermanent(
+    params: UpdateDataItemsToPermanentParams
+  ): Promise<void>;
+  updateDataItemsToBeRePacked(
+    dataItemIds: TransactionId[],
+    failedBundleId: TransactionId
+  ): Promise<void>;
+
+  updateSeededBundleToDropped(
+    planId: PlanId,
+    bundleId: TransactionId
+  ): Promise<void>;
+  updateNewBundleToFailedToPost(
+    planId: PlanId,
+    bundleId: TransactionId
+  ): Promise<void>;
 
   /** Gets latest status of a data item from the database */
   getDataItemInfo(dataItemId: TransactionId): Promise<
@@ -101,11 +124,56 @@ export interface Database {
         status: "new" | "pending" | "permanent";
         assessedWinstonPrice: Winston;
         bundleId?: TransactionId;
+        uploadedTimestamp: number;
       }
     | undefined
   >;
 
-  insertFailedToPostBundle(bundleId: TransactionId): Promise<void>;
-
   getLastDataItemInBundle(planId: PlanId): Promise<PlannedDataItem>;
+
+  /**
+   * Multipart uploads
+   */
+  insertInFlightMultiPartUpload({
+    uploadId,
+    uploadKey,
+  }: {
+    uploadId: UploadId;
+    uploadKey: string;
+  }): Promise<void>;
+  finalizeMultiPartUpload(params: {
+    uploadId: UploadId;
+    etag: string;
+    dataItemId: string;
+  }): Promise<void>;
+  getInflightMultiPartUpload(
+    uploadId: UploadId
+  ): Promise<InFlightMultiPartUpload>;
+  failInflightMultiPartUpload({
+    uploadId,
+    failedReason,
+  }: {
+    uploadId: UploadId;
+    failedReason: MultipartUploadFailedReason;
+  }): Promise<InFlightMultiPartUpload>;
+  failFinishedMultiPartUpload({
+    uploadId,
+    failedReason,
+  }: {
+    uploadId: UploadId;
+    failedReason: MultipartUploadFailedReason;
+  }): Promise<FinishedMultiPartUpload>;
+  getFinalizedMultiPartUpload(
+    uploadId: UploadId
+  ): Promise<FinishedMultiPartUpload>;
+  updateMultipartChunkSize(
+    chunkSize: number,
+    uploadId: UploadId
+  ): Promise<void>;
 }
+
+export type UpdateDataItemsToPermanentParams = {
+  dataItemIds: string[];
+  blockHeight: number;
+  bundleId: string;
+};

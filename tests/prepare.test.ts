@@ -16,6 +16,7 @@
  */
 import Arweave from "arweave";
 import { expect } from "chai";
+import { stub } from "sinon";
 
 import { columnNames, tableNames } from "../src/arch/db/dbConstants";
 import { PostgresDatabase } from "../src/arch/db/postgres";
@@ -23,15 +24,15 @@ import { FileSystemObjectStore } from "../src/arch/fileSystemObjectStore";
 import { prepareBundleHandler } from "../src/jobs/prepare";
 import { BundlePlanDBResult, NewBundleDBResult } from "../src/types/dbTypes";
 import { JWKInterface } from "../src/types/jwkTypes";
-import {
-  getBundleHeader,
-  getBundlePayload,
-  getBundleTx,
-} from "../src/utils/objectStoreUtils";
+import { getBundlePayload, getBundleTx } from "../src/utils/objectStoreUtils";
 import { streamToBuffer } from "../src/utils/streamToBuffer";
 import { DbTestHelper } from "./helpers/dbTestHelpers";
 import { stubPlanId, stubTxId20, stubTxId21, stubTxId22 } from "./stubs";
-import { deleteStubRawDataItems, writeStubRawDataItems } from "./test_helpers";
+import {
+  deleteStubRawDataItems,
+  expectAsyncErrorThrow,
+  writeStubRawDataItems,
+} from "./test_helpers";
 
 const db = new PostgresDatabase();
 const dbTestHelper = new DbTestHelper(db);
@@ -91,8 +92,16 @@ describe("Prepare bundle job handler", () => {
     expect((await streamToBuffer(bundlePayload, 3569)).byteLength).to.equal(
       3569
     );
+  });
 
-    const bundleHeader = await getBundleHeader(objectStore, planId);
-    expect((await streamToBuffer(bundleHeader, 224)).byteLength).to.equal(224);
+  it("the job fails with error if no data item is found from object store when it is expected to be there", async () => {
+    const objectStore = new FileSystemObjectStore();
+
+    stub(objectStore, "getObject").rejects(new Error("No Such Key Found"));
+
+    await expectAsyncErrorThrow({
+      promiseToError: prepareBundleHandler(planId, { objectStore, jwk }),
+      errorMessage: "No Such Key Found",
+    });
   });
 });

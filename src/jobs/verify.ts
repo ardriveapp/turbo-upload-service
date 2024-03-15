@@ -14,6 +14,7 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+import pLimit from "p-limit";
 import winston from "winston";
 
 import { defaultArchitecture } from "../arch/architecture";
@@ -22,12 +23,19 @@ import { Database } from "../arch/db/database";
 import { PostgresDatabase } from "../arch/db/postgres";
 import { ObjectStore } from "../arch/objectStore";
 import {
-  dropTxThresholdNumberOfBlocks,
+  batchingSize,
+  dropBundleTxThresholdNumberOfBlocks,
   gatewayUrl,
   txPermanentThreshold,
 } from "../constants";
 import defaultLogger from "../logger";
+import { PlannedDataItem } from "../types/dbTypes";
 import { ByteCount, TransactionId } from "../types/types";
+import {
+  generateArrayChunks,
+  getByteCountBasedRePackThresholdBlockCount,
+} from "../utils/common";
+import { DataItemsStillPendingWarning } from "../utils/errors";
 import { getBundleTx, getS3ObjectStore } from "../utils/objectStoreUtils";
 
 interface VerifyBundleJobArch {
@@ -35,6 +43,7 @@ interface VerifyBundleJobArch {
   objectStore?: ObjectStore;
   gateway?: Gateway;
   logger?: winston.Logger;
+  batchSize?: number;
 }
 
 async function hasBundleBeenPostedLongerThanTheDroppedThreshold(
@@ -56,7 +65,8 @@ async function hasBundleBeenPostedLongerThanTheDroppedThreshold(
   const currentBlockHeight = await gateway.getCurrentBlockHeight();
 
   return (
-    currentBlockHeight - blockHeightOfTxAnchor > dropTxThresholdNumberOfBlocks
+    currentBlockHeight - blockHeightOfTxAnchor >
+    dropBundleTxThresholdNumberOfBlocks
   );
 }
 
@@ -65,6 +75,7 @@ export async function verifyBundleHandler({
   objectStore = getS3ObjectStore(),
   gateway = new ArweaveGateway({ endpoint: gatewayUrl }),
   logger = defaultLogger.child({ job: "verify-bundle-job" }),
+  batchSize = batchingSize,
 }: VerifyBundleJobArch): Promise<void> {
   /**
    * NOTE: this locks DB items, but only for the duration of this query.
@@ -77,7 +88,7 @@ export async function verifyBundleHandler({
   }
 
   for (const bundle of seededBundles) {
-    const { planId, bundleId, transactionByteCount } = bundle;
+    const { planId, bundleId, transactionByteCount, payloadByteCount } = bundle;
 
     try {
       const transactionStatus = await gateway.getTransactionStatus(bundleId);
@@ -91,16 +102,86 @@ export async function verifyBundleHandler({
             transactionByteCount
           )
         ) {
-          await database.updateBundleAsDropped(planId);
+          logger.warn("Updating bundle as dropped", {
+            planId,
+            bundleId,
+          });
+          await database.updateSeededBundleToDropped(planId, bundleId);
         }
       } else {
+        // We found the bundle transaction from the gateway
         const { number_of_confirmations, block_height } =
           transactionStatus.transactionStatus;
-        if (number_of_confirmations >= txPermanentThreshold) {
-          const lastDataItem = await database.getLastDataItemInBundle(planId);
-          const isLastDataItemIndexedOnGQL =
-            await gateway.isTransactionQueryableOnGQL(lastDataItem.dataItemId);
 
+        // Ensure bundle has the appropriate confirmations for the permanent threshold
+        if (number_of_confirmations >= txPermanentThreshold) {
+          const plannedDataItems =
+            await database.getPlannedDataItemsForVerification(planId);
+
+          const dataItemBatches = [
+            ...generateArrayChunks(plannedDataItems, batchSize),
+          ];
+
+          // Start concurrent processes to check GQL for blocks and update data item batches to permanent
+          let batchFailedUnexpectedly = false;
+          let dataItemsStillPending = false;
+          const parallelLimit = pLimit(10);
+          const promises = dataItemBatches.map((batch) =>
+            parallelLimit(() =>
+              checkGQLForBlocksThenUpdateDataItemBatch(
+                batch,
+                gateway,
+                database,
+                bundleId,
+                block_height,
+                number_of_confirmations,
+                payloadByteCount ?? 0,
+                logger,
+                planId
+              ).catch((error) => {
+                if (error instanceof DataItemsStillPendingWarning) {
+                  dataItemsStillPending = true;
+                  return;
+                }
+
+                batchFailedUnexpectedly = true;
+                logger.error("Error verifying data item batch!", {
+                  bundleId,
+                  planId,
+                  error,
+                  dataItemIds: batch.map(({ dataItemId }) => dataItemId),
+                });
+              })
+            )
+          );
+          await Promise.all(promises);
+
+          if (batchFailedUnexpectedly) {
+            logger.error(
+              "Batch failed unexpectedly, skipping permanent insert so job will re-run",
+              {
+                bundleId,
+                planId,
+              }
+            );
+            continue;
+          } else if (dataItemsStillPending) {
+            logger.warn(
+              "Some data items do not yet return block_heights, not yet marking bundle as permanent",
+              {
+                bundleId,
+                planId,
+              }
+            );
+            continue;
+          }
+
+          const isLastDataItemIndexedOnGQL = true; // all remaining data items are indexed on GQL
+          logger.info("Updating bundle as permanent", {
+            planId,
+            block_height,
+            isLastDataItemIndexedOnGQL,
+          });
           await database.updateBundleAsPermanent(
             planId,
             block_height,
@@ -109,10 +190,9 @@ export async function verifyBundleHandler({
         }
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown error";
       logger.error("Error verifying bundle!", {
         bundle,
-        error: message,
+        error,
       });
     }
   }
@@ -124,4 +204,99 @@ export async function handler(eventPayload?: unknown) {
     eventPayload
   );
   return verifyBundleHandler(defaultArchitecture);
+}
+
+async function checkGQLForBlocksThenUpdateDataItemBatch(
+  dataItemBatch: PlannedDataItem[],
+  gateway: Gateway,
+  database: Database,
+  bundleId: TransactionId,
+  block_height: number,
+  bundleTxConfirmations: number,
+  payloadSize: ByteCount,
+  logger: winston.Logger,
+  planId: string
+) {
+  const dataItemGQLResults = await gateway.getDataItemsFromGQL(
+    dataItemBatch.map(({ dataItemId }) => dataItemId)
+  );
+
+  const idsToPlannedDataItemsMap = dataItemBatch.reduce(
+    (acc, plannedDataItem) => {
+      acc[plannedDataItem.dataItemId] = plannedDataItem;
+      return acc;
+    },
+    {} as Record<string, PlannedDataItem>
+  );
+
+  const idsToPlannedDataItemsInGQLMap = dataItemGQLResults.reduce(
+    (acc, gqlResult) => {
+      if (gqlResult.blockHeight) {
+        acc[gqlResult.id] = idsToPlannedDataItemsMap[gqlResult.id];
+      }
+      return acc;
+    },
+    {} as Record<string, PlannedDataItem>
+  );
+
+  const dataItemsInGQL = Object.values(idsToPlannedDataItemsInGQLMap);
+  const dataItemsNotInGQL =
+    Object.keys(idsToPlannedDataItemsMap).length === dataItemsInGQL.length
+      ? []
+      : dataItemBatch.filter(
+          (dataItem) =>
+            idsToPlannedDataItemsInGQLMap[dataItem.dataItemId] === undefined
+        );
+
+  logger.debug("Updating data items as permanent", {
+    bundleId,
+    planId,
+    block_height,
+    dataItemIds: Object.keys(idsToPlannedDataItemsInGQLMap),
+  });
+  await database.updateDataItemsAsPermanent({
+    dataItemIds: Object.keys(idsToPlannedDataItemsInGQLMap),
+    blockHeight: block_height,
+    bundleId,
+  });
+  logger.debug("Updated data items as permanent", {
+    bundleId,
+    planId,
+    block_height,
+    dataItemIds: Object.keys(idsToPlannedDataItemsInGQLMap),
+  });
+
+  if (dataItemsNotInGQL.length > 0) {
+    const notFoundDataItemIds = dataItemsNotInGQL.map(
+      ({ dataItemId }) => dataItemId
+    );
+
+    const byteCountBasedRepackThresholdBlockCount =
+      getByteCountBasedRePackThresholdBlockCount(payloadSize);
+
+    if (bundleTxConfirmations < byteCountBasedRepackThresholdBlockCount) {
+      logger.warn(
+        "Data items not found on GQL, but data posted within repack threshold... not yet repacking data items, will continue processing",
+        {
+          bundleTxConfirmations,
+          rePackThresholdBlockCount: byteCountBasedRepackThresholdBlockCount,
+          bundleId,
+          planId,
+          block_height,
+          notFoundDataItemIds,
+        }
+      );
+      throw new DataItemsStillPendingWarning();
+    }
+
+    logger.error("Mismatched data item count!", {
+      bundleId,
+      planId,
+      foundDataItemLength: dataItemsInGQL.length,
+      notFoundDataItemLength: notFoundDataItemIds.length,
+      notFoundDataItemIds,
+    });
+
+    await database.updateDataItemsToBeRePacked(notFoundDataItemIds, bundleId);
+  }
 }

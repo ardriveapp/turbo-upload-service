@@ -30,10 +30,15 @@ import {
   bundleHeaderInfoFromBuffer,
   totalBundleSizeFromHeaderInfo,
 } from "../bundles/assembleBundleHeader";
-import { rawIdFromRawSignature } from "../bundles/rawIdFromRawSignature";
+import {
+  bufferIdFromBufferSignature,
+  bufferIdFromReadableSignature,
+} from "../bundles/idFromSignature";
 import { signatureTypeInfo } from "../bundles/verifyDataItem";
 import {
+  PremiumPaidFeatureType,
   arnsContractTxId,
+  dedicatedBundleTypes,
   gatewayUrl,
   tickArnsContractEnabled,
 } from "../constants";
@@ -41,6 +46,7 @@ import defaultLogger from "../logger";
 import { PlanId } from "../types/dbTypes";
 import { JWKInterface } from "../types/jwkTypes";
 import { W } from "../types/winston";
+import { filterKeysFromObject } from "../utils/common";
 import { BundlePlanExistsInAnotherStateWarning } from "../utils/errors";
 import { getArweaveWallet } from "../utils/getArweaveWallet";
 import {
@@ -49,7 +55,6 @@ import {
   getRawSignatureOfDataItem,
   getS3ObjectStore,
   getSignatureTypeOfDataItem,
-  putBundleHeader,
   putBundlePayload,
   putBundleTx,
 } from "../utils/objectStoreUtils";
@@ -57,7 +62,7 @@ import { streamToBuffer } from "../utils/streamToBuffer";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { version } = require("../../package.json");
-const PARALLEL_LIMIT = 10;
+const PARALLEL_LIMIT = 100;
 interface PrepareBundleJobInjectableArch {
   database?: Database;
   objectStore?: ObjectStore;
@@ -66,6 +71,10 @@ interface PrepareBundleJobInjectableArch {
   gateway?: Gateway;
   arweave?: ArweaveInterface;
 }
+
+// TODO: move this to an SSM param so all tasks have access to it using a read through promise cache to avoid hitting SSM too much
+let lastArnsTickTimestamp: number | undefined = undefined;
+const arnsTickIntervalMs = 1000 * 60 * 60; // 1 hour
 
 /**
  * Uses next bundle plan from to prepare a Bundle Transaction for posting
@@ -98,36 +107,39 @@ export async function prepareBundleHandler(
     logger.warn("No planned data items for plan.");
     return;
   }
-
+  const dataItemCount = dbDataItems.length;
+  const totalDataItemsSize = dbDataItems.reduce(
+    (acc, dataItem) => acc + dataItem.byteCount,
+    0
+  );
   logger.info(`Preparing data items.`, {
-    dataItems: dbDataItems,
+    dataItemCount,
+    totalDataItemsSize,
   });
 
   // Assemble bundle header
   // This could be done in plan job -- or another specific bundleHeader job
   const parallelLimit = pLimit(PARALLEL_LIMIT);
   const dataItemRawIdsAndByteCounts = await Promise.all(
-    dbDataItems.map(({ byteCount, dataItemId, signatureType }) => {
+    dbDataItems.map(({ byteCount, dataItemId, signatureType, signature }) => {
       return parallelLimit(async () => {
-        logger.info("Getting raw signature of data item.", {
+        logger.debug("Getting raw signature of data item.", {
           dataItemId,
         });
         const sigType =
           signatureType ??
           (await getSignatureTypeOfDataItem(objectStore, dataItemId));
-        const dataItemRawSignature = await getRawSignatureOfDataItem(
-          objectStore,
-          dataItemId,
-          sigType
-        );
-        logger.info("Retrieved raw signature of data item.", {
-          dataItemId,
-        });
-        const dataItemRawId = await rawIdFromRawSignature(
-          dataItemRawSignature,
-          signatureTypeInfo[sigType].signatureLength
-        );
-        logger.info("Parsed data item raw id.", {
+
+        const dataItemRawId = signature
+          ? // Use signature from db if exists
+            await bufferIdFromBufferSignature(signature)
+          : await bufferIdFromReadableSignature(
+              // Else fallback to raw signature from object store
+              await getRawSignatureOfDataItem(objectStore, dataItemId, sigType),
+              signatureTypeInfo[sigType].signatureLength
+            );
+
+        logger.debug("Parsed data item raw id.", {
           dataItemRawId,
           dataItemId,
         });
@@ -135,94 +147,104 @@ export async function prepareBundleHandler(
       });
     })
   );
-  logger.info("Assembling bundle header.");
+  logger.debug("Assembling bundle header.");
   const bundleHeaderReadable = await assembleBundleHeader(
     dataItemRawIdsAndByteCounts
   );
   const bundleHeaderBuffer = await streamToBuffer(bundleHeaderReadable);
-  logger.info("Caching bundle header.");
-  await putBundleHeader(objectStore, planId, Readable.from(bundleHeaderBuffer));
-  // Bundle header end
-  logger.info("Successfully cached bundle header.");
+
   // Call pricing service to determine reward and tip settings for bundle
   const txAttributes = await pricing.getTxAttributesForDataItems(dbDataItems);
 
-  // Assemble bundle transaction
-  const dataItemCount = dbDataItems.length;
-  const totalDataItemsSize = dbDataItems.reduce(
-    (acc, dataItem) => acc + dataItem.byteCount,
-    0
-  );
-  logger.info("Assembling bundle transaction.", {
-    dataItemCount,
+  logger = logger.child({
+    txAttributes,
     totalDataItemsSize,
+    dataItemCount,
   });
 
   const totalPayloadSize = totalBundleSizeFromHeaderInfo(
     bundleHeaderInfoFromBuffer(bundleHeaderBuffer)
   );
-  logger.info("Caching bundle payload.", {
+  logger.debug("Caching bundle payload.", {
     payloadSize: totalPayloadSize,
   });
+
   await putBundlePayload(
     objectStore,
     planId,
-    await assembleBundlePayload(objectStore, bundleHeaderBuffer)
+    assembleBundlePayload(objectStore, bundleHeaderBuffer)
     // HACK: Attempting to remove totalPayloadSize to appease AWS V3 SDK
     // totalPayloadSize
-  );
+  ).catch((error) => {
+    logger.error("Failed to cache bundle payload!", {
+      error,
+    });
+    throw error;
+  });
   const headerByteCount = bundleHeaderBuffer.byteLength;
 
+  logger.debug("Successfully cached bundle payload.", {
+    planId,
+  });
   // TODO: OPTIMIZE THIS! Potentially by splitting streams above? Consider stream consumer rates...
   const bundleTx = await arweave.createTransactionFromPayloadStream(
-    await getBundlePayload(
-      objectStore,
-      planId,
-      headerByteCount,
-      totalPayloadSize
-    ),
+    await getBundlePayload(objectStore, planId),
     txAttributes,
     jwk
   );
 
-  logger.info("Successfully assembled bundle transaction.", {
+  logger.debug("Successfully assembled bundle transaction.", {
     txId: bundleTx.id,
   });
   bundleTx.addTag("Bundle-Format", "binary");
   bundleTx.addTag("Bundle-Version", "2.0.0");
+
+  const premiumFeatureType = dbDataItems[0].premiumFeatureType;
+  const bundlerAppName =
+    dedicatedBundleTypes[premiumFeatureType as PremiumPaidFeatureType]
+      ?.bundlerAppName ?? undefined;
+  if (bundlerAppName) {
+    bundleTx.addTag("Bundler-App-Name", bundlerAppName);
+  }
 
   bundleTx.addTag("App-Name", process.env.APP_NAME ?? "ArDrive Turbo");
   bundleTx.addTag("App-Version", version);
 
   // Mint $U
   bundleTx.addTag("App-Name", "SmartWeaveAction");
-  bundleTx.addTag("App-Version", "0.3.0");
-  bundleTx.addTag("Contract", "KTzTXT_ANmF84fWEKHzWURD1LWd9QaFR9yfYUwH2Lxw");
+  bundleTx.addTag("App-Version", "0.3.0"); // cspell:disable
+  bundleTx.addTag("Contract", "KTzTXT_ANmF84fWEKHzWURD1LWd9QaFR9yfYUwH2Lxw"); // cspell:enable
   bundleTx.addTag("Input", JSON.stringify({ function: "mint" }));
 
-  // tick arns contract
-  if (tickArnsContractEnabled && arnsContractTxId) {
-    logger.info(
+  // add tags to tick arns contract if it has not been ticked within interval
+  const shouldTickArns =
+    !lastArnsTickTimestamp ||
+    Date.now() - lastArnsTickTimestamp >= arnsTickIntervalMs;
+  if (tickArnsContractEnabled && arnsContractTxId && shouldTickArns) {
+    logger.debug(
       "Adding tick interaction to ArNS registry to bundle transaction.",
       {
         txId: bundleTx.id,
         arnsContractTxId,
       }
     );
+    // update the last ticked timestamp
     bundleTx.addTag("Contract", arnsContractTxId);
     bundleTx.addTag("Input", JSON.stringify({ function: "tick" }));
+    // update the timestamp
+    lastArnsTickTimestamp = Date.now();
   }
 
   await arweave.signTx(bundleTx, jwk);
 
-  logger.info("Successfully signed bundle transaction.", {
+  logger.debug("Successfully signed bundle transaction.", {
     txId: bundleTx.id,
   });
   bundleTx.data = new Uint8Array(0);
   const serializedBundleTx = JSON.stringify(bundleTx.toJSON());
   const bundleTxBuffer = Buffer.from(serializedBundleTx);
 
-  logger.info("Updating object-store with bundled transaction.", {
+  logger.debug("Updating object-store with bundled transaction.", {
     txId: bundleTx.id,
   });
 
@@ -246,8 +268,13 @@ export async function prepareBundleHandler(
   }
   await enqueue("post-bundle", { planId });
 
-  logger.info("Successfully updated object-store with bundled transaction.", {
-    txId: bundleTx.id,
+  logger.info("Successfully updated object-store with bundle transaction", {
+    bundleTx: filterKeysFromObject(bundleTx, [
+      "data",
+      "chunks",
+      "owner",
+      "tags",
+    ]),
   });
 }
 export const handler = createQueueHandler(

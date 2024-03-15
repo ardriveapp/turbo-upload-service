@@ -15,43 +15,60 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 import {
-  maxBundleSize as maxBundleSizeConstant,
-  maxDataItemLimit as maxDataItemLimitConstant,
-  maxDataItemSize as maxDataItemSizeConstant,
+  defaultOverdueThresholdMs,
+  maxBundleDataItemsByteCount as maxBundleSizeConstant,
+  maxDataItemsPerBundle as maxDataItemLimitConstant,
+  maxSingleDataItemByteCount as maxDataItemSizeConstant,
 } from "../constants";
 import logger from "../logger";
+import { Timestamp } from "../types/dbTypes";
 import { ByteCount, TransactionId } from "../types/types";
+import { dataItemIsOverdue } from "../utils/planningUtils";
 
-interface PackerBundlePlan {
+export interface PackerBundlePlan {
   dataItemIds: TransactionId[];
   totalByteCount: ByteCount;
+  containsOverdueDataItems: boolean;
+  dataItemSizes: Record<TransactionId, ByteCount>;
 }
 [];
 
 interface PackerDataItem {
   dataItemId: TransactionId;
   byteCount: ByteCount;
+  uploadedDate: Timestamp;
 }
 
 interface BundlePackerParams {
-  maxBundleSize?: ByteCount;
-  maxDataItemSize?: ByteCount;
-  maxDataItemLimit?: number;
+  maxTotalDataItemsByteCount?: ByteCount;
+  maxSingleDataItemByteCount?: ByteCount;
+  maxDataItemsCount?: number;
+  overdueDataItemThresholdMs?: number;
 }
 
 export class BundlePacker {
-  private readonly maxBundleSize: ByteCount;
-  private readonly maxDataItemSize: ByteCount;
-  private readonly maxDataItemLimit: number;
+  readonly maxTotalDataItemsByteCount: ByteCount;
+  readonly maxSingleDataItemByteCount: ByteCount;
+  readonly maxDataItemsCount: number;
+  readonly overdueDataItemThresholdMs: number;
 
   constructor({
-    maxBundleSize = maxBundleSizeConstant,
-    maxDataItemSize = maxDataItemSizeConstant,
-    maxDataItemLimit = maxDataItemLimitConstant,
+    maxTotalDataItemsByteCount = maxBundleSizeConstant,
+    maxSingleDataItemByteCount = maxDataItemSizeConstant,
+    maxDataItemsCount = maxDataItemLimitConstant,
+    overdueDataItemThresholdMs = defaultOverdueThresholdMs,
   }: BundlePackerParams) {
-    this.maxBundleSize = maxBundleSize;
-    this.maxDataItemSize = maxDataItemSize;
-    this.maxDataItemLimit = maxDataItemLimit;
+    this.maxTotalDataItemsByteCount = maxTotalDataItemsByteCount;
+    this.maxSingleDataItemByteCount = maxSingleDataItemByteCount;
+    this.maxDataItemsCount = maxDataItemsCount;
+    this.overdueDataItemThresholdMs = overdueDataItemThresholdMs;
+  }
+
+  public planHasCapacity(plan: PackerBundlePlan): boolean {
+    return (
+      plan.dataItemIds.length < this.maxDataItemsCount &&
+      plan.totalByteCount < this.maxTotalDataItemsByteCount
+    );
   }
 
   public packDataItemsIntoBundlePlans(
@@ -62,23 +79,28 @@ export class BundlePacker {
     for (const dataItem of dataItems) {
       const { dataItemId, byteCount } = dataItem;
 
-      if (byteCount > this.maxDataItemSize) {
+      if (byteCount > this.maxSingleDataItemByteCount) {
         // This error case should already be sanitized on data item post route
         // Gracefully skip with logging
         logger.error(
-          `Data item id ${dataItemId} from database had a byte count of ${byteCount} which exceeds the maximum dataItem size of ${this.maxDataItemSize}!`
+          `Data item id ${dataItemId} from database had a byte count of ${byteCount} which exceeds the maximum dataItem size of ${this.maxSingleDataItemByteCount}!`
         );
         continue;
       }
 
-      if (byteCount > this.maxBundleSize) {
-        logger.info(
+      if (byteCount > this.maxTotalDataItemsByteCount) {
+        logger.debug(
           "Data item bigger than max bundle size, putting this into its own bundle...",
           { dataItemId, byteCount }
         );
         bundlePlans.push({
           dataItemIds: [dataItemId],
           totalByteCount: byteCount,
+          containsOverdueDataItems: dataItemIsOverdue(
+            dataItem,
+            this.overdueDataItemThresholdMs
+          ),
+          dataItemSizes: { [dataItemId]: byteCount },
         });
         continue;
       }
@@ -86,21 +108,33 @@ export class BundlePacker {
       bundlePlans = this.packDataItem(dataItem, bundlePlans);
     }
 
+    // sort all data items from smallest to largest in each bundle
+    bundlePlans.forEach((bundlePlan) => {
+      bundlePlan.dataItemIds.sort(
+        (a, b) => bundlePlan.dataItemSizes[a] - bundlePlan.dataItemSizes[b]
+      );
+    });
+
     return bundlePlans;
   }
 
   private packDataItem(
-    { byteCount, dataItemId }: PackerDataItem,
+    dataItem: PackerDataItem,
     bundlePlans: PackerBundlePlan[]
   ): PackerBundlePlan[] {
+    const { byteCount, dataItemId } = dataItem;
     for (let index = 0; index < bundlePlans.length; index++) {
       const bundlePlan = bundlePlans[index];
 
       if (this.fitsIntoBundle(byteCount, bundlePlan)) {
         // Put data item into bundle plan
-        bundlePlans[index].dataItemIds.push(dataItemId);
-        bundlePlans[index].totalByteCount =
-          bundlePlan.totalByteCount + byteCount;
+        bundlePlan.dataItemIds.push(dataItemId);
+        bundlePlan.totalByteCount = bundlePlan.totalByteCount + byteCount;
+        bundlePlan.dataItemSizes[dataItemId] = byteCount;
+
+        bundlePlan.containsOverdueDataItems =
+          bundlePlan.containsOverdueDataItems ||
+          dataItemIsOverdue(dataItem, this.overdueDataItemThresholdMs);
 
         return bundlePlans;
       }
@@ -110,6 +144,11 @@ export class BundlePacker {
     bundlePlans.push({
       dataItemIds: [dataItemId],
       totalByteCount: byteCount,
+      dataItemSizes: { [dataItemId]: byteCount },
+      containsOverdueDataItems: dataItemIsOverdue(
+        dataItem,
+        this.overdueDataItemThresholdMs
+      ),
     });
     return bundlePlans;
   }
@@ -119,9 +158,9 @@ export class BundlePacker {
     { totalByteCount, dataItemIds }: PackerBundlePlan
   ) {
     const fitsInBundleTotalByteCount =
-      dataItemByteCount <= this.maxBundleSize - totalByteCount;
+      dataItemByteCount <= this.maxTotalDataItemsByteCount - totalByteCount;
     const fitsInBundleDataItemLimit =
-      dataItemIds.length + 1 <= this.maxDataItemLimit;
+      dataItemIds.length + 1 <= this.maxDataItemsCount;
 
     return fitsInBundleTotalByteCount && fitsInBundleDataItemLimit;
   }

@@ -22,12 +22,11 @@ import { KoaContext } from "../server";
 export async function architectureMiddleware(
   ctx: KoaContext,
   next: Next,
-  arch: Architecture
+  arch: Omit<Architecture, "logger">
 ) {
   ctx.state.database = arch.database;
   ctx.state.objectStore = arch.objectStore;
   ctx.state.paymentService = arch.paymentService;
-  ctx.state.logger = arch.logger;
   ctx.state.getArweaveWallet = arch.getArweaveWallet;
   ctx.state.arweaveGateway = arch.arweaveGateway;
   return next();

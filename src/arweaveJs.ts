@@ -53,9 +53,9 @@ export class ArweaveInterface {
   }
 
   public signTx(tx: Transaction, jwk: JWKInterface): Promise<void> {
-    this.log.info(
+    this.log.debug(
       "Signing Transaction :",
-      filterKeysFromObject(tx, ["data", "chunks"])
+      filterKeysFromObject(tx, ["data", "chunks", "owner", "tags"])
     );
     return this.arweaveJs.transactions.sign(tx, jwk);
   }
@@ -72,7 +72,7 @@ export class ArweaveInterface {
     const bundleId = bundleTx.id;
 
     const chunkPreparationStartMs = Date.now();
-    this.log.info("Preparing chunks for bundle..", {
+    this.log.debug("Preparing chunks for bundle..", {
       bundleId,
       chunkPreparationStartMs,
     });
@@ -83,7 +83,7 @@ export class ArweaveInterface {
     durationsMs.chunkPreparation = Date.now() - chunkPreparationStartMs;
 
     const chunkUploadStartMs = Date.now();
-    this.log.info("Seeding chunks for bundle..", {
+    this.log.debug("Seeding chunks for bundle..", {
       bundleId,
       durationsMs,
       chunkUploadStartMs,
@@ -94,7 +94,7 @@ export class ArweaveInterface {
     );
     durationsMs.chunkUpload = Date.now() - chunkUploadStartMs;
 
-    this.log.info("Chunks seeded!", {
+    this.log.debug("Chunks seeded!", {
       bundleId,
       durationsMs,
     });
@@ -105,7 +105,7 @@ export class ArweaveInterface {
     txAttributes: TxAttributes,
     jwk: JWKInterface
   ): Promise<Transaction> {
-    this.log.info("Preparing transaction for bundle..");
+    this.log.debug("Preparing transaction for bundle..");
     return pipeline(
       payloadStream,
       createTransactionAsync(txAttributes, this.arweaveJs, jwk)

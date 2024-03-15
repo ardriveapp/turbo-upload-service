@@ -23,15 +23,23 @@ import { Server } from "http";
 import { stub } from "sinon";
 
 import { ArweaveGateway } from "../src/arch/arweaveGateway";
+import { PostgresDatabase } from "../src/arch/db/postgres";
+import { FileSystemObjectStore } from "../src/arch/fileSystemObjectStore";
 import { TurboPaymentService } from "../src/arch/payment";
-import { octetStreamContentType, receiptVersion } from "../src/constants";
+import {
+  gatewayUrl,
+  octetStreamContentType,
+  receiptVersion,
+} from "../src/constants";
 import logger from "../src/logger";
 import { createServer } from "../src/server";
 import { JWKInterface } from "../src/types/jwkTypes";
 import { W } from "../src/types/winston";
+import { MultiPartUploadNotFound } from "../src/utils/errors";
 import { verifyReceipt } from "../src/utils/verifyReceipt";
 import { generateJunkDataItem, signDataItem } from "./helpers/dataItemHelpers";
 import { assertExpectedHeadersWithContentLength } from "./helpers/expectations";
+import { stubTxId1 } from "./stubs";
 import {
   ethereumDataItem,
   invalidDataItem,
@@ -53,8 +61,8 @@ describe("Router tests", function () {
   }
 
   describe('generic routes"', () => {
-    before(() => {
-      server = createServer({
+    before(async () => {
+      server = await createServer({
         getArweaveWallet: () =>
           Promise.resolve(
             JSON.parse(
@@ -86,10 +94,100 @@ describe("Router tests", function () {
       expect(data).to.deep.equal({
         version: "0.2.0",
         addresses: {
-          arweave: "8wgRDgvYOrtSaWEIV21g0lTuWDUnTu4_iYj4hmA7PI0",
+          // cspell:disable
+          arweave: "8wgRDgvYOrtSaWEIV21g0lTuWDUnTu4_iYj4hmA7PI0", //cspell:enable
         },
-        gateway: "arlocal",
+        freeUploadLimitBytes: 517120,
+        gateway: gatewayUrl.hostname,
       });
+    });
+  });
+
+  describe("Data Item Status GET `/v1/tx/:id/status` Route", () => {
+    const database = new PostgresDatabase({});
+    before(async function () {
+      server = await createServer({
+        database,
+      });
+    });
+
+    after(() => {
+      closeServer();
+    });
+
+    it("returns the expected data item status result for new data item", async () => {
+      stub(database, "getDataItemInfo").resolves({
+        assessedWinstonPrice: W("500"),
+        status: "new",
+        uploadedTimestamp: Date.now(),
+      });
+
+      const { status, data } = await axios.get(
+        `${localTestUrl}/v1/tx/${stubTxId1}/status`
+      );
+
+      expect(status).to.equal(200);
+      expect(data).to.deep.equal({
+        status: "CONFIRMED",
+        info: "new",
+        winc: "500",
+      });
+    });
+
+    it("returns the expected data item status result for pending data item", async () => {
+      stub(database, "getDataItemInfo").resolves({
+        assessedWinstonPrice: W("500"),
+        status: "pending",
+        bundleId: "bundleId",
+        uploadedTimestamp: Date.now(),
+      });
+
+      const { status, data } = await axios.get(
+        `${localTestUrl}/v1/tx/${stubTxId1}/status`
+      );
+
+      expect(status).to.equal(200);
+      expect(data).to.deep.equal({
+        status: "CONFIRMED",
+        info: "pending",
+        bundleId: "bundleId",
+        winc: "500",
+      });
+    });
+
+    it("returns the expected data item status result for permanent data item", async () => {
+      stub(database, "getDataItemInfo").resolves({
+        assessedWinstonPrice: W("500"),
+        status: "permanent",
+        bundleId: "bundleId",
+        uploadedTimestamp: Date.now(),
+      });
+
+      const { status, data } = await axios.get(
+        `${localTestUrl}/v1/tx/${stubTxId1}/status`
+      );
+
+      expect(status).to.equal(200);
+      expect(data).to.deep.equal({
+        status: "FINALIZED",
+        bundleId: "bundleId",
+        info: "permanent",
+        winc: "500",
+      });
+    });
+
+    it("returns the expected response when data item is not found", async () => {
+      const { data, status } = await axios.get(
+        `${localTestUrl}/v1/tx/UNIQUEtransactionID43Characters123456789012/status`,
+        {
+          validateStatus: (status) => {
+            return (status >= 200 && status < 300) || status === 404;
+          },
+        }
+      );
+
+      expect(status).to.equal(404);
+      expect(data).to.deep.equal("TX doesn't exist");
     });
   });
 
@@ -110,8 +208,17 @@ describe("Router tests", function () {
     });
 
     describe("with a default Koa server", () => {
+      let blocklistedJWK: JWKInterface;
       before(async function () {
-        server = createServer({
+        blocklistedJWK = JSON.parse(
+          readFileSync(
+            // cspell:disable
+            `tests/stubFiles/blocklistedWallet.xnbLpqfiRIInqrxkhV7M-iSr8YUtm9aoezGjSnXnOFo.json`, // cspell:enable
+            { encoding: "utf-8" }
+          )
+        );
+
+        server = await createServer({
           paymentService,
           getArweaveWallet: () => Promise.resolve(receiptSigningWallet),
           arweaveGateway,
@@ -153,8 +260,8 @@ describe("Router tests", function () {
             version,
             winc,
           } = data;
-
-          expect(id).to.equal("QpmY8mZmFEC8RxNsgbxSV6e36OF6quIYaPRKzvUco0o");
+          // cspell:disable
+          expect(id).to.equal("QpmY8mZmFEC8RxNsgbxSV6e36OF6quIYaPRKzvUco0o"); // cspell:enable
           expect(owner).to.equal("J40R1BgFSI1_7p25QW49T7P46BePJJnlDrsFGY1YWbM");
           expect(dataCaches).to.deep.equal(["arweave.net"]);
           expect(deadlineHeight).to.equal(700);
@@ -167,9 +274,6 @@ describe("Router tests", function () {
           expect(winc).to.equal("500");
 
           expect(await verifyReceipt(data)).to.be.true;
-
-          const fileStats = statSync(`temp/data/${id}`);
-          expect(fileStats.size).to.equal(5);
 
           const rawFileStats = statSync(`temp/raw-data-item/${id}`);
           expect(rawFileStats.size).to.equal(1115);
@@ -186,11 +290,8 @@ describe("Router tests", function () {
 
           expect(await verifyReceipt(data)).to.be.true;
 
-          expect(id).to.equal("hSIHAdxTDUpW9oJb26nb2zhQkJn3yNBtTakMOwJuXC0");
-          expect(owner).to.equal("jaxl_dxqJ00gEgQazGASFXVRvO4h-Q0_vnaLtuOUoWU");
-
-          const fileStats = statSync(`temp/data/${id}`);
-          expect(fileStats.size).to.equal(1024);
+          expect(id).to.equal("hSIHAdxTDUpW9oJb26nb2zhQkJn3yNBtTakMOwJuXC0"); // cspell:disable
+          expect(owner).to.equal("jaxl_dxqJ00gEgQazGASFXVRvO4h-Q0_vnaLtuOUoWU"); // cspell:enable
 
           const rawFileStats = statSync(`temp/raw-data-item/${id}`);
           expect(rawFileStats.size).to.equal(2325);
@@ -209,6 +310,27 @@ describe("Router tests", function () {
           expect(data).to.have.property("id");
           expect(data).to.have.property("owner");
           expect(data.dataCaches).to.deep.equal(["arweave.net"]);
+        });
+
+        it("returns the expected result for an address on the block list", async () => {
+          const dataItem = await signDataItem(
+            generateJunkDataItem(512, blocklistedJWK, [
+              { name: "test", value: "value" },
+            ]),
+            blocklistedJWK
+          );
+
+          const { status, statusText, headers, data } = await postStubDataItem(
+            dataItem
+          );
+
+          expect(status).to.equal(403);
+          assertExpectedHeadersWithContentLength(headers, 9);
+
+          const expectedData = "Forbidden";
+
+          expect(statusText).to.equal(expectedData);
+          expect(data).to.equal(expectedData);
         });
 
         it("returns the expected result for an empty data item", async () => {
@@ -240,9 +362,6 @@ describe("Router tests", function () {
           expect(data.owner).to.equal(owner);
           expect(await verifyReceipt(data)).to.be.true;
 
-          const fileStats = statSync(`temp/data/${id}`);
-          expect(fileStats.size).to.equal(5);
-
           const rawFileStats = statSync(`temp/raw-data-item/${id}`);
           expect(rawFileStats.size).to.equal(211);
         });
@@ -259,9 +378,6 @@ describe("Router tests", function () {
           expect(data.id).to.equal(id);
           expect(data.owner).to.equal(owner);
           expect(await verifyReceipt(data)).to.be.true;
-
-          const fileStats = statSync(`temp/data/${id}`);
-          expect(fileStats.size).to.equal(5);
 
           const rawFileStats = statSync(`temp/raw-data-item/${id}`);
           expect(rawFileStats.size).to.equal(245);
@@ -366,11 +482,12 @@ describe("Router tests", function () {
           userBalanceInWinc: W("20"),
           userHasSufficientBalance: false,
         });
-        const { status, headers, data, statusText } = await postStubDataItem(
+        const { status, statusText, data, headers } = await postStubDataItem(
           dataItem
         );
         expect(data).to.equal("Insufficient balance");
         expect(statusText).to.equal("Insufficient balance");
+
         expect(status).to.equal(402);
         assertExpectedHeadersWithContentLength(headers, 20);
       });
@@ -378,8 +495,8 @@ describe("Router tests", function () {
 
     describe("with a Koa server stubbed with a payment service that allows ARFS data", () => {
       const paymentService = new TurboPaymentService(true);
-      before(() => {
-        server = createServer({
+      before(async () => {
+        server = await createServer({
           paymentService,
           getArweaveWallet: () => Promise.resolve(receiptSigningWallet),
           arweaveGateway,
@@ -405,12 +522,154 @@ describe("Router tests", function () {
         expect(data.owner).to.equal(owner);
         expect(await verifyReceipt(data)).to.be.true;
 
-        const fileStats = statSync(`temp/data/${id}`);
-        expect(fileStats.size).to.equal(155);
-
         const rawFileStats = statSync(`temp/raw-data-item/${id}`);
         expect(rawFileStats.size).to.equal(1464);
       });
+    });
+  });
+
+  describe("Multipart Upload Status GET `/chunks/:token/:uploadId/status` Route", () => {
+    const objectStore = new FileSystemObjectStore();
+    const database = new PostgresDatabase({});
+    before(async () => {
+      server = await createServer({
+        objectStore,
+        database,
+        getArweaveWallet: () =>
+          Promise.resolve(
+            JSON.parse(
+              readFileSync("tests/stubFiles/testWallet.json", {
+                encoding: "utf-8",
+              })
+            )
+          ),
+      });
+    });
+
+    after(() => {
+      closeServer();
+    });
+
+    it("should return 404 when the uploadId is not found", async () => {
+      const response = await axios.get(
+        `${localTestUrl}/chunks/arweave/stubUploadId/status`,
+        {
+          validateStatus: () => true,
+        }
+      );
+      expect(response.status).to.equal(404);
+    });
+
+    it("should return 200 with status message 'ASSEMBLING' for a fresh uploadId", async () => {
+      stub(objectStore, "createMultipartUpload").resolves("foo");
+
+      // 0 byte count signals that the user hasn't called finalize yet, thus assembly is not yet complete
+      stub(objectStore, "getObjectByteCount").resolves(0);
+
+      const newUploadResponse = await axios.get(
+        `${localTestUrl}/chunks/arweave/-1/-1`,
+        {
+          validateStatus: () => true,
+        }
+      );
+      const uploadId = newUploadResponse.data.id;
+      const response = await axios.get(
+        `${localTestUrl}/chunks/arweave/${uploadId}/status`,
+        {
+          validateStatus: () => true,
+        }
+      );
+      expect(response.status).to.equal(200);
+      expect(response.data.status).to.equal("ASSEMBLING");
+      expect(Math.abs(Date.now() - response.data.timestamp)).to.be.lessThan(
+        3000
+      );
+    });
+
+    it("should return 200 with status message 'VALIDATING' for an uploaded but not yet validated uploadId", async () => {
+      stub(objectStore, "createMultipartUpload").resolves("bar");
+
+      // 0 byte count signals that the user hasn't called finalize yet, thus assembly is not yet complete
+      stub(objectStore, "getObjectByteCount").resolves(1);
+
+      const newUploadResponse = await axios.get(
+        `${localTestUrl}/chunks/arweave/-1/-1`,
+        {
+          validateStatus: () => true,
+        }
+      );
+      const uploadId = newUploadResponse.data.id;
+      const response = await axios.get(
+        `${localTestUrl}/chunks/arweave/${uploadId}/status`,
+        {
+          validateStatus: () => true,
+        }
+      );
+      expect(response.status).to.equal(200);
+      expect(response.data.status).to.equal("VALIDATING");
+      expect(Math.abs(Date.now() - response.data.timestamp)).to.be.lessThan(
+        3000
+      );
+    });
+
+    it("should return 200 with status message 'FINALIZING' for a validated but not yet finalized uploadId", async () => {
+      stub(database, "getInflightMultiPartUpload").rejects(
+        new MultiPartUploadNotFound("baz")
+      );
+      stub(database, "getFinalizedMultiPartUpload").resolves({
+        uploadId: "baz",
+        uploadKey: "stubUploadKey",
+        createdAt: "123",
+        expiresAt: "123",
+        finalizedAt: "123",
+        dataItemId: "stubDataItemId",
+        etag: "stubEtag",
+      });
+      stub(database, "getDataItemInfo").resolves(undefined);
+
+      const response = await axios.get(
+        `${localTestUrl}/chunks/arweave/baz/status`,
+        {
+          validateStatus: () => true,
+        }
+      );
+      expect(response.status).to.equal(200);
+      expect(response.data.status).to.equal("FINALIZING");
+      expect(Math.abs(Date.now() - response.data.timestamp)).to.be.lessThan(
+        3000
+      );
+    });
+
+    it("should return 200 with status message 'FINALIZED' for a validated and finalized uploadId", async () => {
+      stub(database, "getInflightMultiPartUpload").rejects(
+        new MultiPartUploadNotFound("baz")
+      );
+      stub(database, "getFinalizedMultiPartUpload").resolves({
+        uploadId: "baz",
+        uploadKey: "stubUploadKey",
+        createdAt: "123",
+        expiresAt: "123",
+        finalizedAt: "123",
+        dataItemId: "stubDataItemId",
+        etag: "stubEtag",
+      });
+      stub(database, "getDataItemInfo").resolves({
+        status: "new",
+        assessedWinstonPrice: W("0"),
+        uploadedTimestamp: 123,
+      });
+
+      const response = await axios.get(
+        `${localTestUrl}/chunks/arweave/baz/status`,
+        {
+          validateStatus: () => true,
+        }
+      );
+      expect(response.status).to.equal(200);
+      expect(response.data.status).to.equal("FINALIZED");
+      expect(Math.abs(Date.now() - response.data.timestamp)).to.be.lessThan(
+        3000
+      );
     });
   });
 });

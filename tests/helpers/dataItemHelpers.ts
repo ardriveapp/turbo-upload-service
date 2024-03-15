@@ -14,90 +14,8 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-import {
-  Tag,
-  byteArrayToLong,
-  deepHash,
-  longTo8ByteArray,
-  serializeTags,
-  shortTo2ByteArray,
-} from "arbundles";
-import Arweave from "arweave";
+import { ArweaveSigner, DataItem, Tag, createData } from "arbundles";
 import { JWKInterface } from "arweave/node/lib/wallet";
-
-import { arweaveSignatureLength } from "../../src/bundles/dataItem";
-import { fromB64Url } from "../../src/utils/base64";
-
-export function toDataItem(
-  data: string | Uint8Array,
-  jwk: JWKInterface,
-  tags: Tag[]
-): Buffer {
-  // We're not using the optional target and anchor fields, they will always be 1 byte
-  const targetLength = 1;
-  const anchorLength = 1;
-
-  // Get byte length of tags after being serialized for avro schema
-  const serializedTags = serializeTags(tags);
-  const tagsLength = 16 + serializedTags.byteLength;
-
-  const arweaveSignerLength = 512;
-  const ownerLength = 512;
-
-  const signatureTypeLength = 2;
-
-  const dataAsBuffer = Buffer.from(data);
-  const dataLength = dataAsBuffer.byteLength;
-
-  // See [https://github.com/joshbenaron/arweave-standards/blob/ans104/ans/ANS-104.md#13-dataitem-format]
-  const totalByteLength =
-    arweaveSignerLength +
-    ownerLength +
-    signatureTypeLength +
-    targetLength +
-    anchorLength +
-    tagsLength +
-    dataLength;
-
-  // Create array with set length
-  const bytes = Buffer.alloc(totalByteLength);
-
-  bytes.set(shortTo2ByteArray(1), 0);
-  // Push bytes for `signature`
-  bytes.set(new Uint8Array(arweaveSignatureLength).fill(0), 2);
-
-  // Push bytes for `owner`
-  const owner = fromB64Url(jwk.n);
-  if (owner.byteLength !== arweaveSignatureLength) {
-    throw new Error(
-      `Arweave Owner must be ${arweaveSignatureLength} bytes, but was incorrectly ${owner.byteLength}`
-    );
-  }
-
-  bytes.set(owner, 2 + arweaveSignatureLength);
-
-  const position = 2 + arweaveSignatureLength + ownerLength;
-  // Push `presence byte` and push `target` if present
-  // 64 + OWNER_LENGTH
-  bytes[position] = 0;
-
-  // Push `presence byte` and push `anchor` if present
-  // 64 + OWNER_LENGTH
-  const anchorStart = position + targetLength;
-  const tagsStart = anchorStart + 1;
-  bytes[anchorStart] = 0;
-
-  bytes.set(longTo8ByteArray(tags.length), tagsStart);
-  const bytesCount = longTo8ByteArray(serializedTags.byteLength);
-  bytes.set(bytesCount, tagsStart + 8);
-  bytes.set(serializedTags, tagsStart + 16);
-
-  const dataStart = tagsStart + tagsLength;
-
-  bytes.set(dataAsBuffer, dataStart);
-
-  return bytes;
-}
 
 export function generateJunkDataItem(
   dataSizeInKB: number,
@@ -107,50 +25,18 @@ export function generateJunkDataItem(
   const dataAsBuffer = new Uint8Array(dataSizeInKB * 1024).map(() =>
     Math.floor(Math.random() * 256)
   );
-  return toDataItem(dataAsBuffer, jwk, tags);
+  const signer = new ArweaveSigner(jwk);
+  return createData(dataAsBuffer, signer, { tags }).getRaw();
 }
 
-const arweaveOwnerLength = 512;
 export async function signDataItem(
   dataItem: Buffer,
   jwk: JWKInterface
 ): Promise<Buffer> {
-  const rawOwner = dataItem.subarray(
-    2 + arweaveSignatureLength,
-    2 + arweaveSignatureLength + arweaveOwnerLength
-  );
-  const rawTarget = Buffer.alloc(0);
-  const rawAnchor = Buffer.alloc(0);
+  const signer = new ArweaveSigner(jwk);
 
-  const tagsStart = 2 + arweaveSignatureLength + arweaveOwnerLength + 1 + 1;
-  const tagsSize = byteArrayToLong(
-    dataItem.subarray(tagsStart + 8, tagsStart + 16)
-  );
-  const rawTags = dataItem.subarray(tagsStart + 16, tagsStart + 16 + tagsSize);
+  const item = new DataItem(dataItem);
+  await item.sign(signer);
 
-  const numberOfTagBytesArray = dataItem.subarray(
-    tagsStart + 8,
-    tagsStart + 16
-  );
-  const numberOfTagBytes = byteArrayToLong(numberOfTagBytesArray);
-  const dataStart = tagsStart + 16 + numberOfTagBytes;
-  const rawData = dataItem.subarray(dataStart, dataItem.length);
-
-  const sigData = await deepHash([
-    Buffer.from("dataitem"),
-    Buffer.from("1"),
-    Buffer.from("1"),
-    rawOwner,
-    rawTarget,
-    rawAnchor,
-    rawTags,
-    rawData,
-  ]);
-
-  const sigBytes = await Arweave.crypto.sign(jwk, sigData);
-  const rawSig = Buffer.from(sigBytes);
-
-  dataItem.set(rawSig, 2);
-
-  return dataItem;
+  return item.getRaw();
 }
