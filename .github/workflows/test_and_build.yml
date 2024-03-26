@@ -6,32 +6,21 @@ concurrency:
 
 on: [push]
 jobs:
-  node_version:
-    runs-on: ubuntu-latest
-    outputs:
-      NODE_VERSION: ${{ steps.node_version.outputs.NODE_VERSION }}
-    steps:
-      - uses: actions/checkout@v3
-      - name: Read .nvmrc
-        id: node_version
-        run: echo ::set-output name=NODE_VERSION::$(cat .nvmrc |cut -c2-8)
-
   build:
-    needs: [node_version]
     runs-on: ubuntu-latest
     strategy:
       matrix:
         step: ["lint:check", "format:check", "build", "ci"]
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Read .nvmrc
         id: node_version
         run: echo ::set-output name=NODE_VERSION::$(cat .nvmrc |cut -c2-8)
 
       - name: Use Node.js ${{ needs.node_version.outputs.NODE_VERSION }}
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: ${{ needs.node_version.outputs.NODE_VERSION }}
+          node-version-file: .nvmrc
 
       # Build Typescript
       - run: |
@@ -39,7 +28,7 @@ jobs:
           yarn ${{ matrix.step }}
 
   push:
-    needs: [node_version, build]
+    needs: [build]
     if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
@@ -48,7 +37,7 @@ jobs:
       checks: write
       packages: write
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       # Build and push container image to GCR (only on main branch)
       - name: Log in to the GitHub Container Registry
         uses: docker/login-action@v1
