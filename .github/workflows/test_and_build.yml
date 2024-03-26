@@ -1,5 +1,9 @@
 name: Node.js CI
 
+concurrency:
+  group: upload-service-${{ github.ref_name }}
+  cancel-in-progress: true
+
 on: [push]
 jobs:
   node_version:
