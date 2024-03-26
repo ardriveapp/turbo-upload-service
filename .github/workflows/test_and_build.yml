@@ -50,8 +50,6 @@ jobs:
         uses: docker/build-push-action@v4
         with:
           push: true
-          build-args: |
-            NODE_VERSION=${{ needs.node_version.outputs.NODE_VERSION }}
           tags: |
             ghcr.io/ardriveapp/${{ github.event.repository.name }}:latest
             ghcr.io/ardriveapp/${{ github.event.repository.name }}:${{ github.sha }}
