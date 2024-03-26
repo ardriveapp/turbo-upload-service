@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        step: ["lint:check", "format:check", "build", "test:docker"]
+        step: ["lint:check", "format:check", "build", "ci"]
     steps:
       - uses: actions/checkout@v3
       - name: Read .nvmrc
