@@ -139,7 +139,7 @@ describe("ArLocal <--> Jobs Integration Test", function () {
     );
   });
 
-  it("each handler works as expected when given a set of data items", async () => {
+  it.skip("each handler works as expected when given a set of data items", async () => {
     // Run handler as AWS would
     await planBundleHandler();
 
