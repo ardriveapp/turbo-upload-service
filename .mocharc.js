@@ -12,6 +12,6 @@ module.exports = {
   extension: ["ts"],
   require: ["ts-node/register/transpile-only", "tests/testSetup.ts"],
   timeout: "10000", // 10 seconds
-  parallel: false,
+  parallel: true,
   recursive: true,
 };
