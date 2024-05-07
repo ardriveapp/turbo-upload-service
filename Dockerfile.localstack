@@ -1,0 +1,15 @@
+FROM localstack/localstack
+
+COPY scripts/provision_localstack.sh /opt/code/provision_localstack.sh
+COPY scripts/localstack_entrypoint.sh /docker-entrypoint-initaws.d/entrypoint.sh
+
+RUN chmod +x /opt/code/provision_localstack.sh \
+    && chmod +x /docker-entrypoint-initaws.d/entrypoint.sh
+
+RUN aws configure --profile localstack set aws_access_key_id test && \
+    aws configure --profile localstack set aws_secret_access_key test && \
+    aws configure --profile localstack set region us-east-1
+
+# A wrapper around the localstack image's entrypoint script
+# that provisions the necessary 'AWS' resources for Turbo.
+ENTRYPOINT ["/docker-entrypoint-initaws.d/entrypoint.sh"]

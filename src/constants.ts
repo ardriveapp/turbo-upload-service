@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -14,6 +14,8 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+import * as fs from "fs";
+
 import { PublicArweaveAddress } from "./types/types";
 
 export const port = process.env.PORT ? +process.env.PORT : 3000;
@@ -96,7 +98,7 @@ export const FATAL_CHUNK_UPLOAD_ERRORS = [
   "invalid_proof",
 ];
 
-export const txPermanentThreshold = 50;
+export const txPermanentThreshold = 18;
 export const txWellSeededThreshold = 30;
 export const txConfirmationThreshold = 1;
 
@@ -209,3 +211,8 @@ export const defaultOverdueThresholdMs = 5 * 60 * 1000; // 5 minutes
 
 export const blocklistedAddresses =
   process.env.BLOCKLISTED_ADDRESSES?.split(",") ?? [];
+
+// allows providing a local JWK for testing purposes
+export const turboLocalJwk = process.env.TURBO_JWK_FILE
+  ? JSON.parse(fs.readFileSync(process.env.TURBO_JWK_FILE, "utf-8"))
+  : undefined;

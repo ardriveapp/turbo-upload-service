@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -21,7 +21,7 @@ import winston from "winston";
 
 import { ObjectStore } from "../arch/objectStore";
 import { ParsedDataItemHeader } from "../types/types";
-import { fromB64Url, ownerToAddress, toB64Url } from "./base64";
+import { fromB64Url, ownerToNormalizedB64Address, toB64Url } from "./base64";
 import { payloadContentTypeFromDecodedTags } from "./common";
 import { getOpticalWallet } from "./getArweaveWallet";
 import { getDataItemData, getS3ObjectStore } from "./objectStoreUtils";
@@ -142,7 +142,9 @@ export async function getNestedDataItemHeaders({
               id: parsedDataItemHeader.id,
               signature: parsedDataItemHeader.signature,
               owner: parsedDataItemHeader.owner,
-              owner_address: ownerToAddress(parsedDataItemHeader.owner),
+              owner_address: ownerToNormalizedB64Address(
+                parsedDataItemHeader.owner
+              ),
               target: parsedDataItemHeader.target ?? "",
               content_type: contentType,
               data_size: parsedDataItemHeader.dataSize,

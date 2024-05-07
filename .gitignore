@@ -36,3 +36,6 @@ node_modules
 
 # 🕵️‍♂️
 .wallet
+
+# LocalStack default volume folder
+/volume

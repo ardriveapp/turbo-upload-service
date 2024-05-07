@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -25,6 +25,7 @@ import { BundlePacker, PackerBundlePlan } from "../bundles/bundlePacker";
 import { dedicatedBundleTypes } from "../constants";
 import defaultLogger from "../logger";
 import { NewDataItem } from "../types/dbTypes";
+import { generateArrayChunks } from "../utils/common";
 import { factorBundlesByTargetSize } from "../utils/planningUtils";
 
 const PARALLEL_LIMIT = 5;
@@ -94,22 +95,35 @@ export async function planBundleHandler(
 
   underweightBundlePlans.forEach((underweightBundlePlan) => {
     logger.info(`Not sending under-packed bundle plan for preparation.`, {
-      underweightBundlePlan,
+      firstDataItemId: underweightBundlePlan.dataItemIds[0],
     });
   });
 
   // Expedite the plans containing overdue data item
   overdueBundlePlans.forEach((overdueBundlePlan) => {
-    logger.info(`Expediting bundle plan due to overdue data item.`, {
-      overdueBundlePlan,
+    logger.debug(`Expediting bundle plan due to overdue data item.`, {
+      firstDataItemId: overdueBundlePlan.dataItemIds[0],
     });
     bundlePlans.push(overdueBundlePlan);
   });
 
   const parallelLimit = pLimit(PARALLEL_LIMIT);
-  const insertPromises = bundlePlans.map(({ dataItemIds }) =>
+  const insertPromises = bundlePlans.map(({ dataItemIds, totalByteCount }) =>
     parallelLimit(async () => {
       const planId = randomUUID();
+      const logBatchSize = 100;
+      const dataItemIdBatches = generateArrayChunks(dataItemIds, logBatchSize);
+      const numDataItemIdBatches = Math.ceil(dataItemIds.length / logBatchSize);
+      let batchNum = 1;
+      for (const batch of dataItemIdBatches) {
+        logger.info("Plan:", {
+          planId,
+          dataItemIds: batch,
+          totalByteCount,
+          numDataItems: dataItemIds.length,
+          logBatch: `${batchNum++}/${numDataItemIdBatches}`,
+        });
+      }
       await database.insertBundlePlan(planId, dataItemIds);
       await enqueue("prepare-bundle", { planId });
     })
@@ -127,8 +141,9 @@ export async function planBundleHandler(
 }
 
 export async function handler(eventPayload?: unknown) {
-  defaultLogger.info("Plan bundle job has been triggered with event payload", {
-    event: eventPayload,
+  defaultLogger.info("Plan bundle GO!");
+  defaultLogger.debug("Plan bundle event payload:", {
+    eventPayload,
   });
   return planBundleHandler(defaultArchitecture.database);
 }

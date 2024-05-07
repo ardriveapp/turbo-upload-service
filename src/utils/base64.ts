@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -14,7 +14,9 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+import { computePublicKey } from "@ethersproject/signing-key";
 import { createHash } from "crypto";
+import { computeAddress } from "ethers";
 
 import { JWKInterface } from "../types/jwkTypes";
 import { Base64String, PublicArweaveAddress } from "../types/types";
@@ -23,11 +25,17 @@ import { getPublicKeyFromJwk } from "./common";
 export function jwkToPublicArweaveAddress(
   jwk: JWKInterface
 ): PublicArweaveAddress {
-  return ownerToAddress(getPublicKeyFromJwk(jwk));
+  return ownerToNormalizedB64Address(getPublicKeyFromJwk(jwk));
 }
 
-export function ownerToAddress(owner: Base64String): PublicArweaveAddress {
+export function ownerToNormalizedB64Address(
+  owner: Base64String
+): PublicArweaveAddress {
   return sha256B64Url(fromB64Url(owner));
+}
+
+export function ownerToEthAddress(owner: Base64String) {
+  return computeAddress(computePublicKey(fromB64Url(owner)));
 }
 
 export function fromB64Url(input: Base64String) {

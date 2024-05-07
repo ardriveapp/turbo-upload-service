@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -27,6 +27,7 @@ import {
 import logger from "../../logger";
 import {
   BundlePlanDBResult,
+  DataItemDbResults,
   FailedBundleDbInsert,
   FinishedMultiPartUpload,
   FinishedMultiPartUploadDBInsert,
@@ -140,6 +141,68 @@ export class PostgresDatabase implements Database {
     return;
   }
 
+  private dataItemTables = [
+    tableNames.newDataItem,
+    tableNames.plannedDataItem,
+    tableNames.permanentDataItem,
+    // TODO: tableNames.failedDataItem,
+  ] as const;
+
+  private async getDataItemsDbResultsById(
+    dataItemIds: TransactionId[]
+  ): Promise<DataItemDbResults[]> {
+    return this.reader.transaction(async (knexTransaction) => {
+      const dataItemResults = await Promise.all(
+        this.dataItemTables.map((tableName) =>
+          knexTransaction(tableName).whereIn(
+            columnNames.dataItemId,
+            dataItemIds
+          )
+        )
+      );
+
+      return dataItemResults.flat();
+    });
+  }
+
+  public async insertNewDataItemBatch(
+    dataItemBatch: PostedNewDataItem[]
+  ): Promise<void> {
+    this.log.debug("Inserting new data item batch...", {
+      dataItemBatch,
+    });
+
+    // Check if any data items already exist in the database
+    const existingDataItemDbResults = await this.getDataItemsDbResultsById(
+      dataItemBatch.map((newDataItem) => newDataItem.dataItemId)
+    );
+    if (existingDataItemDbResults.length > 0) {
+      const existingDataItemIds = new Set<TransactionId>(
+        existingDataItemDbResults.map((r) => r.data_item_id)
+      );
+
+      this.log.warn(
+        "Data items already exist in database! Removing from batch insert...",
+        {
+          existingDataItemIds,
+        }
+      );
+
+      dataItemBatch = dataItemBatch.filter(
+        (newDataItem) => !existingDataItemIds.has(newDataItem.dataItemId)
+      );
+    }
+
+    // Insert new data items
+    const dataItemInserts = dataItemBatch.map((newDataItem) =>
+      this.newDataItemToDbInsert(newDataItem)
+    );
+    await this.writer.batchInsert<NewDataItemDBInsert, NewDataItemDBResult>(
+      tableNames.newDataItem,
+      dataItemInserts
+    );
+  }
+
   private async dataItemExists(data_item_id: TransactionId): Promise<boolean> {
     return this.reader.transaction(async (knexTransaction) => {
       const dataItemResults = await Promise.all([
@@ -179,6 +242,7 @@ export class PostgresDatabase implements Database {
     payloadContentType,
     premiumFeatureType,
     signature,
+    deadlineHeight,
   }: PostedNewDataItem): NewDataItemDBInsert {
     return {
       assessed_winston_price: assessedWinstonPrice.toString(),
@@ -192,6 +256,7 @@ export class PostgresDatabase implements Database {
       content_type: payloadContentType,
       premium_feature_type: premiumFeatureType,
       signature,
+      deadline_height: deadlineHeight?.toString(),
     };
   }
 
@@ -763,6 +828,7 @@ export class PostgresDatabase implements Database {
         assessedWinstonPrice: Winston;
         bundleId?: string | undefined;
         uploadedTimestamp: number;
+        deadlineHeight?: number;
       }
     | undefined
   > {
@@ -782,6 +848,9 @@ export class PostgresDatabase implements Database {
         uploadedTimestamp: new Date(
           newDataItemDbResult[0].uploaded_date
         ).getTime(),
+        deadlineHeight: newDataItemDbResult[0].deadline_height
+          ? +newDataItemDbResult[0].deadline_height
+          : undefined,
       };
     }
 
@@ -816,6 +885,9 @@ export class PostgresDatabase implements Database {
         uploadedTimestamp: new Date(
           plannedDataItemDbResult[0].uploaded_date
         ).getTime(),
+        deadlineHeight: plannedDataItemDbResult[0].deadline_height
+          ? +plannedDataItemDbResult[0].deadline_height
+          : undefined,
       };
     }
 
@@ -834,6 +906,9 @@ export class PostgresDatabase implements Database {
         uploadedTimestamp: new Date(
           permanentDataItemDbResult[0].uploaded_date
         ).getTime(),
+        deadlineHeight: permanentDataItemDbResult[0].deadline_height
+          ? +permanentDataItemDbResult[0].deadline_height
+          : undefined,
       };
     }
 
@@ -1112,6 +1187,22 @@ export class PostgresDatabase implements Database {
       })
       .where({ upload_id: uploadId })
       .forUpdate();
+  }
+
+  /** DEBUG tool for deleting data items that have had a catastrophic failure (e.g: deleted from S3)  */
+  public async deletePlannedDataItem(dataItemId: string): Promise<void> {
+    this.log.debug("Deleting planned data item...", {
+      dataItemId,
+    });
+
+    const dataItem = await this.writer<PlannedDataItemDBResult>(
+      tableNames.plannedDataItem
+    )
+      .where({ data_item_id: dataItemId })
+      .del()
+      .returning("*");
+
+    logger.info("Deleted planned data item database info", { dataItem });
   }
 }
 

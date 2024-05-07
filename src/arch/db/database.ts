@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -31,8 +31,12 @@ import { TransactionId, UploadId, Winston } from "../../types/types";
 
 // TODO: this could be an interface since no functions have a default implementation
 export interface Database {
-  /** Store a new data item that has been posted to the data item route */
+  /** Store a new data item that has been posted to the service */
   insertNewDataItem(dataItem: PostedNewDataItem): Promise<void>;
+
+  /** Stores a batch of new data items that have been enqueued for insert */
+  insertNewDataItemBatch(dataItemBatch: PostedNewDataItem[]): Promise<void>;
+
   /**  Get all new data items in the database sorted by uploadedDate */
   getNewDataItems(): Promise<NewDataItem[]>;
 
@@ -125,6 +129,7 @@ export interface Database {
         assessedWinstonPrice: Winston;
         bundleId?: TransactionId;
         uploadedTimestamp: number;
+        deadlineHeight?: number;
       }
     | undefined
   >;
@@ -170,6 +175,9 @@ export interface Database {
     chunkSize: number,
     uploadId: UploadId
   ): Promise<void>;
+
+  /** TODO: create failed_data_item table instead, remove this */
+  deletePlannedDataItem(dataItemId: string): Promise<void>;
 }
 
 export type UpdateDataItemsToPermanentParams = {

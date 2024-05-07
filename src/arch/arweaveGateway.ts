@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -79,7 +79,7 @@ export class ArweaveGateway implements Gateway {
   constructor({
     endpoint = gatewayUrl,
     retryStrategy = new ExponentialBackoffRetryStrategy({}),
-    axiosInstance = axios.create({ validateStatus: undefined }),
+    axiosInstance = axios.create(), // defaults to throwing errors for status codes >400
   }: GatewayAPIConstParams) {
     this.endpoint = endpoint;
     this.retryStrategy = retryStrategy;
@@ -121,7 +121,8 @@ export class ArweaveGateway implements Gateway {
         validStatusCodes: [200, 202, 404],
       }).sendRequest(() =>
         this.axiosInstance.get<ConfirmedTransactionStatus>(
-          `${this.endpoint.href}tx/${transactionId}/status`
+          `${this.endpoint.href}tx/${transactionId}/status`,
+          { validateStatus: () => true }
         )
       );
 
@@ -234,9 +235,8 @@ export class ArweaveGateway implements Gateway {
 
   public async getBlockHeightForTxAnchor(txAnchor: string): Promise<number> {
     try {
-      const statusResponse = await this.axiosInstance.post(
-        this.endpoint.href + "graphql",
-        {
+      const statusResponse = await this.retryStrategy.sendRequest(() =>
+        this.axiosInstance.post(this.endpoint.href + "graphql", {
           query: `
           query {
             blocks(ids: ["${txAnchor}"]) {
@@ -250,7 +250,7 @@ export class ArweaveGateway implements Gateway {
           }
           
           `,
-        }
+        })
       );
 
       if (statusResponse?.data?.data?.blocks?.edges[0]) {
@@ -298,10 +298,14 @@ export class ArweaveGateway implements Gateway {
     timestamp: number;
   }> {
     try {
-      const statusResponse = await this.axiosInstance.post(
-        this.endpoint.href + "graphql",
-        {
-          query: `
+      let blockHeight, timestamp;
+      const retryStrategy = new ExponentialBackoffRetryStrategy<AxiosResponse>({
+        validStatusCodes: [200, 202], // only success on these codes
+      });
+      const statusResponse = await retryStrategy
+        .sendRequest(() =>
+          this.axiosInstance.post(this.endpoint.href + "graphql", {
+            query: `
           query {
             blocks(first: 1) {
               edges {
@@ -313,24 +317,57 @@ export class ArweaveGateway implements Gateway {
               }
             }
           }
-          
           `,
-        }
-      );
-      const edge = statusResponse?.data?.data?.blocks?.edges[0];
-      const blockHeight = edge?.node?.height;
-      const timestamp = edge?.node?.timestamp;
-      if (blockHeight && timestamp) {
-        logger.debug("Successfully fetched current block info", {
-          blockHeight,
+          })
+        )
+        // catch errors thrown by retry logic - which would be anything not a 200 or 202 - swallow them so we can fallback below
+        .catch((error) => {
+          logger.debug(error);
+          return undefined;
         });
-        return {
+
+      // success from gql - use the response to get block info
+      if (statusResponse) {
+        const edge = statusResponse.data?.data?.blocks?.edges[0];
+        blockHeight = edge?.node?.height;
+        timestamp = edge?.node?.timestamp;
+        logger.debug("Successfully fetched current block info from GQL", {
           blockHeight,
           timestamp,
-        };
+        });
       } else {
-        throw Error("Could not fetch block info");
+        // retry against height endpoint if failed - TODO: handle any other cached response codes from arweave.net
+        logger.debug(
+          "Failed to fetch current block height and timestamp from GQL. Falling back to /block/current endpoint."
+        );
+        // try and fetch from /block/current - if we don't get a 200/202 after 5 retries, ExponentialBackoffRetry will throw an error - do not catch it
+        const fallbackResponse = await retryStrategy.sendRequest(() =>
+          this.axiosInstance.get(this.endpoint.href + "block/current")
+        );
+
+        blockHeight = fallbackResponse?.data.height;
+        timestamp = fallbackResponse?.data.timestamp;
+        logger.debug(
+          "Successfully fetched block height and timestamp from fallback endpoint",
+          {
+            blockHeight,
+            timestamp,
+          }
+        );
       }
+
+      if (!blockHeight || !timestamp) {
+        throw Error("Failed to fetch block info");
+      }
+
+      logger.debug("Successfully fetched current block info", {
+        blockHeight,
+        timestamp,
+      });
+      return {
+        blockHeight,
+        timestamp,
+      };
     } catch (error) {
       logger.error("Error getting current block info", error);
       throw error;

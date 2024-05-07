@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -139,7 +139,7 @@ describe("ArLocal <--> Jobs Integration Test", function () {
     );
   });
 
-  it.skip("each handler works as expected when given a set of data items", async () => {
+  it("each handler works as expected when given a set of data items", async () => {
     // Run handler as AWS would
     await planBundleHandler();
 

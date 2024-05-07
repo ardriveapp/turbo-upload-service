@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -15,8 +15,8 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 import { expect } from "chai";
-import { readFileSync } from "fs";
 
+import { testArweaveJWK } from "../../tests/test_helpers";
 import { UnsignedReceipt, signReceipt } from "./signReceipt";
 import { verifyReceipt } from "./verifyReceipt";
 
@@ -31,12 +31,7 @@ describe("signReceipt", () => {
       fastFinalityIndexes: ["arweave.net"],
       winc: "0",
     };
-    const privateKey = JSON.parse(
-      readFileSync("tests/stubFiles/testWallet.json", {
-        encoding: "utf-8",
-        flag: "r",
-      })
-    );
+    const privateKey = testArweaveJWK;
     const signedReceipt = await signReceipt(receipt, privateKey);
     const { signature, public: pubKey } = signedReceipt;
 
