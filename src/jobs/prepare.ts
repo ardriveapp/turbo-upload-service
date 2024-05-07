@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -169,18 +169,35 @@ export async function prepareBundleHandler(
     payloadSize: totalPayloadSize,
   });
 
-  await putBundlePayload(
-    objectStore,
-    planId,
-    assembleBundlePayload(objectStore, bundleHeaderBuffer)
-    // HACK: Attempting to remove totalPayloadSize to appease AWS V3 SDK
-    // totalPayloadSize
-  ).catch((error) => {
+  try {
+    await putBundlePayload(
+      objectStore,
+      planId,
+      assembleBundlePayload(objectStore, bundleHeaderBuffer)
+      // HACK: Attempting to remove totalPayloadSize to appease AWS V3 SDK
+      // totalPayloadSize
+    );
+  } catch (error) {
+    if (isNoSuchKeyS3Error(error)) {
+      const dataItemId = error.Key.split("/")[1];
+      await database.deletePlannedDataItem(dataItemId);
+
+      // TODO: This is a hack -- recurse to retry the job without the deleted data item
+      return prepareBundleHandler(planId, {
+        database,
+        objectStore,
+        jwk,
+        pricing,
+        gateway,
+        arweave,
+      });
+    }
     logger.error("Failed to cache bundle payload!", {
       error,
     });
     throw error;
-  });
+  }
+
   const headerByteCount = bundleHeaderBuffer.byteLength;
 
   logger.debug("Successfully cached bundle payload.", {
@@ -287,3 +304,9 @@ export const handler = createQueueHandler(
     },
   }
 );
+
+export function isNoSuchKeyS3Error(
+  error: unknown
+): error is { Code: "NoSuchKey"; Key: string } {
+  return (error as { Code: string })?.Code === "NoSuchKey";
+}

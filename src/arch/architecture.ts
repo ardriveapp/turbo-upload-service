@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -19,16 +19,14 @@ import { JWKInterface } from "arbundles";
 import knex from "knex";
 import winston from "winston";
 
-import { migrateOnStartup } from "../constants";
+import { gatewayUrl, migrateOnStartup } from "../constants";
 import globalLogger from "../logger";
-import { isTestEnv } from "../utils/common";
 import { getArweaveWallet } from "../utils/getArweaveWallet";
 import { getS3ObjectStore } from "../utils/objectStoreUtils";
 import { ArweaveGateway } from "./arweaveGateway";
 import { Database } from "./db/database";
 import { getReaderConfig, getWriterConfig } from "./db/knexConfig";
 import { PostgresDatabase } from "./db/postgres";
-import { FileSystemObjectStore } from "./fileSystemObjectStore";
 import { ObjectStore } from "./objectStore";
 import { PaymentService, TurboPaymentService } from "./payment";
 
@@ -48,13 +46,11 @@ export const defaultArchitecture: Architecture = {
     writer: knex(getWriterConfig()),
     reader: knex(getReaderConfig()),
   }),
-  // If on test NODE_ENV or if no DATA_ITEM_BUCKET variable is set, use Local File System
-  objectStore:
-    isTestEnv() || !process.env.DATA_ITEM_BUCKET
-      ? new FileSystemObjectStore()
-      : getS3ObjectStore(),
+  objectStore: getS3ObjectStore(),
   paymentService: new TurboPaymentService(),
   logger: globalLogger,
   getArweaveWallet: () => getArweaveWallet(),
-  arweaveGateway: new ArweaveGateway({}),
+  arweaveGateway: new ArweaveGateway({
+    endpoint: gatewayUrl,
+  }),
 };

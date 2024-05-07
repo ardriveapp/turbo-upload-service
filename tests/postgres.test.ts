@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -46,6 +46,7 @@ import {
   stubByteCount,
   stubDataItemBufferSignature,
   stubDates,
+  stubNewDataItem,
   stubOwnerAddress,
   stubPlanId,
   stubPlanId2,
@@ -84,6 +85,7 @@ describe("PostgresDatabase class", () => {
       payloadContentType: "application/json",
       premiumFeatureType: "default",
       signature: stubDataItemBufferSignature,
+      deadlineHeight: 200,
     });
 
     const newDataItems = await db["writer"]<NewDataItemDBResult>(
@@ -673,6 +675,51 @@ describe("PostgresDatabase class", () => {
           dbTestHelper.cleanUpEntityInDb(tableNames.newDataItem, dataItemId)
         )
       );
+    });
+  });
+
+  describe("insertNewDataItemBatch method", () => {
+    it("inserts a batch of new data items", async () => {
+      const testIds = ["unique id one", "unique id two", "unique id three"];
+      const dataItemBatch = testIds.map((dataItemId) =>
+        stubNewDataItem(dataItemId)
+      );
+
+      await db.insertNewDataItemBatch(dataItemBatch);
+
+      const newDataItems =
+        await dbTestHelper.getAndDeleteNewDataItemDbResultsByIds(testIds);
+      expect(newDataItems.length).to.equal(3);
+
+      newDataItems.forEach((newDataItem) => {
+        expect(newDataItem.data_item_id).to.be.oneOf(testIds);
+      });
+    });
+
+    it("gracefully skips inserting data items that already exist in the database", async () => {
+      const testIds = [
+        "unique skip insert id one",
+        "unique skip insert id two",
+      ];
+      const dataItemBatch = testIds.map((dataItemId) =>
+        stubNewDataItem(dataItemId)
+      );
+
+      // insert the first data item into the planned data item table
+      await dbTestHelper.insertStubPlannedDataItem({
+        dataItemId: testIds[0],
+        planId: "unique stub for this test",
+      });
+
+      // Run batch insert with both data items
+      await db.insertNewDataItemBatch(dataItemBatch);
+
+      const newDataItems =
+        await dbTestHelper.getAndDeleteNewDataItemDbResultsByIds(testIds);
+
+      // Expect only the second data item to have been inserted to new data item table
+      expect(newDataItems.length).to.equal(1);
+      expect(newDataItems[0].data_item_id).to.equal(testIds[1]);
     });
   });
 });

@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -105,7 +105,7 @@ export const sigNameToSigInfo: Record<string, SigInfo> = Object.values(
 function streamDebugLog(
   logger: winston.Logger | undefined,
   message: string,
-  meta?: any
+  meta?: unknown
 ) {
   if (process.env.STREAM_DEBUG === "true") {
     logger?.debug(message, meta);
@@ -143,6 +143,7 @@ export function createVerifiedDataItemStream(
   let emittedData = false;
 
   let parsedNumTagsBytes: number | undefined;
+  let emittedPayloadSize = 0;
   let talliedPayloadSize = 0;
   let byteQueue: CircularBuffer;
   let haveTarget = false;
@@ -242,23 +243,24 @@ export function createVerifiedDataItemStream(
     );
 
     if (nextEventToParse) {
+      // Since data is at the end of the data item and unbounded in size, we just emit chunks immediately
+      if (nextEventToParse.name === "data") {
+        streamDebugLog(
+          logger,
+          `Emitting ${chunk.byteLength} bytes of data item payload data. ${emittedPayloadSize} previously emitted.`
+        );
+        emitter.emit(nextEventToParse.name, chunk);
+        emittedPayloadSize += chunk.byteLength;
+        currentOffset += chunk.byteLength;
+        return;
+      }
+
       streamDebugLog(
         logger,
         `Parsing ${nextEventToParse.name}. Progress: ${
           searchBuffer.usedCapacity
         } of ${nextEventToParse.length()} expected bytes`
       );
-
-      // Since data is at the end of the data item and unbounded in size, we just emit chunks immediately
-      if (nextEventToParse.name === "data") {
-        streamDebugLog(
-          logger,
-          `Emitting ${chunk.byteLength} bytes of data item payload data.`
-        );
-        emitter.emit(nextEventToParse.name, chunk);
-        currentOffset += chunk.byteLength;
-        return;
-      }
 
       // BEST CASE - we're not searching for bytes and can event straight from chunk data
       // NEXT BEST - we're searching for bytes and there's enough in the chunk to do one or more events
@@ -415,7 +417,15 @@ export function createVerifiedDataItemStream(
     timeoutId = setTimeout(() => {
       logger?.error("Data item chunk not received within 3 seconds.");
     }, 3000);
-    parseDataItemStream(chunk);
+    try {
+      parseDataItemStream(chunk);
+    } catch (error) {
+      lastParsingError =
+        error instanceof Error
+          ? error
+          : new Error(typeof error === "string" ? error : "Unknown error");
+      emitter.emit("error", lastParsingError);
+    }
   });
 
   inputStream.once("close", () => {
@@ -445,8 +455,6 @@ export function createVerifiedDataItemStream(
 
   inputStream.once("error", (error) => {
     clearTimeout(timeoutId);
-
-    // TODO: Should lastParsingError be set here?
 
     // Propagate error to the payload stream if possible
     payloadStream?.emit(
@@ -513,8 +521,16 @@ export function createVerifiedDataItemStream(
     }
 
     if (!payloadStream.write(bufferedData)) {
+      streamDebugLog(
+        logger,
+        `Payload stream overflowing. Pausing input stream...`
+      );
       inputStream.pause();
       payloadStream?.once("drain", () => {
+        streamDebugLog(
+          logger,
+          `Payload stream drained. Resuming input stream...`
+        );
         inputStream.resume();
       });
     }

@@ -17,6 +17,7 @@
     "blocklisted",
     "bundlr",
     "dataitem",
+    "ethersproject",
     "indep",
     "indexdef",
     "indexname",
@@ -70,5 +71,11 @@
   "typescript.enablePromptUseWorkspaceTsdk": true,
   "[dockerfile]": {
     "editor.defaultFormatter": "ms-azuretools.vscode-docker"
+  },
+  "[shellscript]": {
+    "editor.defaultFormatter": "foxundermoon.shell-format"
+  },
+  "[dotenv]": {
+    "editor.defaultFormatter": "foxundermoon.shell-format"
   }
 }

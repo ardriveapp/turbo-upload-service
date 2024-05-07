@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -17,12 +17,13 @@
 import { expect } from "chai";
 import { Knex } from "knex";
 
-import { tableNames } from "../../src/arch/db/dbConstants";
+import { columnNames, tableNames } from "../../src/arch/db/dbConstants";
 import { PostgresDatabase } from "../../src/arch/db/postgres";
 import {
   KnexRawResult,
   NewBundleDBInsert,
   NewDataItemDBInsert,
+  NewDataItemDBResult,
   PermanentDataItemDBInsert,
   PlanId,
   PlannedDataItemDBInsert,
@@ -67,10 +68,11 @@ function stubNewDataItemInsert({
     content_type: "text/plain",
     premium_feature_type: "test",
     signature,
+    deadline_height: "200",
   };
 }
 
-function stubPlannedDataItemInsert({
+export function stubPlannedDataItemInsert({
   dataItemId,
   planId,
   plannedDate = stubDates.earliestDate,
@@ -108,6 +110,7 @@ function stubPermanentDataItemInsert({
     planned_date: stubDates.earliestDate,
     bundle_id: bundleId,
     block_height: stubBlockHeight.toString(),
+    deadline_height: "200",
   };
 }
 
@@ -374,6 +377,15 @@ export class DbTestHelper {
 
     await this.knex(tableName).where(where).del();
     expect((await this.knex(tableName).where(where)).length).to.equal(0);
+  }
+
+  public async getAndDeleteNewDataItemDbResultsByIds(
+    dataItemIds: TransactionId[]
+  ): Promise<NewDataItemDBResult[]> {
+    return this.db["writer"]<NewDataItemDBResult>(tableNames.newDataItem)
+      .whereIn(columnNames.dataItemId, dataItemIds)
+      .del() // delete test data from new_data_item as we query
+      .returning("*");
   }
 }
 

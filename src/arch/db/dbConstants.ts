@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -39,6 +39,7 @@ export const columnNames = {
   contentType: "content_type",
   dataItemId: "data_item_id",
   dataStart: "data_start",
+  deadlineHeight: "deadline_height",
   failedBundles: "failed_bundles",
   failedDate: "failed_date",
   failedReason: "failed_reason",

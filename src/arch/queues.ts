@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -25,23 +25,17 @@ import { SQSEvent, SQSHandler, SQSRecord } from "aws-lambda";
 import * as https from "https";
 
 import logger from "../logger";
-import { PlanId } from "../types/dbTypes";
+import { PlanId, PostedNewDataItem } from "../types/dbTypes";
 import { DataItemId, UploadId } from "../types/types";
-import { isTestEnv } from "../utils/common";
 import { SignedDataItemHeader } from "../utils/opticalUtils";
-
-type QueueType =
-  | "prepare-bundle"
-  | "post-bundle"
-  | "seed-bundle"
-  | "optical-post"
-  | "unbundle-bdi"
-  | "finalize-upload";
 
 type SQSQueueUrl = string;
 
 type PlanMessage = { planId: PlanId };
 
+export type EnqueuedNewDataItem = Omit<PostedNewDataItem, "signature"> & {
+  signature: string;
+};
 type QueueTypeToMessageType = {
   "prepare-bundle": PlanMessage;
   "post-bundle": PlanMessage;
@@ -49,8 +43,26 @@ type QueueTypeToMessageType = {
   "optical-post": SignedDataItemHeader;
   "unbundle-bdi": DataItemId;
   "finalize-upload": { uploadId: UploadId };
+  "new-data-item": EnqueuedNewDataItem;
 };
 
+export type QueueType = keyof QueueTypeToMessageType;
+
+const awsCredentials =
+  process.env.AWS_ACCESS_KEY_ID !== undefined &&
+  process.env.AWS_SECRET_ACCESS_KEY !== undefined
+    ? {
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+        ...(process.env.AWS_SESSION_TOKEN
+          ? {
+              sessionToken: process.env.AWS_SESSION_TOKEN,
+            }
+          : {}),
+      }
+    : undefined;
+
+const endpoint = process.env.AWS_ENDPOINT;
 const sqs = new SQSClient({
   maxAttempts: 3,
   requestHandler: new NodeHttpHandler({
@@ -58,6 +70,17 @@ const sqs = new SQSClient({
       keepAlive: true,
     }),
   }),
+  ...(endpoint
+    ? {
+        endpoint,
+      }
+    : {}),
+  ...(awsCredentials
+    ? {
+        credentials: awsCredentials,
+      }
+    : {}),
+  region: process.env.AWS_REGION ?? "us-east-1",
 });
 
 export const getQueueUrl = (type: QueueType): SQSQueueUrl => {
@@ -74,6 +97,8 @@ export const getQueueUrl = (type: QueueType): SQSQueueUrl => {
     "unbundle-bdi": process.env.SQS_UNBUNDLE_BDI_URL!,
     // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     "finalize-upload": process.env.SQS_FINALIZE_UPLOAD_URL!,
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    "new-data-item": process.env.SQS_NEW_DATA_ITEM_URL!, // TODO: Ensure fulfillment has URL env var
   };
   return queues[type];
 };
@@ -89,12 +114,6 @@ export const enqueue = async <T extends QueueType>(
   queueType: T,
   message: QueueTypeToMessageType[T]
 ) => {
-  //TODO: Tech Debt - Handle this better
-  if (isTestEnv()) {
-    logger.error("Skipping SQS Enqueue since we are on test environment");
-    return;
-  }
-
   const sendMsgCmd = new SendMessageCommand({
     QueueUrl: getQueueUrl(queueType),
     MessageBody: JSON.stringify(message),

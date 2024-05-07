@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -15,9 +15,11 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 import { SQSEvent } from "aws-lambda";
-import axios from "axios";
+import { AxiosInstance } from "axios";
+import CircuitBreaker from "opossum";
 import winston from "winston";
 
+import { createAxiosInstance } from "../arch/axiosClient";
 import logger from "../logger";
 import { getOpticalPubKey } from "../utils/getArweaveWallet";
 import {
@@ -26,6 +28,26 @@ import {
   getNestedDataItemHeaders,
   signDataItemHeader,
 } from "../utils/opticalUtils";
+
+/** These don't need to succeed */
+const optionalOpticalUrls =
+  process.env.OPTIONAL_OPTICAL_BRIDGE_URLS?.split(",");
+
+let optionalCircuitBreakers: CircuitBreaker[] = [];
+if (optionalOpticalUrls) {
+  optionalCircuitBreakers = optionalOpticalUrls.map((url) => {
+    return new CircuitBreaker(
+      async (axios: AxiosInstance, postBody: unknown) => {
+        return axios.post(url, postBody);
+      },
+      {
+        timeout: 3_000, // If our function takes longer than 3 seconds, trigger a failure
+        errorThresholdPercentage: 50, // When 50% of requests fail, trip the circuit
+        resetTimeout: 30_000, // After 30 seconds, try again.
+      }
+    );
+  });
+}
 
 export const opticalPostHandler = async ({
   stringifiedDataItemHeaders,
@@ -71,24 +93,66 @@ export const opticalPostHandler = async ({
   const opticalPubKey = await getOpticalPubKey();
 
   childLogger.debug(`Posting to optical bridge...`);
+
+  /** This one must succeed for the job to succeed */
+  const primaryOpticalUrl = process.env.OPTICAL_BRIDGE_URL;
+  if (!primaryOpticalUrl) {
+    throw Error("OPTICAL_BRIDGE_URL is not set.");
+  }
+
+  const axios = createAxiosInstance({
+    retries: 3,
+    config: {
+      validateStatus: () => true,
+      headers: {
+        "x-bundlr-public-key": opticalPubKey,
+        "Content-Type": "application/json",
+      },
+    },
+  });
+
   try {
+    for (const circuitBreaker of optionalCircuitBreakers) {
+      circuitBreaker
+        .fire(axios, postBody)
+        .then(() => {
+          childLogger.debug(`Successfully posted to optional optical bridge`);
+        })
+        .catch((error) => {
+          childLogger.error(
+            `Failed to post to optional optical bridge: ${error.message}`
+          );
+        });
+    }
     const { status, statusText } = await axios.post(
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      process.env.OPTICAL_BRIDGE_URL!,
-      postBody,
+      primaryOpticalUrl,
+      postBody
+    );
+
+    if (status < 200 || status >= 300) {
+      throw Error(
+        `Failed to post to primary optical bridge: ${status} ${statusText}`
+      );
+    }
+
+    childLogger.debug(
+      `Successfully posted to primary and ${
+        optionalOpticalUrls?.length ?? 0
+      } optional optical bridges.`,
       {
-        headers: {
-          "x-bundlr-public-key": opticalPubKey,
-        },
+        status,
+        statusText,
       }
     );
-    childLogger.info("Successfully posted to optical bridge.", {
-      status,
-      statusText,
-    });
   } catch (error) {
-    childLogger.error("Failed to post to optical bridge!", error);
-    throw error;
+    childLogger.error("Failed to post to optical bridge!", {
+      error: error instanceof Error ? error.message : error,
+    });
+    throw Error(
+      `Failed to post to optical bridge with error: ${
+        error instanceof Error ? error.message : "Unknown error"
+      }`
+    );
   }
 };
 

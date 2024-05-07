@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -19,6 +19,7 @@ import { CreateTransactionInterface } from "arweave/node/common";
 
 export type Base64String = string;
 export type PublicArweaveAddress = Base64String;
+export type NativeAddress = string;
 export type TransactionId = Base64String;
 export type DataItemId = TransactionId;
 export type UploadId = string;
