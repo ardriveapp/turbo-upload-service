@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -31,15 +31,17 @@ const baseConfig = {
 };
 
 function getDbConnection(host: string) {
-  const dbPort = +(process.env.DB_PORT || 5432);
+  const dbUser = process.env.DB_USER || "postgres";
   const dbPassword = process.env.DB_PASSWORD || "postgres";
+  const dbPort = +(process.env.DB_PORT || 5432);
+  const dbDatabase = process.env.DB_DATABASE || "postgres";
 
   logger.debug("Getting DB Connection", {
     host,
     dbPort,
   });
 
-  return `postgres://postgres:${dbPassword}@${host}:${dbPort}/postgres?sslmode=disable`;
+  return `postgres://${dbUser}:${dbPassword}@${host}:${dbPort}/${dbDatabase}?sslmode=disable`;
 }
 
 export function getWriterConfig() {

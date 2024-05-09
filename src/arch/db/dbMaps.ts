@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -108,6 +108,7 @@ export function newDataItemDbResultToNewDataItemMap({
   content_type,
   premium_feature_type,
   signature,
+  deadline_height,
 }: NewDataItemDBResult): NewDataItem {
   return {
     assessedWinstonPrice: W(assessed_winston_price),
@@ -121,6 +122,7 @@ export function newDataItemDbResultToNewDataItemMap({
     payloadDataStart: data_start ?? undefined,
     payloadContentType: content_type ?? undefined,
     signature: signature ?? undefined,
+    deadlineHeight: deadline_height ? +deadline_height : undefined,
   };
 }
 
@@ -150,6 +152,7 @@ export function permanentDataItemDbResultToPermanentDataItemMap({
   bundle_id,
   permanent_date,
   block_height,
+  deadline_height,
 }: PermanentDataItemDBResult): PermanentDataItem {
   return {
     assessedWinstonPrice: W(assessed_winston_price),
@@ -167,5 +170,6 @@ export function permanentDataItemDbResultToPermanentDataItemMap({
     bundleId: bundle_id,
     permanentDate: permanent_date,
     blockHeight: +block_height,
+    deadlineHeight: deadline_height ? +deadline_height : undefined,
   };
 }

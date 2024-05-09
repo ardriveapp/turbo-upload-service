@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -14,14 +14,16 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+import { Message } from "@aws-sdk/client-sqs";
 import { processStream } from "arbundles";
-import { SQSEvent, SQSRecord } from "aws-lambda";
+import { SQSEvent } from "aws-lambda";
 import pLimit from "p-limit";
+import winston from "winston";
 
 import { deleteMessages } from "../arch/queues";
 import { rawDataItemStartFromParsedHeader } from "../bundles/rawDataItemStartFromParsedHeader";
 import baseLogger from "../logger";
-import { ParsedDataItemHeader } from "../types/types";
+import { ParsedDataItemHeader, TransactionId } from "../types/types";
 import { payloadContentTypeFromDecodedTags } from "../utils/common";
 import {
   getDataItemData,
@@ -31,18 +33,73 @@ import {
 
 export const handler = async (event: SQSEvent) => {
   const handlerLogger = baseLogger.child({ job: "unbundle-bdi-job" });
-  handlerLogger.info("Unbundle BDI job has been triggered.", event);
+  await unbundleBDISQSHandler(
+    // Map necessary fields from SQSRecord to Message type
+    event.Records.map((record) => {
+      return {
+        MessageId: record.messageId,
+        ReceiptHandle: record.receiptHandle,
+        Body: record.body,
+      };
+    }),
+    handlerLogger
+  );
+};
+
+export async function unbundleBDISQSHandler(
+  messages: Message[],
+  logger: winston.Logger
+) {
+  const bdiIdsToRecordsMap = messages.reduce((acc, record) => {
+    const bdiId = JSON.parse(record.Body ?? "");
+    acc[bdiId] = record;
+    return acc;
+  }, {} as Record<TransactionId, Message>);
+
+  const bdisToUnpack = Object.keys(bdiIdsToRecordsMap);
+  const handledBdiIds = await unbundleBDIHandler(bdisToUnpack, logger);
+
+  // Compute unhandledRecords by getting the minusSet of handledBdiIds from bdisToUnpack and then filtering the records
+  const recordsToDelete = handledBdiIds.map(
+    (bdiId) => bdiIdsToRecordsMap[bdiId]
+  );
+  const unhandledRecords = messages.filter((record) => {
+    !recordsToDelete.includes(record);
+  });
+
+  logger.debug("Cleaning up records...", {
+    recordsToDelete,
+    unhandledRecords,
+  });
+
+  void deleteMessages(
+    "unbundle-bdi",
+    recordsToDelete.map((record) => {
+      return {
+        Id: record.MessageId,
+        ReceiptHandle: record.ReceiptHandle,
+      };
+    })
+  );
+  if (unhandledRecords.length > 0) {
+    throw new Error(`Some messages could not handled!`);
+  }
+}
+
+export async function unbundleBDIHandler(
+  bdisToUnpack: string[],
+  logger: winston.Logger
+) {
+  logger.info("Go!", { bdisToUnpack });
 
   const bdiParallelLimit = pLimit(10);
   const objectStore = getS3ObjectStore();
 
-  // Make a best effort to unpack the BDI and stash its nested data items' payloads in S3
-  const recordsToDelete: SQSRecord[] = [];
+  // Make a best effort to unpack the BDI and stash its nested data items' payloads in the object store
+  const handledBdiIds: string[] = [];
   await Promise.all(
-    event.Records.map((record) => {
-      const { body: messageBody } = record;
-      const bdiIdToUnpack = JSON.parse(messageBody);
-      const bdiLogger = handlerLogger.child({ bdiIdToUnpack });
+    bdisToUnpack.map((bdiIdToUnpack) => {
+      const bdiLogger = logger.child({ bdiIdToUnpack });
       return bdiParallelLimit(async () => {
         try {
           // Fetch the BDI
@@ -58,8 +115,12 @@ export const handler = async (event: SQSEvent) => {
             dataItemReadable
           )) as ParsedDataItemHeader[];
 
-          bdiLogger.info("Finished processing BDI stream.", {
-            parsedDataItemHeaders,
+          const nestedIds = parsedDataItemHeaders.map(
+            (parsedDataItemHeader) => parsedDataItemHeader.id
+          );
+
+          bdiLogger.info("nestedIds", {
+            nestedIds,
           });
 
           const nestedDataItemParallelLimit = pLimit(10);
@@ -103,38 +164,21 @@ export const handler = async (event: SQSEvent) => {
               });
             })
           );
-        } catch (error) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } catch (error: any) {
           const message =
-            error instanceof Error ? error.message : "Unknown error";
+            error instanceof Error ? error.message : `Unknown error: ${error}`;
           bdiLogger.error("Encountered error unpacking bdi", {
             error: message,
+            stack: error?.stack,
           });
           return;
         }
 
-        // Successfully unbundled the bdi. Delete this message.
-        recordsToDelete.push(record);
+        // Take note that we successfully unbundled the bdi
+        handledBdiIds.push(bdiIdToUnpack);
       });
     })
   );
-
-  const unhandledRecords = event.Records.filter((record) => {
-    !recordsToDelete.includes(record);
-  });
-  handlerLogger.debug("Cleaning up records...", {
-    recordsToDelete,
-    unhandledRecords,
-  });
-  void deleteMessages(
-    "unbundle-bdi",
-    recordsToDelete.map((record) => {
-      return {
-        Id: record.messageId,
-        ReceiptHandle: record.receiptHandle,
-      };
-    })
-  );
-  if (unhandledRecords.length > 0) {
-    throw new Error(`Some messages could not handled!`);
-  }
-};
+  return handledBdiIds;
+}

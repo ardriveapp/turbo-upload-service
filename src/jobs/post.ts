@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -26,7 +26,7 @@ import defaultLogger from "../logger";
 import { MetricRegistry } from "../metricRegistry";
 import { PlanId } from "../types/dbTypes";
 import { Winston } from "../types/winston";
-import { ownerToAddress } from "../utils/base64";
+import { ownerToNormalizedB64Address } from "../utils/base64";
 import { getBundleTx, getS3ObjectStore } from "../utils/objectStoreUtils";
 
 interface PostBundleJobInjectableArch {
@@ -94,7 +94,7 @@ export async function postBundleHandler(
     });
 
     const balance = await gateway.getBalanceForWallet(
-      ownerToAddress(bundleTx.owner)
+      ownerToNormalizedB64Address(bundleTx.owner)
     );
 
     if (new Winston(bundleTx.reward).isGreaterThan(balance)) {

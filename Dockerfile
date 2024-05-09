@@ -8,8 +8,8 @@ WORKDIR /usr/src/app
 COPY . .
 RUN yarn && yarn build
 
-# Clean out dependencies
-RUN yarn workspaces focus --production
+# Clear cache and install production dependencies
+RUN rm -rf node_modules && yarn workspaces focus --production
 
 FROM gcr.io/distroless/nodejs${NODE_VERSION_SHORT}-debian11
 WORKDIR /usr/src/app

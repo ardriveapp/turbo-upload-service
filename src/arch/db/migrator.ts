@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -398,6 +398,61 @@ export class FinishedMultiPartFailureReasonMigrator extends Migrator {
           tableNames.finishedMultiPartUpload,
           (table) => {
             table.dropColumn(columnNames.failedReason);
+          }
+        );
+      },
+    });
+  }
+}
+
+export class DeadlineHeightMigrator extends Migrator {
+  constructor(private readonly knex: Knex) {
+    super();
+  }
+
+  public migrate() {
+    return this.operate({
+      name: "migrate to deadline height",
+      operation: async () => {
+        await this.knex.schema.alterTable(
+          tableNames.newDataItem,
+          async (table) => {
+            table.string(columnNames.deadlineHeight).nullable();
+          }
+        );
+        await this.knex.schema.alterTable(
+          tableNames.plannedDataItem,
+          async (table) => {
+            table.string(columnNames.deadlineHeight).nullable();
+          }
+        );
+        await this.knex.schema.alterTable(
+          tableNames.permanentDataItem,
+          async (table) => {
+            table.string(columnNames.deadlineHeight).nullable();
+          }
+        );
+      },
+    });
+  }
+
+  public rollback() {
+    return this.operate({
+      name: "rollback from finished multipart upload failure reason",
+      operation: async () => {
+        await this.knex.schema.alterTable(tableNames.newDataItem, (table) => {
+          table.dropColumn(columnNames.deadlineHeight);
+        });
+        await this.knex.schema.alterTable(
+          tableNames.plannedDataItem,
+          (table) => {
+            table.dropColumn(columnNames.deadlineHeight);
+          }
+        );
+        await this.knex.schema.alterTable(
+          tableNames.permanentDataItem,
+          (table) => {
+            table.dropColumn(columnNames.deadlineHeight);
           }
         );
       },

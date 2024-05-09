@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -196,7 +196,7 @@ function calculateMD5(readStream: ReadStream): Promise<string> {
     // Create a hash object
     const hash = createHash("md5");
 
-    readStream.on("data", (data: any) => {
+    readStream.on("data", (data) => {
       // Update hash with data chunk
       hash.update(data);
     });
@@ -207,7 +207,7 @@ function calculateMD5(readStream: ReadStream): Promise<string> {
       resolve(md5);
     });
 
-    readStream.on("error", (err: any) => {
+    readStream.on("error", (err) => {
       // Reject the promise on error
       reject(err);
     });

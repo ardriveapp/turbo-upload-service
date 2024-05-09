@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -23,7 +23,7 @@ import winston from "winston";
 import { ArweaveGateway } from "../arch/arweaveGateway";
 import { Database } from "../arch/db/database";
 import { ObjectStore } from "../arch/objectStore";
-import { PaymentService } from "../arch/payment";
+import { PaymentService, ReserveBalanceResponse } from "../arch/payment";
 import { enqueue } from "../arch/queues";
 import { StreamingDataItem } from "../bundles/streamingDataItem";
 import {
@@ -42,6 +42,7 @@ import {
   filterKeysFromObject,
   getPremiumFeatureType,
   payloadContentTypeFromDecodedTags,
+  sleep,
 } from "../utils/common";
 import {
   BlocklistedAddressError,
@@ -70,19 +71,19 @@ import {
   encodeTagsForOptical,
   signDataItemHeader,
 } from "../utils/opticalUtils";
+import { ownerToNativeAddress } from "../utils/ownerToNativeAddress";
 import {
   IrysSignedReceipt,
   IrysUnsignedReceipt,
   signIrysReceipt,
 } from "../utils/signReceipt";
 
+const shouldSkipBalanceCheck = process.env.SKIP_BALANCE_CHECKS === "true";
+const opticalBridgingEnabled = process.env.OPTICAL_BRIDGING_ENABLED !== "false";
+
 export const chunkMinSize = 1024 * 1024 * 5; // 5MiB - AWS minimum
 export const chunkMaxSize = 1024 * 1024 * 500; // 500MiB // NOTE: AWS supports upto 5GiB
 export const defaultChunkSize = 25_000_000; // 25MB
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 export async function createMultiPartUpload(ctx: KoaContext) {
   const { database, objectStore, logger } = ctx.state;
@@ -414,7 +415,6 @@ export async function finalizeMultipartUploadWithHttpRequest(ctx: KoaContext) {
       ctx.message = error.message;
       return;
     }
-
     logger.error("Error finalizing multipart upload", {
       uploadId,
       error: error instanceof Error ? error.message : error,
@@ -491,18 +491,19 @@ export async function finalizeMultipartUpload({
       ? await database.getDataItemInfo(finishedMPUEntity.dataItemId)
       : undefined;
     if (info) {
-      // TODO: Fix this once we have deadline height in the db
-      // Regenerate and transmit receipt
-      const estimatedDeadlineHeight =
+      const deadlineHeight =
+        info.deadlineHeight ?? // TODO: Remove this fallback after all data items have a deadline height
         (await estimatedBlockHeightAtTimestamp(
           info.uploadedTimestamp,
           arweaveGateway
         )) + deadlineHeightIncrement;
+
+      // Regenerate and transmit receipt
       const receipt: IrysUnsignedReceipt = {
         id: finishedMPUEntity.dataItemId,
         timestamp: info.uploadedTimestamp,
         version: receiptVersion,
-        deadlineHeight: estimatedDeadlineHeight,
+        deadlineHeight,
       };
 
       const jwk = await getArweaveWallet();
@@ -655,15 +656,25 @@ export async function finalizeMPUWithInFlightEntity({
   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
   finalizedEtag = multipartUploadObject.etag!;
   const dataItemStream = new StreamingDataItem(dataItemReadable, fnLogger);
-  const dataItemHeaders = await dataItemStream.getHeaders();
+  const cleanUpDataItemStreamAndThrow = (error: Error) => {
+    dataItemReadable?.destroy();
+    throw error;
+  };
+  const dataItemHeaders = await dataItemStream
+    .getHeaders()
+    .catch(cleanUpDataItemStreamAndThrow);
   const {
     id: dataItemId,
     dataOffset: payloadDataStart,
     tags,
     signature,
   } = dataItemHeaders;
-  const signatureType = await dataItemStream.getSignatureType();
-  const ownerPublicAddress = await dataItemStream.getOwnerAddress();
+  const signatureType = await dataItemStream
+    .getSignatureType()
+    .catch(cleanUpDataItemStreamAndThrow);
+  const ownerPublicAddress = await dataItemStream
+    .getOwnerAddress()
+    .catch(cleanUpDataItemStreamAndThrow);
 
   // Perform blocklist checking before consuming the (potentially large) remainder of the stream
   if (blocklistedAddresses.includes(ownerPublicAddress)) {
@@ -677,15 +688,20 @@ export async function finalizeMPUWithInFlightEntity({
   }
 
   const payloadContentType = payloadContentTypeFromDecodedTags(tags);
-  const isValid = await dataItemStream.isValid();
+  const isValid = await dataItemStream
+    .isValid()
+    .catch(cleanUpDataItemStreamAndThrow);
   if (!isValid) {
     await database.failInflightMultiPartUpload({
       uploadId,
       failedReason: "INVALID",
     });
+    dataItemReadable.destroy();
     throw new InvalidDataItem();
   }
-  const payloadDataByteCount = await dataItemStream.getPayloadSize();
+  const payloadDataByteCount = await dataItemStream
+    .getPayloadSize()
+    .catch(cleanUpDataItemStreamAndThrow);
   const rawDataItemByteCount = payloadDataStart + payloadDataByteCount;
 
   // end the stream
@@ -699,7 +715,10 @@ export async function finalizeMPUWithInFlightEntity({
   const premiumFeatureType = getPremiumFeatureType(ownerPublicAddress, tags);
 
   // Prepare the data needed for optical posting and new_data_item insert
-  const dataItemInfo: Omit<PostedNewDataItem, "uploadedDate"> = {
+  const dataItemInfo: Omit<
+    PostedNewDataItem,
+    "uploadedDate" | "deadlineHeight"
+  > = {
     dataItemId,
     payloadDataStart,
     byteCount: rawDataItemByteCount,
@@ -793,9 +812,19 @@ export async function finalizeMPUWithValidatedInfo({
   ).readable;
 
   const dataItemStream = new StreamingDataItem(multipartUploadStream, fnLogger);
-  const dataItemHeaders = await dataItemStream.getHeaders();
-  const signatureType = await dataItemStream.getSignatureType();
-  const ownerPublicAddress = await dataItemStream.getOwnerAddress();
+  const cleanUpDataItemStreamAndThrow = (error: Error) => {
+    multipartUploadStream.destroy();
+    throw error;
+  };
+  const dataItemHeaders = await dataItemStream
+    .getHeaders()
+    .catch(cleanUpDataItemStreamAndThrow);
+  const signatureType = await dataItemStream
+    .getSignatureType()
+    .catch(cleanUpDataItemStreamAndThrow);
+  const ownerPublicAddress = await dataItemStream
+    .getOwnerAddress()
+    .catch(cleanUpDataItemStreamAndThrow);
   const payloadDataStart = dataItemHeaders.dataOffset;
   const payloadContentType = payloadContentTypeFromDecodedTags(
     dataItemHeaders.tags
@@ -881,9 +910,19 @@ export async function finalizeMPUWithRawDataItem({
   // data necessary for an optical post and a new data item db entry.
   const rawDataItemStream = await getRawDataItem(objectStore, dataItemId);
   const dataItemStream = new StreamingDataItem(rawDataItemStream, logger);
-  const dataItemHeaders = await dataItemStream.getHeaders();
-  const ownerPublicAddress = await dataItemStream.getOwnerAddress();
-  const signatureType = await dataItemStream.getSignatureType();
+  const cleanUpDataItemStreamAndThrow = (error: Error) => {
+    rawDataItemStream.destroy();
+    throw error;
+  };
+  const dataItemHeaders = await dataItemStream
+    .getHeaders()
+    .catch(cleanUpDataItemStreamAndThrow);
+  const ownerPublicAddress = await dataItemStream
+    .getOwnerAddress()
+    .catch(cleanUpDataItemStreamAndThrow);
+  const signatureType = await dataItemStream
+    .getSignatureType()
+    .catch(cleanUpDataItemStreamAndThrow);
   const rawDataItemByteCount = await getRawDataItemByteCount(
     objectStore,
     dataItemId
@@ -891,7 +930,10 @@ export async function finalizeMPUWithRawDataItem({
   rawDataItemStream.destroy();
 
   // Prepare the data needed for optical posting and new_data_item insert
-  const dataItemInfo: Omit<PostedNewDataItem, "uploadedDate"> = {
+  const dataItemInfo: Omit<
+    PostedNewDataItem,
+    "uploadedDate" | "deadlineHeight"
+  > = {
     dataItemId,
     payloadDataStart: dataItemHeaders.dataOffset,
     byteCount: rawDataItemByteCount,
@@ -936,7 +978,7 @@ export async function finalizeMPUWithDataItemInfo({
 }: {
   uploadId: UploadId;
   objectStore: ObjectStore;
-  dataItemInfo: Omit<PostedNewDataItem, "uploadedDate"> & {
+  dataItemInfo: Omit<PostedNewDataItem, "uploadedDate" | "deadlineHeight"> & {
     owner: Base64UrlString;
     target: string | undefined;
     tags: Tag[];
@@ -953,12 +995,13 @@ export async function finalizeMPUWithDataItemInfo({
   let fnLogger = logger;
   const uploadTimestamp = Date.now();
   const currentBlockHeight = await arweaveGateway.getCurrentBlockHeight();
+  const deadlineHeight = currentBlockHeight + deadlineHeightIncrement;
 
   const receipt: IrysUnsignedReceipt = {
     id: dataItemInfo.dataItemId,
     timestamp: uploadTimestamp,
     version: receiptVersion,
-    deadlineHeight: currentBlockHeight + deadlineHeightIncrement,
+    deadlineHeight,
   };
 
   const jwk = await getArweaveWallet();
@@ -966,12 +1009,17 @@ export async function finalizeMPUWithDataItemInfo({
   fnLogger.info("Receipt signed!", signedReceipt);
 
   fnLogger.debug("Reserving balance for upload...");
-  const paymentResponse = await paymentService.reserveBalanceForData({
-    ownerPublicAddress: dataItemInfo.ownerPublicAddress,
-    size: dataItemInfo.byteCount,
-    dataItemId: dataItemInfo.dataItemId,
-    signatureType: dataItemInfo.signatureType,
-  });
+  const paymentResponse: ReserveBalanceResponse = shouldSkipBalanceCheck
+    ? { isReserved: true, costOfDataItem: W("0"), walletExists: true }
+    : await paymentService.reserveBalanceForData({
+        nativeAddress: ownerToNativeAddress(
+          dataItemInfo.owner,
+          dataItemInfo.signatureType
+        ),
+        size: dataItemInfo.byteCount,
+        dataItemId: dataItemInfo.dataItemId,
+        signatureType: dataItemInfo.signatureType,
+      });
   fnLogger = fnLogger.child({ paymentResponse });
   fnLogger.debug("Finished reserving balance for upload.");
 
@@ -992,7 +1040,10 @@ export async function finalizeMPUWithDataItemInfo({
     throw new InsufficientBalance();
   }
 
-  if (!skipOpticalPostAddresses.includes(dataItemInfo.ownerPublicAddress)) {
+  if (
+    opticalBridgingEnabled &&
+    !skipOpticalPostAddresses.includes(dataItemInfo.ownerPublicAddress)
+  ) {
     fnLogger.debug("Asynchronously optical posting...");
     try {
       void enqueue(
@@ -1031,6 +1082,7 @@ export async function finalizeMPUWithDataItemInfo({
     await database.insertNewDataItem({
       ...dataItemInfo,
       uploadedDate: new Date(uploadTimestamp).toISOString(),
+      deadlineHeight,
     });
     fnLogger.debug(`DB insert duration:ms`, {
       durationMs: Date.now() - dbInsertStart,
@@ -1044,7 +1096,11 @@ export async function finalizeMPUWithDataItemInfo({
     );
     if (paymentResponse.costOfDataItem.isGreaterThan(W(0))) {
       await paymentService.refundBalanceForData({
-        ownerPublicAddress: dataItemInfo.ownerPublicAddress,
+        signatureType: dataItemInfo.signatureType,
+        nativeAddress: ownerToNativeAddress(
+          dataItemInfo.owner,
+          dataItemInfo.signatureType
+        ),
         winston: paymentResponse.costOfDataItem,
         dataItemId: dataItemInfo.dataItemId,
       });

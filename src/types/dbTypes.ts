@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -50,6 +50,7 @@ export interface NewDataItem {
   payloadContentType?: ContentType;
   payloadDataStart?: DataStart;
   signature?: Signature;
+  deadlineHeight?: BlockHeight;
 }
 export type PostedNewDataItem = Required<NewDataItem>;
 
@@ -152,6 +153,7 @@ export interface NewDataItemDBInsert extends NewDataItemDB {
   content_type: string;
   premium_feature_type: string;
   signature: Buffer;
+  deadline_height: string;
 }
 
 export type RePackDataItemDbInsert = NewDataItemDB & {
@@ -172,6 +174,7 @@ export interface NewDataItemDBResult extends NewDataItemDB {
   content_type: string | null;
   premium_feature_type: string | null;
   signature: Buffer | null;
+  deadline_height: string | null;
 }
 
 export interface PlannedDataItemDBInsert extends NewDataItemDBResult {
@@ -315,3 +318,8 @@ export interface FinishedMultiPartUpload extends InFlightMultiPartUpload {
 }
 
 export type MultipartUploadFailedReason = "INVALID" | "UNDERFUNDED";
+
+export type DataItemDbResults =
+  | NewDataItemDBResult
+  | PlannedDataItemDBResult
+  | PermanentDataItemDBResult; // TODO: FailedDataItemDBResult

@@ -12,6 +12,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@adraffy/ens-normalize@npm:1.10.1":
+  version: 1.10.1
+  resolution: "@adraffy/ens-normalize@npm:1.10.1"
+  checksum: 0836f394ea256972ec19a0b5e78cb7f5bcdfd48d8a32c7478afc94dd53ae44c04d1aa2303d7f3077b4f3ac2323b1f557ab9188e8059978748fdcd83e04a80dcc
+  languageName: node
+  linkType: hard
+
 "@alexsasharegan/simple-cache@npm:^3.3.3":
   version: 3.3.3
   resolution: "@alexsasharegan/simple-cache@npm:3.3.3"
@@ -2521,12 +2528,12 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@koa/cors@npm:^4.0.0":
-  version: 4.0.0
-  resolution: "@koa/cors@npm:4.0.0"
+"@koa/cors@npm:^5.0.0":
+  version: 5.0.0
+  resolution: "@koa/cors@npm:5.0.0"
   dependencies:
     vary: ^1.1.2
-  checksum: e0760544823532f2d71d792e3076858e38bab9b1c090abea175f1319fd91ea58a1da384a2fe7f5108f1c681e3830b01f62a1cafe271d6406751976af443187aa
+  checksum: 050701fb57dede2fefe0217459782bab7c9488fd07ff1f87fff680005cab43e03b7509e6015ea68082aadb1b31fe3eea7858ebdc93a2cf6f26d36d071190d50c
   languageName: node
   linkType: hard
 
@@ -2558,6 +2565,15 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@noble/curves@npm:1.2.0":
+  version: 1.2.0
+  resolution: "@noble/curves@npm:1.2.0"
+  dependencies:
+    "@noble/hashes": 1.3.2
+  checksum: bb798d7a66d8e43789e93bc3c2ddff91a1e19fdb79a99b86cd98f1e5eff0ee2024a2672902c2576ef3577b6f282f3b5c778bebd55761ddbb30e36bf275e83dd0
+  languageName: node
+  linkType: hard
+
 "@noble/curves@npm:^1.0.0":
   version: 1.1.0
   resolution: "@noble/curves@npm:1.1.0"
@@ -2578,6 +2594,13 @@ __metadata:
   version: 1.3.1
   resolution: "@noble/hashes@npm:1.3.1"
   checksum: 7fdefc0f7a0c1ec27acc6ff88841793e3f93ec4ce6b8a6a12bfc0dd70ae6b7c4c82fe305fdfeda1735d5ad4a9eebe761e6693b3d355689c559e91242f4bc95b1
+  languageName: node
+  linkType: hard
+
+"@noble/hashes@npm:1.3.2":
+  version: 1.3.2
+  resolution: "@noble/hashes@npm:1.3.2"
+  checksum: fe23536b436539d13f90e4b9be843cc63b1b17666a07634a2b1259dded6f490be3d050249e6af98076ea8f2ea0d56f578773c2197f2aa0eeaa5fba5bc18ba474
   languageName: node
   linkType: hard
 
@@ -5171,6 +5194,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@types/node@npm:18.15.13":
+  version: 18.15.13
+  resolution: "@types/node@npm:18.15.13"
+  checksum: 79cc5a2b5f98e8973061a4260a781425efd39161a0e117a69cd089603964816c1a14025e1387b4590c8e82d05133b7b4154fa53a7dffb3877890a66145e76515
+  languageName: node
+  linkType: hard
+
 "@types/node@npm:>=12.12.47, @types/node@npm:>=13.7.0":
   version: 20.10.6
   resolution: "@types/node@npm:20.10.6"
@@ -5205,6 +5235,15 @@ __metadata:
   version: 2.4.1
   resolution: "@types/normalize-package-data@npm:2.4.1"
   checksum: e87bccbf11f95035c89a132b52b79ce69a1e3652fe55962363063c9c0dae0fe2477ebc585e03a9652adc6f381d24ba5589cc5e51849df4ced3d3e004a7d40ed5
+  languageName: node
+  linkType: hard
+
+"@types/opossum@npm:^8.1.7":
+  version: 8.1.7
+  resolution: "@types/opossum@npm:8.1.7"
+  dependencies:
+    "@types/node": "*"
+  checksum: a691a2aa78ed6d5b059aadecd7bba8a6cce9e514e4fe601eeedbb1f9fab96fa76c1b48006e070c93f2896b17e9956c1bff3f0a4b74308ba8adc29fbfdf4b447a
   languageName: node
   linkType: hard
 
@@ -5640,6 +5679,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"aes-js@npm:4.0.0-beta.5":
+  version: 4.0.0-beta.5
+  resolution: "aes-js@npm:4.0.0-beta.5"
+  checksum: cc2ea969d77df939c32057f7e361b6530aa6cb93cb10617a17a45cd164e6d761002f031ff6330af3e67e58b1f0a3a8fd0b63a720afd591a653b02f649470e15b
+  languageName: node
+  linkType: hard
+
 "agent-base@npm:6, agent-base@npm:^6.0.2":
   version: 6.0.2
   resolution: "agent-base@npm:6.0.2"
@@ -6013,8 +6059,9 @@ __metadata:
     "@aws-sdk/node-http-handler": ^3.360.0
     "@aws-sdk/signature-v4-crt": ^3.451.0
     "@aws-sdk/types": ^3.357.0
+    "@ethersproject/signing-key": ^5.7.0
     "@istanbuljs/nyc-config-typescript": ^1.0.2
-    "@koa/cors": ^4.0.0
+    "@koa/cors": ^5.0.0
     "@opentelemetry/api": ^1.7.0
     "@opentelemetry/auto-instrumentations-node": ^0.40.2
     "@opentelemetry/exporter-trace-otlp-http": ^0.46.0
@@ -6037,15 +6084,16 @@ __metadata:
     "@types/multistream": ^4.1.0
     "@types/node": ^18.15.11
     "@types/node-fetch": ^2.6.3
+    "@types/opossum": ^8.1.7
     "@types/sinon": ^10.0.11
     "@typescript-eslint/eslint-plugin": ^5.25.0
     "@typescript-eslint/parser": ^5.25.0
     arbundles: 0.9.8
-    arlocal: ^1.1.61
+    arlocal: ^1.1.66
     arweave: 1.11.6
     arweave-stream-tx: ^1.2.2
     aws-lambda: ^1.0.7
-    axios: 0.27.2
+    axios: 1.6.4
     axios-mock-adapter: ^1.21.4
     axios-retry: ^3.4.0
     bignumber.js: ^9.1.0
@@ -6058,6 +6106,7 @@ __metadata:
     esbuild: ^0.16.17
     eslint: ^8.15.0
     eslint-plugin-header: ^3.1.1
+    ethers: ^6.11.1
     https: ^1.0.0
     husky: ^8.0.1
     jsonwebtoken: ^9.0.0
@@ -6070,6 +6119,7 @@ __metadata:
     multistream: 4.1.0
     nodemon: ^3.0.1
     nyc: ^15.1.0
+    opossum: ^8.1.3
     p-limit: ^3.1.0
     pg: ^8.8.0
     pg-query-stream: ^4.2.4
@@ -6127,9 +6177,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"arlocal@npm:^1.1.61":
-  version: 1.1.61
-  resolution: "arlocal@npm:1.1.61"
+"arlocal@npm:^1.1.66":
+  version: 1.1.66
+  resolution: "arlocal@npm:1.1.66"
   dependencies:
     "@koa/cors": ^3.1.0
     apollo-server-koa: ^3.6.2
@@ -6156,7 +6206,7 @@ __metadata:
     tsc-watch: ^4.6.0
   bin:
     arlocal: bin/index.js
-  checksum: 63695190aaddb97d50ea1f05cd5b5b0e684c4ac2fc3c93dd39bbe37a422d44ec9ae62efe83169a14d0a716a7e1fd50095c51855648beec9e2f0d8e4cc05db912
+  checksum: b6e74ef9cbe3d7b450262aba5255d9610254b3b099f37d2705e458c03b745ba753d9e40f857a98dc5c8ef232f884d5b7217c968baf14aa8bd966e8dabf0e70c4
   languageName: node
   linkType: hard
 
@@ -6340,13 +6390,14 @@ __metadata:
   languageName: node
   linkType: hard
 
-"axios@npm:0.27.2, axios@npm:^0.27.2":
-  version: 0.27.2
-  resolution: "axios@npm:0.27.2"
+"axios@npm:1.6.4":
+  version: 1.6.4
+  resolution: "axios@npm:1.6.4"
   dependencies:
-    follow-redirects: ^1.14.9
+    follow-redirects: ^1.15.4
     form-data: ^4.0.0
-  checksum: 38cb7540465fe8c4102850c4368053c21683af85c5fdf0ea619f9628abbcb59415d1e22ebc8a6390d2bbc9b58a9806c874f139767389c862ec9b772235f06854
+    proxy-from-env: ^1.1.0
+  checksum: 48d8af8488ac7402fae312437c0189b3b609a472fca2f7fc796129c804d98520589b6317096eba8509711d49f855a3f620b6a24ff23acd73ac26433d0383b8f9
   languageName: node
   linkType: hard
 
@@ -6356,6 +6407,16 @@ __metadata:
   dependencies:
     follow-redirects: ^1.14.0
   checksum: 44245f24ac971e7458f3120c92f9d66d1fc695e8b97019139de5b0cc65d9b8104647db01e5f46917728edfc0cfd88eb30fc4c55e6053eef4ace76768ce95ff3c
+  languageName: node
+  linkType: hard
+
+"axios@npm:^0.27.2":
+  version: 0.27.2
+  resolution: "axios@npm:0.27.2"
+  dependencies:
+    follow-redirects: ^1.14.9
+    form-data: ^4.0.0
+  checksum: 38cb7540465fe8c4102850c4368053c21683af85c5fdf0ea619f9628abbcb59415d1e22ebc8a6390d2bbc9b58a9806c874f139767389c862ec9b772235f06854
   languageName: node
   linkType: hard
 
@@ -8035,6 +8096,21 @@ __metadata:
   languageName: node
   linkType: hard
 
+"ethers@npm:^6.11.1":
+  version: 6.11.1
+  resolution: "ethers@npm:6.11.1"
+  dependencies:
+    "@adraffy/ens-normalize": 1.10.1
+    "@noble/curves": 1.2.0
+    "@noble/hashes": 1.3.2
+    "@types/node": 18.15.13
+    aes-js: 4.0.0-beta.5
+    tslib: 2.4.0
+    ws: 8.5.0
+  checksum: e8027c5071ad0370c61a1978f0602ab950d840c5923948f55e88b9808300e4e02e792bb793ea109ce7fa0e748f30a40a05f1202204a2b0402cdffbcb64a218e4
+  languageName: node
+  linkType: hard
+
 "event-emitter@npm:~0.3.4":
   version: 0.3.5
   resolution: "event-emitter@npm:0.3.5"
@@ -8331,6 +8407,16 @@ __metadata:
     debug:
       optional: true
   checksum: 584da22ec5420c837bd096559ebfb8fe69d82512d5585004e36a3b4a6ef6d5905780e0c74508c7b72f907d1fa2b7bd339e613859e9c304d0dc96af2027fd0231
+  languageName: node
+  linkType: hard
+
+"follow-redirects@npm:^1.15.4":
+  version: 1.15.6
+  resolution: "follow-redirects@npm:1.15.6"
+  peerDependenciesMeta:
+    debug:
+      optional: true
+  checksum: a62c378dfc8c00f60b9c80cab158ba54e99ba0239a5dd7c81245e5a5b39d10f0c35e249c3379eae719ff0285fff88c365dd446fab19dee771f1d76252df1bbf5
   languageName: node
   linkType: hard
 
@@ -11116,6 +11202,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"opossum@npm:^8.1.3":
+  version: 8.1.3
+  resolution: "opossum@npm:8.1.3"
+  checksum: f957461b9405d25f753a09ee5fb2ec908d8ba888d8e9ef73a6f2f6eedabb938b75175d6908c598dfba5d744a43585743a3ea4670245aaf47992c4ffdaffcc045
+  languageName: node
+  linkType: hard
+
 "optionator@npm:^0.9.3":
   version: 0.9.3
   resolution: "optionator@npm:0.9.3"
@@ -12985,6 +13078,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"tslib@npm:2.4.0":
+  version: 2.4.0
+  resolution: "tslib@npm:2.4.0"
+  checksum: 8c4aa6a3c5a754bf76aefc38026134180c053b7bd2f81338cb5e5ebf96fefa0f417bff221592bf801077f5bf990562f6264fecbc42cd3309b33872cb6fc3b113
+  languageName: node
+  linkType: hard
+
 "tslib@npm:^1.11.1, tslib@npm:^1.8.1":
   version: 1.14.1
   resolution: "tslib@npm:1.14.1"
@@ -13550,6 +13650,21 @@ __metadata:
     utf-8-validate:
       optional: true
   checksum: 3a990b32ed08c72070d5e8913e14dfcd831919205be52a3ff0b4cdd998c8d554f167c9df3841605cde8b11d607768cacab3e823c58c96a5c08c987e093eb767a
+  languageName: node
+  linkType: hard
+
+"ws@npm:8.5.0":
+  version: 8.5.0
+  resolution: "ws@npm:8.5.0"
+  peerDependencies:
+    bufferutil: ^4.0.1
+    utf-8-validate: ^5.0.2
+  peerDependenciesMeta:
+    bufferutil:
+      optional: true
+    utf-8-validate:
+      optional: true
+  checksum: 76f2f90e40344bf18fd544194e7067812fb1372b2a37865678d8f12afe4b478ff2ebc0c7c0aff82cd5e6b66fc43d889eec0f1865c2365d8f7a66d92da7744a77
   languageName: node
   linkType: hard
 

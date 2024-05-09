@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -104,6 +104,9 @@ export function tapStream({
       );
       readable.pause(); // stops the input stream from pushing data to the passthrough while it's trying to catch up by processing its enqueued bytes
       passThrough.once("drain", () => {
+        logger?.debug(
+          "PassThrough stream drained. Resuming readable stream..."
+        );
         readable.resume();
       });
     }
@@ -212,4 +215,8 @@ export function getByteCountBasedRePackThresholdBlockCount(
   }
 
   return rePostDataItemThresholdNumberOfBlocks * 5;
+}
+
+export function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

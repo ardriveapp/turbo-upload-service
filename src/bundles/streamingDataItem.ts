@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -26,7 +26,11 @@ import {
   targetLength,
 } from "../constants";
 import { ParsedDataItemHeader } from "../types/types";
-import { ownerToAddress, sha256B64Url, toB64Url } from "../utils/base64";
+import {
+  ownerToNormalizedB64Address,
+  sha256B64Url,
+  toB64Url,
+} from "../utils/base64";
 import {
   createVerifiedDataItemStream,
   signatureTypeInfo,
@@ -230,7 +234,7 @@ export class StreamingDataItem {
    * a normalized representation and is the address used by gateway GQL
    */
   getOwnerAddress(): Promise<string> {
-    return this.getOwner().then(ownerToAddress);
+    return this.getOwner().then(ownerToNormalizedB64Address);
   }
 
   /**

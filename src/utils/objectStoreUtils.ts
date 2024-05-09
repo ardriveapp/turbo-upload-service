@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -44,6 +44,7 @@ export function getS3ObjectStore(): ObjectStore {
       ? `${process.env.DATA_ITEM_MULTI_REGION_ENDPOINT}`
       : // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
         process.env.DATA_ITEM_BUCKET!, // Blow up if we can't fall back to this
+    backupBucketName: process.env.BACKUP_DATA_ITEM_BUCKET,
   });
 }
 
@@ -242,7 +243,10 @@ export function assembleBundlePayload(
             `Error streaming data item ${nextDataItemIndexToPipe + 1}/${
               bundleHeaderInfo.dataItems.length
             }!`,
-            { error }
+            {
+              error,
+              dataItemInfo: dataItemToPipe,
+            }
           );
           nextDataItemStream.destroy();
           outputStream.emit("error", error);
@@ -305,11 +309,13 @@ export function assembleBundlePayload(
       }
 
       // Start fetching
+      const dataItemKey = `${dataItemPrefix}/${dataItem.id}`;
       const fetchedObject = await objectStore
-        .getObject(`${dataItemPrefix}/${dataItem.id}`)
+        .getObject(dataItemKey)
         .catch((err) => {
           logger.error(`Error fetching data item ${dataItemIndex + 1}`, {
             err: err instanceof Error ? err.message : err,
+            dataItemKey,
           });
           activeStreamsMap.delete(`${dataItemIndex}`);
           outputStream.emit("error", err);
@@ -370,35 +376,35 @@ export async function assembleBundlePayloadWithMultiStream(
     logger.debug(
       `Piping data item ${currentStreamIndex + 1}/${dataItemCount} for bundle!`
     );
-    objectStore
-      .getObject(
-        `${dataItemPrefix}/${bundleHeaderInfo.dataItems[currentStreamIndex].id}`
-      )
-      .then(
-        // onfulfilled
-        ({ readable: dataItemStream }) => {
-          dataItemStream.on("end", () => {
-            logger.debug(
-              `Finished piping data item ${
-                currentStreamIndex + 1
-              }/${dataItemCount} for bundle!`
-            );
-          });
-          dataItemStream.on("error", (err) => {
-            logger.error(
-              `Error streaming data item ${
-                currentStreamIndex + 1
-              }/${dataItemCount}!`,
-              { err }
-            );
-          });
-          cb(null, dataItemStream);
-        },
-        // onrejected
-        (err) => {
-          cb(err, null);
-        }
-      );
+    const dataItemKey = `${dataItemPrefix}/${bundleHeaderInfo.dataItems[currentStreamIndex].id}`;
+    objectStore.getObject(dataItemKey).then(
+      // onfulfilled
+      ({ readable: dataItemStream }) => {
+        dataItemStream.on("end", () => {
+          logger.debug(
+            `Finished piping data item ${
+              currentStreamIndex + 1
+            }/${dataItemCount} for bundle!`
+          );
+        });
+        dataItemStream.on("error", (err) => {
+          logger.error(
+            `Error streaming data item ${
+              currentStreamIndex + 1
+            }/${dataItemCount}!`,
+            {
+              err,
+              dataItemKey,
+            }
+          );
+        });
+        cb(null, dataItemStream);
+      },
+      // onrejected
+      (err) => {
+        cb(err, null);
+      }
+    );
   };
 
   // Get piping!

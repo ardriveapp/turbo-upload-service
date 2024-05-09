@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -18,7 +18,10 @@ import { AxiosInstance } from "axios";
 import { sign } from "jsonwebtoken";
 import winston from "winston";
 
-import { allowListedSignatureTypes } from "../bundles/verifyDataItem";
+import {
+  allowListedSignatureTypes,
+  signatureTypeInfo,
+} from "../bundles/verifyDataItem";
 import {
   allowArFSData,
   allowListPublicAddresses,
@@ -29,7 +32,7 @@ import defaultLogger from "../logger";
 import { MetricRegistry } from "../metricRegistry";
 import {
   ByteCount,
-  PublicArweaveAddress,
+  NativeAddress,
   TransactionId,
   W,
   Winston,
@@ -58,7 +61,7 @@ interface PaymentServiceCheckBalanceResponse {
 
 interface CheckBalanceParams {
   size: ByteCount;
-  ownerPublicAddress: PublicArweaveAddress;
+  nativeAddress: NativeAddress;
   signatureType: number;
 }
 
@@ -72,8 +75,9 @@ export interface RefundBalanceResponse {
 
 interface RefundBalanceParams {
   winston: Winston;
-  ownerPublicAddress: PublicArweaveAddress;
+  nativeAddress: NativeAddress;
   dataItemId: TransactionId;
+  signatureType: number;
 }
 
 export interface PaymentService {
@@ -117,17 +121,17 @@ export class TurboPaymentService implements PaymentService {
 
   public async checkBalanceForData({
     size,
-    ownerPublicAddress,
+    nativeAddress,
     signatureType,
   }: CheckBalanceParams): Promise<CheckBalanceResponse> {
-    const logger = this.logger.child({ ownerPublicAddress, size });
+    const logger = this.logger.child({ nativeAddress, size });
 
     logger.debug("Checking balance for wallet.");
 
     if (
       await this.checkBalanceForDataInternal({
         size,
-        ownerPublicAddress,
+        nativeAddress,
         signatureType,
       })
     ) {
@@ -145,7 +149,7 @@ export class TurboPaymentService implements PaymentService {
     const token = sign({}, secret, {
       expiresIn: "1h",
     });
-    const url = `${this.paymentServiceURL}/v1/check-balance/${ownerPublicAddress}?byteCount=${size}`;
+    const url = `${this.paymentServiceURL}/v1/check-balance/${signatureTypeInfo[signatureType].name}/${nativeAddress}?byteCount=${size}`;
 
     const { status, statusText, data } = await this.axios.get<
       PaymentServiceCheckBalanceResponse | string
@@ -178,14 +182,14 @@ export class TurboPaymentService implements PaymentService {
 
   private async checkBalanceForDataInternal({
     size,
-    ownerPublicAddress,
+    nativeAddress,
     signatureType,
   }: CheckBalanceParams): Promise<boolean> {
-    const logger = this.logger.child({ ownerPublicAddress, size });
+    const logger = this.logger.child({ nativeAddress, size });
 
     logger.debug("Checking balance for wallet.");
 
-    if (allowListPublicAddresses.includes(ownerPublicAddress)) {
+    if (allowListPublicAddresses.includes(nativeAddress)) {
       logger.debug(
         "The owner's address is on the arweave public address allow list. Allowing data item to be bundled by the service..."
       );
@@ -214,18 +218,18 @@ export class TurboPaymentService implements PaymentService {
 
   public async reserveBalanceForData({
     size,
-    ownerPublicAddress,
+    nativeAddress,
     dataItemId,
     signatureType,
   }: ReserveBalanceParams): Promise<ReserveBalanceResponse> {
-    const logger = this.logger.child({ ownerPublicAddress, size });
+    const logger = this.logger.child({ nativeAddress, size });
 
     logger.debug("Reserving balance for wallet.");
 
     if (
       await this.checkBalanceForDataInternal({
         size,
-        ownerPublicAddress,
+        nativeAddress,
         signatureType,
       })
     ) {
@@ -240,7 +244,7 @@ export class TurboPaymentService implements PaymentService {
     const token = sign({}, secret, {
       expiresIn: "1h",
     });
-    const url = `${this.paymentServiceURL}/v1/reserve-balance/${ownerPublicAddress}?byteCount=${size}&dataItemId=${dataItemId}`;
+    const url = `${this.paymentServiceURL}/v1/reserve-balance/${signatureTypeInfo[signatureType].name}/${nativeAddress}?byteCount=${size}&dataItemId=${dataItemId}`;
 
     const { status, statusText, data } = await this.axios.get(url, {
       headers: {
@@ -275,14 +279,14 @@ export class TurboPaymentService implements PaymentService {
     params: RefundBalanceParams
   ): Promise<void> {
     const logger = this.logger.child({ ...params });
-    const { ownerPublicAddress, winston, dataItemId } = params;
+    const { nativeAddress, winston, dataItemId, signatureType } = params;
 
     logger.debug("Refunding balance for wallet.", {
-      ownerPublicAddress,
+      nativeAddress,
       winston,
     });
 
-    if (allowListPublicAddresses.includes(ownerPublicAddress)) {
+    if (allowListPublicAddresses.includes(nativeAddress)) {
       logger.info(
         "The owner's address is on the arweave public address allow list. Not calling payment service to refund balance..."
       );
@@ -295,7 +299,7 @@ export class TurboPaymentService implements PaymentService {
 
     try {
       await this.axios.get(
-        `${this.paymentServiceURL}/v1/refund-balance/${ownerPublicAddress}?winstonCredits=${winston}&dataItemId=${dataItemId}`,
+        `${this.paymentServiceURL}/v1/refund-balance/${signatureTypeInfo[signatureType].name}/${nativeAddress}?winstonCredits=${winston}&dataItemId=${dataItemId}`,
         {
           headers: {
             Authorization: `Bearer ${token}`,
