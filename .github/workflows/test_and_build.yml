@@ -46,10 +46,28 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push container image to GitHub Container Registry
+      - name: Build and push upload service container image to GitHub Container Registry
         uses: docker/build-push-action@v4
         with:
           push: true
           tags: |
             ghcr.io/ardriveapp/${{ github.event.repository.name }}:latest
             ghcr.io/ardriveapp/${{ github.event.repository.name }}:${{ github.sha }}
+
+      - name: Build and push fulfillment container image to GitHub Container Registry
+        uses: docker/build-push-action@v4
+        with:
+          file: Dockerfile.fulfillment
+          push: true
+          tags: |
+            ghcr.io/ardriveapp/${{ github.event.repository.name }}-fulfillment:latest
+            ghcr.io/ardriveapp/${{ github.event.repository.name }}-fulfillment:${{ github.sha }}
+
+      - name: Build and push localstack container image to GitHub Container Registry
+        uses: docker/build-push-action@v4
+        with:
+          file: Dockerfile.localstack
+          push: true
+          tags: |
+            ghcr.io/ardriveapp/${{ github.event.repository.name }}-localstack:latest
+            ghcr.io/ardriveapp/${{ github.event.repository.name }}-localstack:${{ github.sha }}
