@@ -16,22 +16,28 @@
  */
 import winston from "winston";
 
+import { Database } from "../../../../src/arch/db/database";
 import { planBundleHandler } from "../../../../src/jobs/plan";
 import { JobScheduler } from "../utils/jobScheduler";
 
 export class PlanBundleJobScheduler extends JobScheduler {
+  private database: Database;
+
   constructor({
     intervalMs = 60_000,
     logger,
+    database,
   }: {
     intervalMs: number;
     logger: winston.Logger;
+    database: Database;
   }) {
     super({ intervalMs, schedulerName: "plan-bundle", logger });
+    this.database = database;
   }
 
   async processJob(): Promise<void> {
-    await planBundleHandler(undefined, undefined, this.logger).catch(
+    await planBundleHandler(this.database, undefined, this.logger).catch(
       (error) => {
         this.logger.error("Error planning bundle", error);
       }

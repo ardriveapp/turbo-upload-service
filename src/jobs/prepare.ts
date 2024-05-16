@@ -68,7 +68,7 @@ interface PrepareBundleJobInjectableArch {
   objectStore?: ObjectStore;
   jwk?: JWKInterface;
   pricing?: PricingService;
-  gateway?: Gateway;
+  arweaveGateway?: Gateway;
   arweave?: ArweaveInterface;
 }
 
@@ -90,10 +90,10 @@ export async function prepareBundleHandler(
     database = new PostgresDatabase(),
     objectStore = getS3ObjectStore(),
     jwk,
-    gateway = new ArweaveGateway({
+    arweaveGateway = new ArweaveGateway({
       endpoint: gatewayUrl,
     }),
-    pricing = new PricingService(gateway),
+    pricing = new PricingService(arweaveGateway),
     arweave = new ArweaveInterface(),
   }: PrepareBundleJobInjectableArch,
   logger = defaultLogger.child({ job: "prepare-bundle-job", planId })
@@ -180,7 +180,10 @@ export async function prepareBundleHandler(
   } catch (error) {
     if (isNoSuchKeyS3Error(error)) {
       const dataItemId = error.Key.split("/")[1];
-      await database.deletePlannedDataItem(dataItemId);
+      await database.updatePlannedDataItemAsFailed({
+        dataItemId,
+        failedReason: "missing_from_object_store",
+      });
 
       // TODO: This is a hack -- recurse to retry the job without the deleted data item
       return prepareBundleHandler(planId, {
@@ -188,7 +191,7 @@ export async function prepareBundleHandler(
         objectStore,
         jwk,
         pricing,
-        gateway,
+        arweaveGateway,
         arweave,
       });
     }

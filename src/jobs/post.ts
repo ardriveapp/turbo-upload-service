@@ -32,7 +32,7 @@ import { getBundleTx, getS3ObjectStore } from "../utils/objectStoreUtils";
 interface PostBundleJobInjectableArch {
   database?: Database;
   objectStore?: ObjectStore;
-  gateway?: Gateway;
+  arweaveGateway?: Gateway;
   paymentService?: PaymentService;
 }
 
@@ -41,7 +41,7 @@ export async function postBundleHandler(
   {
     database = new PostgresDatabase(),
     objectStore = getS3ObjectStore(),
-    gateway = new ArweaveGateway({
+    arweaveGateway = new ArweaveGateway({
       endpoint: gatewayUrl,
     }),
     paymentService = new TurboPaymentService(),
@@ -65,7 +65,9 @@ export async function postBundleHandler(
 
   try {
     // post bundle, throw error on failure
-    const transactionPostResponseData = await gateway.postBundleTx(bundleTx);
+    const transactionPostResponseData = await arweaveGateway.postBundleTx(
+      bundleTx
+    );
 
     // fetch AR rate - but don't throw on failure
     const usdToArRate = await paymentService
@@ -93,7 +95,7 @@ export async function postBundleHandler(
       error: message,
     });
 
-    const balance = await gateway.getBalanceForWallet(
+    const balance = await arweaveGateway.getBalanceForWallet(
       ownerToNormalizedB64Address(bundleTx.owner)
     );
 

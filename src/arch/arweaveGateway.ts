@@ -80,7 +80,7 @@ export class ArweaveGateway implements Gateway {
     endpoint = gatewayUrl,
     retryStrategy = new ExponentialBackoffRetryStrategy({}),
     axiosInstance = axios.create(), // defaults to throwing errors for status codes >400
-  }: GatewayAPIConstParams) {
+  }: GatewayAPIConstParams = {}) {
     this.endpoint = endpoint;
     this.retryStrategy = retryStrategy;
     this.axiosInstance = axiosInstance;

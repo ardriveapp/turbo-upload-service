@@ -105,7 +105,7 @@ describe("Verify bundle job handler function integrated with PostgresDatabase cl
 
     await verifyBundleHandler({
       database: db,
-      gateway: gateway,
+      arweaveGateway: gateway,
       objectStore,
     });
 
@@ -161,7 +161,7 @@ describe("Verify bundle job handler function integrated with PostgresDatabase cl
 
     await verifyBundleHandler({
       database: db,
-      gateway: gateway,
+      arweaveGateway: gateway,
       objectStore,
       // Test 100 batches of 5 data items each
       batchSize: 5,
@@ -199,7 +199,7 @@ describe("Verify bundle job handler function integrated with PostgresDatabase cl
 
     await verifyBundleHandler({
       database: db,
-      gateway: gateway,
+      arweaveGateway: gateway,
       objectStore,
     });
 
@@ -238,7 +238,7 @@ describe("Verify bundle job handler function integrated with PostgresDatabase cl
 
     await verifyBundleHandler({
       database: db,
-      gateway: gateway,
+      arweaveGateway: gateway,
       objectStore,
     });
 
@@ -263,7 +263,7 @@ describe("Verify bundle job handler function integrated with PostgresDatabase cl
 
     await verifyBundleHandler({
       database: db,
-      gateway: gateway,
+      arweaveGateway: gateway,
       objectStore,
     });
 
@@ -295,7 +295,7 @@ describe("Verify bundle job handler function integrated with PostgresDatabase cl
 
     await verifyBundleHandler({
       database: db,
-      gateway: gateway,
+      arweaveGateway: gateway,
       objectStore,
     });
 
@@ -335,7 +335,7 @@ describe("Verify bundle job handler function integrated with PostgresDatabase cl
 
     await verifyBundleHandler({
       database: db,
-      gateway: gateway,
+      arweaveGateway: gateway,
       objectStore,
     });
 
@@ -390,7 +390,7 @@ describe("Verify bundle job handler function integrated with PostgresDatabase cl
 
     const input = {
       database: db,
-      gateway: gateway,
+      arweaveGateway: gateway,
       objectStore,
     };
 

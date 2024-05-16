@@ -142,7 +142,8 @@ describe("The filterForNestedBundles function", () => {
 
 describe("The getNestedDataItemHeaders function", () => {
   const objectStore = new FileSystemObjectStore();
-  before(() => {
+
+  it("returns correct nested data item headers for a real bundled data item", async () => {
     stub(objectStore, "getObject").resolves({
       readable: createReadStream("tests/stubFiles/bdiDataItem"),
       etag: "stubEtag",
@@ -151,9 +152,7 @@ describe("The getNestedDataItemHeaders function", () => {
       payloadContentType: "application/octet-stream",
       payloadDataStart: 1100,
     });
-  });
 
-  it("returns correct nested data item headers for a real bundled data item", async () => {
     expect(
       await getNestedDataItemHeaders({
         objectStore,
@@ -226,5 +225,38 @@ describe("The getNestedDataItemHeaders function", () => {
         ],
       },
     ]);
+  });
+
+  it("returns an empty array when passed a BDI header that is not a bundle", async () => {
+    stub(objectStore, "getObject").resolves({
+      readable: createReadStream("tests/stubFiles/stub1115ByteDataItem"),
+      etag: "stubEtag",
+    });
+    stub(objectStore, "getObjectPayloadInfo").resolves({
+      payloadContentType: "application/octet-stream",
+      payloadDataStart: 1100,
+    });
+
+    expect(
+      await getNestedDataItemHeaders({
+        objectStore,
+        logger: logger,
+        potentialBDIHeaders: [
+          {
+            id: "cTbz16hHhGW4HF-uMJ5u8RoCg9atYmyMFWGd-kzhF_Q",
+            owner: "owner",
+            owner_address: "owner_address",
+            signature: "signature",
+            target: "target",
+            content_type: "content_type",
+            data_size: 1234,
+            tags: [
+              { name: "QnVuZGxlLUZvcm1hdA", value: "YmluYXJ5" },
+              { name: "QnVuZGxlLVZlcnNpb24", value: "Mi4wLjA" },
+            ],
+          },
+        ],
+      })
+    ).to.deep.equalInAnyOrder([]);
   });
 });

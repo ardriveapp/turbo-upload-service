@@ -22,6 +22,7 @@ export const tableNames = {
   permanentBundle: "permanent_bundle",
   permanentDataItem: "permanent_data_item",
   plannedDataItem: "planned_data_item",
+  failedDataItem: "failed_data_item",
   postedBundle: "posted_bundle",
   seededBundle: "seeded_bundle",
   /** @deprecated */

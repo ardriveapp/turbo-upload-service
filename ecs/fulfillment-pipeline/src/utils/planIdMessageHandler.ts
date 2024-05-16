@@ -18,6 +18,7 @@ import { Message, SQSClient, SQSClientConfig } from "@aws-sdk/client-sqs";
 import { Consumer } from "sqs-consumer";
 import winston from "winston";
 
+import { ArweaveGateway } from "../../../../src/arch/arweaveGateway";
 import { Database } from "../../../../src/arch/db/database";
 import { ObjectStore } from "../../../../src/arch/objectStore";
 import { PaymentService } from "../../../../src/arch/payment";
@@ -31,6 +32,7 @@ export const planIdMessageHandler = ({
   database,
   objectStore,
   paymentService,
+  arweaveGateway,
 }: {
   message: Message;
   logger: winston.Logger;
@@ -38,6 +40,7 @@ export const planIdMessageHandler = ({
   database: Database;
   objectStore: ObjectStore;
   paymentService: PaymentService;
+  arweaveGateway: ArweaveGateway;
 }) => {
   const messageLogger = logger.child({
     messageId: message.MessageId,
@@ -68,6 +71,7 @@ export const planIdMessageHandler = ({
       database,
       objectStore,
       paymentService,
+      arweaveGateway,
     },
     // provide our message logger to the handler
     messageLogger.child({ planId })
@@ -80,12 +84,14 @@ export function createPlanIdHandlingSQSConsumer({
   database,
   objectStore,
   paymentService,
+  arweaveGateway,
 }: {
   queue: QueueHandlerConfig;
   sqsOptions?: Partial<SQSClientConfig>;
   database: Database;
   objectStore: ObjectStore;
   paymentService: PaymentService;
+  arweaveGateway: ArweaveGateway;
 }) {
   const { queueUrl, consumerOptions, logger } = queue;
   return Consumer.create({
@@ -98,6 +104,7 @@ export function createPlanIdHandlingSQSConsumer({
         database,
         objectStore,
         paymentService,
+        arweaveGateway,
       }),
     sqs: new SQSClient(sqsOptions),
     batchSize: 1,

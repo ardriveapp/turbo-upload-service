@@ -24,6 +24,7 @@
     "INJECTEDAPTOS",
     "Irys",
     "knexfile",
+    "localstack",
     "MULTIAPTOS",
     "multistream",
     "NOWAIT",
