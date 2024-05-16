@@ -15,7 +15,6 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 import knex, { Knex } from "knex";
-import pLimit from "p-limit";
 import path from "path";
 import winston from "winston";
 
@@ -23,12 +22,16 @@ import {
   batchingSize,
   failedReasons,
   maxDataItemsPerBundle,
+  retryLimitForFailedDataItems,
 } from "../../constants";
 import logger from "../../logger";
 import {
   BundlePlanDBResult,
   DataItemDbResults,
+  DataItemFailedReason,
   FailedBundleDbInsert,
+  FailedDataItemDBInsert,
+  FailedDataItemDBResult,
   FinishedMultiPartUpload,
   FinishedMultiPartUploadDBInsert,
   FinishedMultiPartUploadDBResult,
@@ -59,7 +62,13 @@ import {
   SeededBundle,
   SeededBundleDBResult,
 } from "../../types/dbTypes";
-import { TransactionId, UploadId, W, Winston } from "../../types/types";
+import {
+  DataItemId,
+  TransactionId,
+  UploadId,
+  W,
+  Winston,
+} from "../../types/types";
 import { generateArrayChunks } from "../../utils/common";
 import {
   BundlePlanExistsInAnotherStateWarning,
@@ -116,7 +125,10 @@ export class PostgresDatabase implements Database {
       dataItem: restOfNewDataItem,
     });
 
-    if (await this.dataItemExists(newDataItem.dataItemId)) {
+    if (
+      (await this.getExistingDataItemsDbResultsById([newDataItem.dataItemId]))
+        .length > 0
+    ) {
       throw new DataItemExistsWarning(newDataItem.dataItemId);
     }
 
@@ -145,24 +157,48 @@ export class PostgresDatabase implements Database {
     tableNames.newDataItem,
     tableNames.plannedDataItem,
     tableNames.permanentDataItem,
-    // TODO: tableNames.failedDataItem,
+    tableNames.failedDataItem,
   ] as const;
 
-  private async getDataItemsDbResultsById(
+  private async getExistingDataItemsDbResultsById(
     dataItemIds: TransactionId[]
   ): Promise<DataItemDbResults[]> {
-    return this.reader.transaction(async (knexTransaction) => {
-      const dataItemResults = await Promise.all(
-        this.dataItemTables.map((tableName) =>
-          knexTransaction(tableName).whereIn(
-            columnNames.dataItemId,
-            dataItemIds
+    const results: DataItemDbResults[] = await this.reader.transaction(
+      async (knexTransaction) => {
+        const dataItemResults = await Promise.all(
+          this.dataItemTables.map((tableName) =>
+            knexTransaction(tableName).whereIn(
+              columnNames.dataItemId,
+              dataItemIds
+            )
           )
-        )
-      );
+        );
 
-      return dataItemResults.flat();
-    });
+        return dataItemResults.flat();
+      }
+    );
+
+    // Delete any failed data items, as this read is checking before a re-insert
+    const failedDataItems = results.filter(
+      (result) => "failed_reason" in result
+    );
+    if (failedDataItems.length) {
+      this.log.warn(
+        "Data items already exist in database as failed! Removing from database to retry...",
+        { dataItemIds }
+      );
+      await this.writer(tableNames.failedDataItem)
+        .whereIn(
+          columnNames.dataItemId,
+          failedDataItems.map((r) => r.data_item_id)
+        )
+        .del();
+      failedDataItems.forEach((r) => {
+        results.splice(results.indexOf(r), 1);
+      });
+    }
+
+    return results;
   }
 
   public async insertNewDataItemBatch(
@@ -173,9 +209,10 @@ export class PostgresDatabase implements Database {
     });
 
     // Check if any data items already exist in the database
-    const existingDataItemDbResults = await this.getDataItemsDbResultsById(
-      dataItemBatch.map((newDataItem) => newDataItem.dataItemId)
-    );
+    const existingDataItemDbResults =
+      await this.getExistingDataItemsDbResultsById(
+        dataItemBatch.map((newDataItem) => newDataItem.dataItemId)
+      );
     if (existingDataItemDbResults.length > 0) {
       const existingDataItemIds = new Set<TransactionId>(
         existingDataItemDbResults.map((r) => r.data_item_id)
@@ -201,33 +238,6 @@ export class PostgresDatabase implements Database {
       tableNames.newDataItem,
       dataItemInserts
     );
-  }
-
-  private async dataItemExists(data_item_id: TransactionId): Promise<boolean> {
-    return this.reader.transaction(async (knexTransaction) => {
-      const dataItemResults = await Promise.all([
-        knexTransaction<NewDataItemDBResult>(tableNames.newDataItem).where({
-          data_item_id,
-        }),
-        knexTransaction<PlannedDataItemDBResult>(
-          tableNames.plannedDataItem
-        ).where({
-          data_item_id,
-        }),
-        knexTransaction<PermanentDataItemDBResult>(
-          tableNames.permanentDataItem
-        ).where({
-          data_item_id,
-        }),
-      ]);
-
-      for (const result of dataItemResults) {
-        if (result.length > 0) {
-          return true;
-        }
-      }
-      return false;
-    });
   }
 
   private newDataItemToDbInsert({
@@ -704,18 +714,34 @@ export class PostgresDatabase implements Database {
         .del()
         .returning("*");
 
-      const dbInserts: RePackDataItemDbInsert[] = deletedDataItems.map(
-        ({ plan_id: _pi, planned_date: _pd, ...restOfDataItem }) => ({
-          ...restOfDataItem,
-          failed_bundles: [
-            ...(restOfDataItem.failed_bundles
-              ? restOfDataItem.failed_bundles.split(",")
-              : []),
-            failedBundleId,
-          ].join(","),
-        })
-      );
-
+      // For any data items over the retry limit, we will move them to failed data items
+      const dbInserts: RePackDataItemDbInsert[] = [];
+      for (const {
+        failed_bundles,
+        plan_id,
+        planned_date,
+        ...restOfDataItem
+      } of deletedDataItems) {
+        const failedBundles = failed_bundles ? failed_bundles.split(",") : [];
+        failedBundles.push(failedBundleId);
+        if (failedBundles.length >= retryLimitForFailedDataItems) {
+          const failedDbInsert: FailedDataItemDBInsert = {
+            ...restOfDataItem,
+            failed_reason: "too_many_failures",
+            plan_id,
+            planned_date,
+            failed_bundles: failedBundles.join(","),
+          };
+          await knexTransaction(tableNames.failedDataItem).insert(
+            failedDbInsert
+          );
+        } else {
+          dbInserts.push({
+            ...restOfDataItem,
+            failed_bundles: failedBundles.join(","),
+          });
+        }
+      }
       await knexTransaction.batchInsert<
         RePackDataItemDbInsert,
         NewDataItemDBResult
@@ -776,59 +802,34 @@ export class PostgresDatabase implements Database {
     planId: PlanId,
     failedBundleId: TransactionId
   ): Promise<void> {
+    logger.debug("Repacking data items for plan...", {
+      planId,
+      failedBundleId,
+    });
     const plannedDataItems = await this.reader<PlannedDataItemDBResult>(
       tableNames.plannedDataItem
     ).where({ plan_id: planId });
 
-    const newDataItemInserts = plannedDataItems.map(
-      ({ plan_id: _pi, planned_date: _pd, failed_bundles, ...rest }) => {
-        const failedBundlesArray = failed_bundles
-          ? failed_bundles.split(",")
-          : [];
-        failedBundlesArray.push(failedBundleId);
-
-        return {
-          ...rest,
-          failed_bundles: failedBundlesArray.join(","),
-        };
-      }
-    );
-
     const rePackDataItemInsertBatches = [
-      ...generateArrayChunks<RePackDataItemDbInsert>(
-        newDataItemInserts,
+      ...generateArrayChunks<DataItemId>(
+        plannedDataItems.map((pdi) => pdi.data_item_id),
         batchingSize
       ),
     ];
-    const parallelLimit = pLimit(1);
-    const transactionPromises = rePackDataItemInsertBatches.map((batch) =>
-      parallelLimit(() =>
-        // Each batch will insert and delete in its own atomic transaction
-        this.writer.transaction(async (dbTx) => {
-          await dbTx.batchInsert<NewDataItemDBResult>(
-            tableNames.newDataItem,
-            batch
-          );
-          await dbTx(tableNames.plannedDataItem)
-            .whereIn(
-              columnNames.dataItemId,
-              batch.map((b) => b.data_item_id)
-            )
-            .del();
-        })
-      )
-    );
 
-    await Promise.all(transactionPromises);
+    for (const batch of rePackDataItemInsertBatches) {
+      await this.updateDataItemsToBeRePacked(batch, failedBundleId);
+    }
   }
 
   public async getDataItemInfo(dataItemId: string): Promise<
     | {
-        status: "new" | "pending" | "permanent";
+        status: "new" | "pending" | "permanent" | "failed";
         assessedWinstonPrice: Winston;
         bundleId?: string | undefined;
         uploadedTimestamp: number;
         deadlineHeight?: number;
+        failedReason?: DataItemFailedReason;
       }
     | undefined
   > {
@@ -909,6 +910,26 @@ export class PostgresDatabase implements Database {
         deadlineHeight: permanentDataItemDbResult[0].deadline_height
           ? +permanentDataItemDbResult[0].deadline_height
           : undefined,
+      };
+    }
+
+    // Check for a failed data item
+    const failedDataItemDbResult = await this.reader<FailedDataItemDBResult>(
+      tableNames.failedDataItem
+    ).where({ data_item_id: dataItemId });
+    if (failedDataItemDbResult.length > 0) {
+      return {
+        status: "failed",
+        assessedWinstonPrice: W(
+          failedDataItemDbResult[0].assessed_winston_price
+        ),
+        uploadedTimestamp: new Date(
+          failedDataItemDbResult[0].uploaded_date
+        ).getTime(),
+        deadlineHeight: failedDataItemDbResult[0].deadline_height
+          ? +failedDataItemDbResult[0].deadline_height
+          : undefined,
+        failedReason: failedDataItemDbResult[0].failed_reason,
       };
     }
 
@@ -1189,20 +1210,35 @@ export class PostgresDatabase implements Database {
       .forUpdate();
   }
 
-  /** DEBUG tool for deleting data items that have had a catastrophic failure (e.g: deleted from S3)  */
-  public async deletePlannedDataItem(dataItemId: string): Promise<void> {
-    this.log.debug("Deleting planned data item...", {
+  public async updatePlannedDataItemAsFailed({
+    dataItemId,
+    failedReason,
+  }: {
+    dataItemId: DataItemId;
+    failedReason: DataItemFailedReason;
+  }): Promise<void> {
+    this.log.warn("Updating planned data item as failed...", {
       dataItemId,
+      failedReason,
     });
 
-    const dataItem = await this.writer<PlannedDataItemDBResult>(
-      tableNames.plannedDataItem
-    )
-      .where({ data_item_id: dataItemId })
-      .del()
-      .returning("*");
+    await this.writer.transaction(async (knexTransaction) => {
+      const plannedDataItem = await knexTransaction<PlannedDataItemDBResult>(
+        tableNames.plannedDataItem
+      )
+        .where({ data_item_id: dataItemId })
+        .del()
+        .returning("*");
 
-    logger.info("Deleted planned data item database info", { dataItem });
+      const dbInsert: FailedDataItemDBInsert = {
+        ...plannedDataItem[0],
+        failed_reason: failedReason,
+      };
+
+      await knexTransaction(
+        tableNames.failedDataItem
+      ).insert<FailedDataItemDBInsert>(dbInsert);
+    });
   }
 }
 

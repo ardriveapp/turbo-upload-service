@@ -15,6 +15,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 import {
+  DataItemFailedReason,
   FinishedMultiPartUpload,
   InFlightMultiPartUpload,
   InsertNewBundleParams,
@@ -27,7 +28,12 @@ import {
   PostedNewDataItem,
   SeededBundle,
 } from "../../types/dbTypes";
-import { TransactionId, UploadId, Winston } from "../../types/types";
+import {
+  DataItemId,
+  TransactionId,
+  UploadId,
+  Winston,
+} from "../../types/types";
 
 // TODO: this could be an interface since no functions have a default implementation
 export interface Database {
@@ -125,11 +131,12 @@ export interface Database {
   /** Gets latest status of a data item from the database */
   getDataItemInfo(dataItemId: TransactionId): Promise<
     | {
-        status: "new" | "pending" | "permanent";
+        status: "new" | "pending" | "permanent" | "failed";
         assessedWinstonPrice: Winston;
         bundleId?: TransactionId;
         uploadedTimestamp: number;
         deadlineHeight?: number;
+        failedReason?: DataItemFailedReason;
       }
     | undefined
   >;
@@ -176,8 +183,10 @@ export interface Database {
     uploadId: UploadId
   ): Promise<void>;
 
-  /** TODO: create failed_data_item table instead, remove this */
-  deletePlannedDataItem(dataItemId: string): Promise<void>;
+  updatePlannedDataItemAsFailed(params: {
+    dataItemId: DataItemId;
+    failedReason: DataItemFailedReason;
+  }): Promise<void>;
 }
 
 export type UpdateDataItemsToPermanentParams = {

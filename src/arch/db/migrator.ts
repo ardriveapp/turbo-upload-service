@@ -16,7 +16,11 @@
  */
 import { Knex } from "knex";
 
-import { defaultPremiumFeatureType, maxSignatureLength } from "../../constants";
+import {
+  defaultPremiumFeatureType,
+  failedBundleCSVColumnLength,
+  maxSignatureLength,
+} from "../../constants";
 import globalLogger from "../../logger";
 import { columnNames, tableNames } from "./dbConstants";
 
@@ -453,6 +457,111 @@ export class DeadlineHeightMigrator extends Migrator {
           tableNames.permanentDataItem,
           (table) => {
             table.dropColumn(columnNames.deadlineHeight);
+          }
+        );
+      },
+    });
+  }
+}
+
+export class FailedDataItemMigrator extends Migrator {
+  constructor(private readonly knex: Knex) {
+    super();
+  }
+
+  public migrate() {
+    return this.operate({
+      name: "migrate to failed data item",
+      operation: async () => {
+        await this.knex.schema.createTableLike(
+          tableNames.failedDataItem,
+          tableNames.plannedDataItem,
+          async (table) => {
+            table
+              .timestamp(columnNames.failedDate)
+              .notNullable()
+              .defaultTo(this.knex.fn.now())
+              .index();
+            table.string(columnNames.failedReason).notNullable().index();
+          }
+        );
+      },
+    });
+  }
+
+  public rollback() {
+    return this.operate({
+      name: "rollback from failed data item",
+      operation: async () => {
+        await this.knex.schema.dropTableIfExists(tableNames.failedDataItem);
+      },
+    });
+  }
+}
+
+export class BumpFailedBundlesCharLimitMigrator extends Migrator {
+  constructor(private readonly knex: Knex) {
+    super();
+  }
+
+  public migrate() {
+    return this.operate({
+      name: "bump failed bundles char limit",
+      operation: async () => {
+        await this.knex.schema.alterTable(tableNames.newDataItem, (table) => {
+          table
+            .string(columnNames.failedBundles, failedBundleCSVColumnLength)
+            .nullable()
+            .alter();
+        });
+        await this.knex.schema.alterTable(
+          tableNames.plannedDataItem,
+          (table) => {
+            table
+              .string(columnNames.failedBundles, failedBundleCSVColumnLength)
+              .nullable()
+              .alter();
+          }
+        );
+        await this.knex.schema.alterTable(
+          tableNames.failedDataItem,
+          (table) => {
+            table
+              .string(columnNames.failedBundles, failedBundleCSVColumnLength)
+              .nullable()
+              .alter();
+          }
+        );
+        await this.knex.schema.alterTable(
+          tableNames.permanentDataItem,
+          (table) => {
+            table
+              .string(columnNames.failedBundles, failedBundleCSVColumnLength)
+              .nullable()
+              .alter();
+          }
+        );
+      },
+    });
+  }
+
+  public rollback() {
+    return this.operate({
+      name: "rollback from bump failed bundles char limit",
+      operation: async () => {
+        await this.knex.schema.alterTable(tableNames.newDataItem, (table) => {
+          table.string(columnNames.failedBundles).nullable().alter();
+        });
+        await this.knex.schema.alterTable(
+          tableNames.plannedDataItem,
+          (table) => {
+            table.string(columnNames.failedBundles).nullable().alter();
+          }
+        );
+        await this.knex.schema.alterTable(
+          tableNames.permanentDataItem,
+          (table) => {
+            table.string(columnNames.failedBundles).nullable().alter();
           }
         );
       },

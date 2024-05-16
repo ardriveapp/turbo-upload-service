@@ -104,6 +104,10 @@ export const txConfirmationThreshold = 1;
 
 export const dropBundleTxThresholdNumberOfBlocks = 50;
 export const rePostDataItemThresholdNumberOfBlocks = 125;
+export const retryLimitForFailedDataItems = 10;
+
+const txIdLength = 43;
+export const failedBundleCSVColumnLength = (txIdLength + 1) * 20; // Allow up to 20 failed bundles in the schema
 
 export const defaultMaxConcurrentChunks = 32;
 

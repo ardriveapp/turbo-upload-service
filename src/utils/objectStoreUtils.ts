@@ -35,17 +35,22 @@ const multiPartPrefix = "multipart-uploads";
 const bundlePayloadPrefix = "bundle-payload";
 const bundleTxPrefix = "bundle";
 
+let s3ObjectStore: S3ObjectStore | undefined;
+
 export function getS3ObjectStore(): ObjectStore {
   const useMultiRegionAccessPoint =
     process.env.NODE_ENV === "dev" &&
     !!process.env.DATA_ITEM_MULTI_REGION_ENDPOINT;
-  return new S3ObjectStore({
-    bucketName: useMultiRegionAccessPoint
-      ? `${process.env.DATA_ITEM_MULTI_REGION_ENDPOINT}`
-      : // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-        process.env.DATA_ITEM_BUCKET!, // Blow up if we can't fall back to this
-    backupBucketName: process.env.BACKUP_DATA_ITEM_BUCKET,
-  });
+  if (!s3ObjectStore) {
+    s3ObjectStore = new S3ObjectStore({
+      bucketName: useMultiRegionAccessPoint
+        ? `${process.env.DATA_ITEM_MULTI_REGION_ENDPOINT}`
+        : // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+          process.env.DATA_ITEM_BUCKET!, // Blow up if we can't fall back to this
+      backupBucketName: process.env.BACKUP_DATA_ITEM_BUCKET,
+    });
+  }
+  return s3ObjectStore;
 }
 
 export function putDataItemRaw(

@@ -33,7 +33,10 @@ export type Signature = Buffer;
 export type DataStart = number;
 export type BlockHeight = number;
 
-export type FailedReason = "not_found" | "failed_to_post";
+export type BundleFailedReason = "not_found" | "failed_to_post";
+export type DataItemFailedReason =
+  | "missing_from_object_store"
+  | "too_many_failures";
 
 export type ContentType = string;
 
@@ -63,6 +66,11 @@ export interface PermanentDataItem extends Omit<PlannedDataItem, "signature"> {
   bundleId: TransactionId;
   permanentDate: Timestamp;
   blockHeight: BlockHeight;
+}
+
+export interface FailedDataItem extends PlannedDataItem {
+  failedDate: Timestamp;
+  failedReason: DataItemFailedReason;
 }
 
 export interface BundlePlan {
@@ -99,7 +107,7 @@ export interface SeededBundle extends PostedBundle {
 
 export interface FailedBundle extends SeededBundle {
   failedDate: Timestamp;
-  failedReason?: FailedReason;
+  failedReason?: BundleFailedReason;
 }
 
 export interface PermanentBundle extends SeededBundle {
@@ -193,6 +201,14 @@ export interface PermanentDataItemDBInsert
 
 export interface PermanentDataItemDBResult extends PermanentDataItemDBInsert {
   permanent_date: string;
+}
+
+export interface FailedDataItemDBInsert extends PlannedDataItemDBResult {
+  failed_reason: DataItemFailedReason;
+}
+
+export interface FailedDataItemDBResult extends FailedDataItemDBInsert {
+  failed_date: string;
 }
 
 export interface BundlePlanDBInsert {

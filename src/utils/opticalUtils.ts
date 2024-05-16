@@ -118,10 +118,19 @@ export async function getNestedDataItemHeaders({
         bdiDataItemId,
       });
 
-      // Process it as a bundle and get all the data item info
-      const parsedDataItemHeaders = (await processStream(
-        dataItemReadable
-      )) as ParsedDataItemHeader[];
+      let parsedDataItemHeaders: ParsedDataItemHeader[] = [];
+      try {
+        // Process it as a bundle and get all the data item info
+        parsedDataItemHeaders = (await processStream(
+          dataItemReadable
+        )) as ParsedDataItemHeader[];
+      } catch (error) {
+        logger.error("Error processing BDI stream.", {
+          bdiDataItemId,
+          error,
+        });
+        return [];
+      }
 
       logger.debug("Finished processing BDI stream.", {
         bdiDataItemId,

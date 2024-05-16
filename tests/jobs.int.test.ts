@@ -198,7 +198,7 @@ describe("Post bundle job handler function integrated with PostgresDatabase clas
     await postBundleHandler(planId, {
       objectStore,
       database: db,
-      gateway,
+      arweaveGateway: gateway,
       paymentService,
     });
 
@@ -238,7 +238,7 @@ describe("Post bundle job handler function integrated with PostgresDatabase clas
     await postBundleHandler(planId, {
       objectStore,
       database: db,
-      gateway,
+      arweaveGateway: gateway,
       paymentService,
     });
 
@@ -276,7 +276,7 @@ describe("Post bundle job handler function integrated with PostgresDatabase clas
     await postBundleHandler(planId, {
       objectStore,
       database: db,
-      gateway: gateway,
+      arweaveGateway: gateway,
       paymentService,
     });
 
@@ -317,7 +317,7 @@ describe("Post bundle job handler function integrated with PostgresDatabase clas
       promiseToError: postBundleHandler(planId, {
         objectStore,
         database: db,
-        gateway: gateway,
+        arweaveGateway: gateway,
         paymentService,
       }),
       errorMessage:

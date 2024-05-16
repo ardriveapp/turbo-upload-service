@@ -29,10 +29,16 @@ export async function statusHandler(ctx: KoaContext, next: Next) {
     }
 
     ctx.body = {
-      status: info.status === "permanent" ? "FINALIZED" : "CONFIRMED",
+      status:
+        info.status === "permanent"
+          ? "FINALIZED"
+          : info.status === "failed"
+          ? "FAILED"
+          : "CONFIRMED",
       bundleId: info.bundleId,
       info: info.status,
       winc: info.assessedWinstonPrice,
+      reason: info.failedReason,
     };
   } catch (error) {
     logger.error(`Error getting data item status: ${error}`);

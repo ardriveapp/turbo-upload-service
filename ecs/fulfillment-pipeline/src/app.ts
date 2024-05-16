@@ -17,6 +17,7 @@
 import { Message } from "@aws-sdk/client-sqs";
 import { Consumer } from "sqs-consumer";
 
+import { ArweaveGateway } from "../../../src/arch/arweaveGateway";
 import { PostgresDatabase } from "../../../src/arch/db/postgres";
 import { TurboPaymentService } from "../../../src/arch/payment";
 import { migrateOnStartup } from "../../../src/constants";
@@ -73,6 +74,7 @@ const uploadDatabase = new PostgresDatabase({
 });
 const objectStore = getS3ObjectStore();
 const paymentService = new TurboPaymentService();
+const arweaveGateway = new ArweaveGateway();
 
 // Set up queue handler configurations for jobs based on a planId
 export const queues: QueueHandlerConfig[] = [
@@ -115,6 +117,7 @@ const consumers: ConsumerQueue[] = queues.map((queue) => ({
     database: uploadDatabase,
     objectStore,
     paymentService,
+    arweaveGateway,
   }),
   ...queue,
 }));
@@ -306,6 +309,7 @@ if (process.env.PLAN_BUNDLE_ENABLED === "true") {
   planBundleJobScheduler = new PlanBundleJobScheduler({
     intervalMs: +(process.env.PLAN_BUNDLE_INTERVAL_MS ?? 60_000),
     logger: globalLogger,
+    database: uploadDatabase,
   });
   setUpAndStartJobScheduler(planBundleJobScheduler);
 }
@@ -313,6 +317,7 @@ if (process.env.VERIFY_BUNDLE_ENABLED === "true") {
   verifyBundleJobScheduler = new VerifyBundleJobScheduler({
     intervalMs: +(process.env.VERIFY_BUNDLE_INTERVAL_MS ?? 60_000),
     logger: globalLogger,
+    database: uploadDatabase,
   });
   setUpAndStartJobScheduler(verifyBundleJobScheduler);
 }

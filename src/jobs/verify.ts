@@ -41,14 +41,14 @@ import { getBundleTx, getS3ObjectStore } from "../utils/objectStoreUtils";
 interface VerifyBundleJobArch {
   database?: Database;
   objectStore?: ObjectStore;
-  gateway?: Gateway;
+  arweaveGateway?: Gateway;
   logger?: winston.Logger;
   batchSize?: number;
 }
 
 async function hasBundleBeenPostedLongerThanTheDroppedThreshold(
   objectStore: ObjectStore,
-  gateway: Gateway,
+  arweaveGateway: Gateway,
   bundleId: TransactionId,
   transactionByteCount?: ByteCount
 ): Promise<boolean> {
@@ -58,11 +58,11 @@ async function hasBundleBeenPostedLongerThanTheDroppedThreshold(
     transactionByteCount
   );
   const txAnchor = bundleTx.last_tx;
-  const blockHeightOfTxAnchor = await gateway.getBlockHeightForTxAnchor(
+  const blockHeightOfTxAnchor = await arweaveGateway.getBlockHeightForTxAnchor(
     txAnchor
   );
 
-  const currentBlockHeight = await gateway.getCurrentBlockHeight();
+  const currentBlockHeight = await arweaveGateway.getCurrentBlockHeight();
 
   return (
     currentBlockHeight - blockHeightOfTxAnchor >
@@ -73,7 +73,7 @@ async function hasBundleBeenPostedLongerThanTheDroppedThreshold(
 export async function verifyBundleHandler({
   database = new PostgresDatabase(),
   objectStore = getS3ObjectStore(),
-  gateway = new ArweaveGateway({ endpoint: gatewayUrl }),
+  arweaveGateway = new ArweaveGateway({ endpoint: gatewayUrl }),
   logger = defaultLogger.child({ job: "verify-bundle-job" }),
   batchSize = batchingSize,
 }: VerifyBundleJobArch): Promise<void> {
@@ -91,13 +91,15 @@ export async function verifyBundleHandler({
     const { planId, bundleId, transactionByteCount, payloadByteCount } = bundle;
 
     try {
-      const transactionStatus = await gateway.getTransactionStatus(bundleId);
+      const transactionStatus = await arweaveGateway.getTransactionStatus(
+        bundleId
+      );
 
       if (transactionStatus.status !== "found") {
         if (
           await hasBundleBeenPostedLongerThanTheDroppedThreshold(
             objectStore,
-            gateway,
+            arweaveGateway,
             bundleId,
             transactionByteCount
           )
@@ -109,7 +111,7 @@ export async function verifyBundleHandler({
           await database.updateSeededBundleToDropped(planId, bundleId);
         }
       } else {
-        // We found the bundle transaction from the gateway
+        // We found the bundle transaction from the arweaveGateway
         const { number_of_confirmations, block_height } =
           transactionStatus.transactionStatus;
 
@@ -130,7 +132,7 @@ export async function verifyBundleHandler({
             parallelLimit(() =>
               checkGQLForBlocksThenUpdateDataItemBatch(
                 batch,
-                gateway,
+                arweaveGateway,
                 database,
                 bundleId,
                 block_height,
@@ -208,7 +210,7 @@ export async function handler(eventPayload?: unknown) {
 
 async function checkGQLForBlocksThenUpdateDataItemBatch(
   dataItemBatch: PlannedDataItem[],
-  gateway: Gateway,
+  arweaveGateway: Gateway,
   database: Database,
   bundleId: TransactionId,
   block_height: number,
@@ -217,7 +219,7 @@ async function checkGQLForBlocksThenUpdateDataItemBatch(
   logger: winston.Logger,
   planId: string
 ) {
-  const dataItemGQLResults = await gateway.getDataItemsFromGQL(
+  const dataItemGQLResults = await arweaveGateway.getDataItemsFromGQL(
     dataItemBatch.map(({ dataItemId }) => dataItemId)
   );
 

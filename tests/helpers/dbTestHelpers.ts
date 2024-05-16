@@ -20,6 +20,8 @@ import { Knex } from "knex";
 import { columnNames, tableNames } from "../../src/arch/db/dbConstants";
 import { PostgresDatabase } from "../../src/arch/db/postgres";
 import {
+  DataItemFailedReason,
+  FailedDataItemDBInsert,
   KnexRawResult,
   NewBundleDBInsert,
   NewDataItemDBInsert,
@@ -38,6 +40,7 @@ import {
   stubDataItemBufferSignature,
   stubDates,
   stubOwnerAddress,
+  stubPlanId,
   stubWinstonPrice,
 } from "../stubs";
 
@@ -83,9 +86,23 @@ export function stubPlannedDataItemInsert({
 } {
   return {
     ...stubNewDataItemInsert({ dataItemId, signature, failedBundles }),
-    plan_id: planId,
+    plan_id: planId ?? stubPlanId,
     uploaded_date: stubDates.earliestDate,
     planned_date: plannedDate,
+  };
+}
+
+function stubFailedDataItemInsert({
+  failedDate = stubDates.earliestDate,
+  failedReason = "too_many_failures",
+  ...params
+}: InsertStubFailedDataItemParams): FailedDataItemDBInsert & {
+  failed_date: string | undefined;
+} {
+  return {
+    ...stubPlannedDataItemInsert(params),
+    failed_date: failedDate,
+    failed_reason: failedReason,
   };
 }
 
@@ -106,7 +123,7 @@ function stubPermanentDataItemInsert({
     failed_bundles: "",
     content_type: "text/plain",
     premium_feature_type: "test",
-    plan_id: planId,
+    plan_id: planId ?? stubPlanId,
     planned_date: stubDates.earliestDate,
     bundle_id: bundleId,
     block_height: stubBlockHeight.toString(),
@@ -187,6 +204,14 @@ export class DbTestHelper {
   ): Promise<void> {
     return this.knex(tableNames.plannedDataItem).insert(
       stubPlannedDataItemInsert(insertParams)
+    );
+  }
+
+  public async insertStubFailedDataItem(
+    insertParams: InsertStubFailedDataItemParams
+  ): Promise<void> {
+    return this.knex(tableNames.failedDataItem).insert(
+      stubFailedDataItemInsert(insertParams)
     );
   }
 
@@ -399,8 +424,14 @@ interface InsertStubNewDataItemParams {
 
 interface InsertStubPlannedDataItemParams
   extends Omit<InsertStubNewDataItemParams, "uploadedDate"> {
-  planId: PlanId;
+  planId?: PlanId;
   plannedDate?: string;
+}
+
+interface InsertStubFailedDataItemParams
+  extends Omit<InsertStubPlannedDataItemParams, "plannedDate"> {
+  failedDate?: string;
+  failedReason?: DataItemFailedReason;
 }
 
 interface InsertStubPermanentDataItemParams

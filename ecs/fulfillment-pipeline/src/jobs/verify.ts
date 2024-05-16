@@ -16,26 +16,34 @@
  */
 import winston from "winston";
 
+import { Database } from "../../../../src/arch/db/database";
 import { verifyBundleHandler } from "../../../../src/jobs/verify";
 import { JobScheduler } from "../utils/jobScheduler";
 
 export class VerifyBundleJobScheduler extends JobScheduler {
+  private database: Database;
   constructor({
     intervalMs = 60_000,
     logger,
+    database,
   }: {
     intervalMs: number;
     logger: winston.Logger;
+    database: Database;
   }) {
     super({
       intervalMs,
       schedulerName: "verify-bundle",
       logger,
     });
+    this.database = database;
   }
 
   async processJob(): Promise<void> {
-    await verifyBundleHandler({ logger: this.logger }).catch((error) => {
+    await verifyBundleHandler({
+      database: this.database,
+      logger: this.logger,
+    }).catch((error) => {
       this.logger.error("Error verifying bundle", error);
     });
   }
