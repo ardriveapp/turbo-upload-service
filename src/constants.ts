@@ -211,7 +211,9 @@ export const batchingSize = 100;
 export const payloadDataStartS3MetaDataTag = "payload-data-start";
 export const payloadContentTypeS3MetaDataTag = "payload-content-type";
 
-export const defaultOverdueThresholdMs = 5 * 60 * 1000; // 5 minutes
+export const defaultOverdueThresholdMs = +(
+  (process.env.OVERDUE_DATA_ITEM_THRESHOLD_MS ?? 5 * 60 * 1000) // 5 minutes
+);
 
 export const blocklistedAddresses =
   process.env.BLOCKLISTED_ADDRESSES?.split(",") ?? [];
