@@ -65,9 +65,10 @@ export async function postBundleHandler(
 
   try {
     // post bundle, throw error on failure
-    const transactionPostResponseData = await arweaveGateway.postBundleTx(
-      bundleTx
-    );
+    const [transactionPostResponseData] = await Promise.all([
+      arweaveGateway.postBundleTx(bundleTx),
+      arweaveGateway.postBundleTxToAdminQueue(bundleTx.id),
+    ]);
 
     // fetch AR rate - but don't throw on failure
     const usdToArRate = await paymentService
