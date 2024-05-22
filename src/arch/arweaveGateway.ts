@@ -69,6 +69,7 @@ export interface Gateway {
       bundledIn?: TransactionId;
     }[]
   >;
+  postBundleTxToAdminQueue(bundleTxId: TransactionId): Promise<void>;
 }
 
 export class ArweaveGateway implements Gateway {
@@ -381,5 +382,34 @@ export class ArweaveGateway implements Gateway {
       this.axiosInstance.get<string>(`${this.endpoint}wallet/${wallet}/balance`)
     );
     return new Winston(res.data);
+  }
+
+  /** Optionally posts a prepared bundle to the ar.io gateway's priority bundle queue if an admin key exists */
+  public async postBundleTxToAdminQueue(
+    bundleTxId: TransactionId
+  ): Promise<void> {
+    if (process.env.AR_IO_ADMIN_KEY !== undefined) {
+      logger.debug("Posting bundle to admin queue...", { bundleTxId });
+      try {
+        await this.retryStrategy.sendRequest(() =>
+          this.axiosInstance.post(
+            `${this.endpoint.href}ar-io/admin/queue-bundle`,
+            {
+              id: bundleTxId,
+            },
+            {
+              headers: {
+                Authorization: `Bearer ${process.env.AR_IO_ADMIN_KEY}`,
+              },
+            }
+          )
+        );
+      } catch (error) {
+        logger.error("Error posting bundle to admin queue", {
+          bundleTxId,
+          error: error instanceof Error ? error.message : "Unknown error",
+        });
+      }
+    }
   }
 }
