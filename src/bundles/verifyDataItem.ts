@@ -86,15 +86,6 @@ export const signatureTypeInfo: Record<number, SigInfo> = {
   },
 };
 
-export const allowListedSignatureTypes = process.env
-  .ALLOW_LISTED_SIGNATURE_TYPES
-  ? new Set(process.env.ALLOW_LISTED_SIGNATURE_TYPES.split(",").map((s) => +s))
-  : new Set([
-      SignatureConfig.SOLANA,
-      SignatureConfig.ED25519,
-      SignatureConfig.ETHEREUM,
-    ]);
-
 export const sigNameToSigInfo: Record<string, SigInfo> = Object.values(
   signatureTypeInfo
 ).reduce((acc, info) => {

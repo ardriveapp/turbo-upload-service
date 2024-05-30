@@ -45,6 +45,11 @@ export class MetricRegistry {
     help: "Count of failed API calls to the USD/AR endpoint of the payment service",
   });
 
+  public static localCacheDataItemHit = new promClient.Counter({
+    name: "local_cache_data_item_hit_count",
+    help: "Count of data items that were found already in the local cache",
+  });
+
   private constructor() {
     this.registry = new promClient.Registry();
 
@@ -53,6 +58,7 @@ export class MetricRegistry {
     this.registry.registerMetric(MetricRegistry.unbundleBdiEnqueueFail);
     this.registry.registerMetric(MetricRegistry.refundBalanceFail);
     this.registry.registerMetric(MetricRegistry.usdToArRateFail);
+    this.registry.registerMetric(MetricRegistry.localCacheDataItemHit);
   }
 
   public static getInstance(): MetricRegistry {

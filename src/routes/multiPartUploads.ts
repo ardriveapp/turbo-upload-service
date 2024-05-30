@@ -1020,7 +1020,11 @@ export async function finalizeMPUWithDataItemInfo({
         dataItemId: dataItemInfo.dataItemId,
         signatureType: dataItemInfo.signatureType,
       });
-  fnLogger = fnLogger.child({ paymentResponse });
+  fnLogger = fnLogger.child({
+    paymentResponse,
+    byteCount: dataItemInfo.byteCount,
+    ownerAddress: dataItemInfo.ownerPublicAddress,
+  });
   fnLogger.debug("Finished reserving balance for upload.");
 
   if (paymentResponse.isReserved) {
@@ -1029,9 +1033,7 @@ export async function finalizeMPUWithDataItemInfo({
       assessedWinstonPrice: paymentResponse.costOfDataItem,
     });
   } else {
-    fnLogger.error(`Failing multipart upload due to insufficient balance.`, {
-      assessedWinstonPrice: paymentResponse.costOfDataItem,
-    });
+    fnLogger.error(`Failing multipart upload due to insufficient balance.`);
     void removeDataItem(objectStore, dataItemInfo.dataItemId); // don't need to await this - just invoke and move on
     await database.failFinishedMultiPartUpload({
       uploadId,

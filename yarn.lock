@@ -1125,6 +1125,16 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@aws-sdk/util-retry@npm:^3.374.0":
+  version: 3.374.0
+  resolution: "@aws-sdk/util-retry@npm:3.374.0"
+  dependencies:
+    "@smithy/util-retry": ^1.0.3
+    tslib: ^2.5.0
+  checksum: 813d94a3187a3e6c457e8c8088c71019d59e891fb87aefeca3cb720ce8b3e355b27f61ee66e29f859fcd1d052eea08218f6d94d994388d1d2fc48e42628b39cb
+  languageName: node
+  linkType: hard
+
 "@aws-sdk/util-uri-escape@npm:3.310.0":
   version: 3.310.0
   resolution: "@aws-sdk/util-uri-escape@npm:3.310.0"
@@ -4361,6 +4371,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@smithy/service-error-classification@npm:^1.1.0":
+  version: 1.1.0
+  resolution: "@smithy/service-error-classification@npm:1.1.0"
+  checksum: 5b8e6f47580630d020f3272ac4905038fed91476991352ebe97e145098f48ab3ac9001512b2bc3b8fb98b7753daf30467f357e9069975f09b137abf0aef54677
+  languageName: node
+  linkType: hard
+
 "@smithy/shared-ini-file-loader@npm:^1.0.1, @smithy/shared-ini-file-loader@npm:^1.0.2":
   version: 1.0.2
   resolution: "@smithy/shared-ini-file-loader@npm:1.0.2"
@@ -4581,6 +4598,16 @@ __metadata:
     "@smithy/service-error-classification": ^1.0.3
     tslib: ^2.5.0
   checksum: b9a7e464d67b141a175f126b2a0fc5c91de387eb483b432db4769cee43bbbb546e4142711f293c3a04c82b6d56b676b7a2f7f7150e2c736a10d8e5df1ed63c04
+  languageName: node
+  linkType: hard
+
+"@smithy/util-retry@npm:^1.0.3":
+  version: 1.1.0
+  resolution: "@smithy/util-retry@npm:1.1.0"
+  dependencies:
+    "@smithy/service-error-classification": ^1.1.0
+    tslib: ^2.5.0
+  checksum: 69cf879e95b22fa4a1baf78cb1f42d63236d1554aa7ad39eee7ea8b5fd69ee69e91fc78891a17a4d83743bca9c1e0fcc2721e3f0c976dca4fb5bf3e0026845d0
   languageName: node
   linkType: hard
 
@@ -6059,6 +6086,7 @@ __metadata:
     "@aws-sdk/node-http-handler": ^3.360.0
     "@aws-sdk/signature-v4-crt": ^3.451.0
     "@aws-sdk/types": ^3.357.0
+    "@aws-sdk/util-retry": ^3.374.0
     "@ethersproject/signing-key": ^5.7.0
     "@istanbuljs/nyc-config-typescript": ^1.0.2
     "@koa/cors": ^5.0.0
