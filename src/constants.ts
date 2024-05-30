@@ -222,3 +222,8 @@ export const blocklistedAddresses =
 export const turboLocalJwk = process.env.TURBO_JWK_FILE
   ? JSON.parse(fs.readFileSync(process.env.TURBO_JWK_FILE, "utf-8"))
   : undefined;
+
+export const allowListedSignatureTypes = process.env
+  .ALLOW_LISTED_SIGNATURE_TYPES
+  ? new Set(process.env.ALLOW_LISTED_SIGNATURE_TYPES.split(",").map((s) => +s))
+  : new Set([]);

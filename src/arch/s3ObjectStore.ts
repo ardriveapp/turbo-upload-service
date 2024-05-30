@@ -31,6 +31,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
 import { NodeHttpHandler } from "@aws-sdk/node-http-handler";
+import { ConfiguredRetryStrategy } from "@aws-sdk/util-retry";
 import { AbortController } from "@smithy/abort-controller";
 import * as https from "https";
 import { Readable } from "multistream";
@@ -105,6 +106,12 @@ export const handleS3MultipartUploadError = (
 // Build a map of bucket regions to their respective clients based on env vars
 const endpoint = process.env.AWS_ENDPOINT;
 const forcePathStyle = process.env.S3_FORCE_PATH_STYLE;
+const maxRetryAttempts = +(process.env.S3_RETRY_MAX_ATTEMPTS ?? 5);
+const retryBaseDelayMs = +(process.env.S3_RETRY_BASE_DELAY_MS ?? 100);
+const defaultRetryStrategy = new ConfiguredRetryStrategy(
+  maxRetryAttempts,
+  (attempt: number) => retryBaseDelayMs * 2 ** attempt // exponential delay
+);
 type BucketRegion = string;
 const regionsToClients: Record<BucketRegion, S3Client> = {};
 
@@ -121,6 +128,7 @@ const regionsToClients: Record<BucketRegion, S3Client> = {};
           requestTimeout: 0,
         }),
         region,
+        retryStrategy: defaultRetryStrategy,
         ...(endpoint
           ? {
               endpoint,
@@ -161,6 +169,7 @@ const defaultS3Client = new S3Client({
     }),
     requestTimeout: 0,
   }),
+  retryStrategy: defaultRetryStrategy,
   region: process.env.AWS_REGION ?? "us-east-1",
   ...(endpoint
     ? {

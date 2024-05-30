@@ -159,7 +159,8 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
   if (dataItemIdCache.has(dataItemId)) {
     // create the error for consistent responses
     const error = new DataItemExistsWarning(dataItemId);
-    logger.debug("Data item already uploaded to this service instance.");
+    logger.warn("Data item already uploaded to this service instance.");
+    MetricRegistry.localCacheDataItemHit.inc();
     ctx.status = 202;
     ctx.res.statusMessage = error.message;
     return next();
@@ -179,23 +180,23 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
         signatureType,
       });
     } catch (error) {
+      removeFromDataItemCache(dataItemId);
       errorResponse(ctx, {
         status: 503,
         errorMessage: `Data Item: ${dataItemId}. Upload Service is Unavailable. Payment Service is unreachable`,
       });
-      removeFromDataItemCache(dataItemId);
       return next();
     }
 
     if (checkBalanceResponse.userHasSufficientBalance) {
       logger.debug("User can afford bytes", checkBalanceResponse);
     } else {
+      removeFromDataItemCache(dataItemId);
+
       errorResponse(ctx, {
         status: 402,
         errorMessage: "Insufficient balance",
       });
-
-      removeFromDataItemCache(dataItemId);
       return next();
     }
   }
@@ -235,12 +236,12 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
       (anchor === undefined ? emptyAnchorLength : anchorLength);
     payloadDataStart = tagsStart + 16 + numTagsBytes;
   } catch (error) {
+    removeFromDataItemCache(dataItemId);
     errorResponse(ctx, {
       errorMessage: "Data item parsing error!",
       error,
     });
 
-    removeFromDataItemCache(dataItemId);
     return next();
   }
 
@@ -274,13 +275,13 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
       );
     });
   } catch (error) {
+    removeFromDataItemCache(dataItemId);
     errorResponse(ctx, {
       status: 503,
       errorMessage: `Data Item: ${dataItemId}. Upload Service is Unavailable. Object Store is unreachable`,
       error,
     });
 
-    removeFromDataItemCache(dataItemId);
     return next();
   }
 
@@ -289,23 +290,23 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
   try {
     isValid = await streamingDataItem.isValid();
   } catch (error) {
+    removeFromDataItemCache(dataItemId);
+    void removeDataItem(objectStore, dataItemId); // no need to await - just invoke and forget
     errorResponse(ctx, {
       errorMessage: "Data item parsing error!",
       error,
     });
 
-    removeFromDataItemCache(dataItemId);
-    void removeDataItem(objectStore, dataItemId); // no need to await - just invoke and forget
     return next();
   }
   logger.debug(`Got data item validity.`, { isValid });
   if (!isValid) {
+    removeFromDataItemCache(dataItemId);
+    void removeDataItem(objectStore, dataItemId);
     errorResponse(ctx, {
       errorMessage: "Invalid Data Item!",
     });
-
-    removeFromDataItemCache(dataItemId);
-    return removeDataItem(objectStore, dataItemId);
+    return next();
   }
 
   // NOTE: Safe to get payload size now that payload has been fully consumed
@@ -313,11 +314,11 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
   const totalSize = payloadDataByteCount + payloadDataStart;
 
   if (totalSize > maxSingleDataItemByteCount) {
+    removeFromDataItemCache(dataItemId);
+    void removeDataItem(objectStore, dataItemId);
     errorResponse(ctx, {
       errorMessage: `Data item is too large, this service only accepts data items up to ${maxSingleDataItemByteCount} bytes!`,
     });
-    removeFromDataItemCache(dataItemId);
-    void removeDataItem(objectStore, dataItemId);
     return next();
   }
 
@@ -468,11 +469,6 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
       filterKeysFromObject(signedReceipt, ["public"])
     );
   } catch (error) {
-    errorResponse(ctx, {
-      status: 503,
-      errorMessage: `Data Item: ${dataItemId}. Upload Service is Unavailable. Unable to sign receipt...`,
-      error,
-    });
     if (paymentResponse.costOfDataItem.isGreaterThan(W(0))) {
       await paymentService.refundBalanceForData({
         signatureType,
@@ -486,6 +482,12 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
     }
     removeFromDataItemCache(dataItemId);
     void removeDataItem(objectStore, dataItemId); // don't need to await this - just invoke and move on
+
+    errorResponse(ctx, {
+      status: 503,
+      errorMessage: `Data Item: ${dataItemId}. Upload Service is Unavailable. Unable to sign receipt...`,
+      error,
+    });
     return next();
   }
 
@@ -515,11 +517,7 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
     logger.debug(`DB insert duration: ${durations.dbInsertDuration}ms`);
   } catch (error) {
     logger.debug(`DB insert failed duration: ${Date.now() - dbInsertStart}ms`);
-    errorResponse(ctx, {
-      status: 503,
-      errorMessage: `Data Item: ${dataItemId}. Upload Service is Unavailable.`,
-      error,
-    });
+
     if (paymentResponse.costOfDataItem.isGreaterThan(W(0))) {
       await paymentService.refundBalanceForData({
         nativeAddress,
@@ -534,6 +532,12 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
     // always remove from instance cache
     removeFromDataItemCache(dataItemId);
     await removeDataItem(objectStore, dataItemId);
+
+    errorResponse(ctx, {
+      status: 503,
+      errorMessage: `Data Item: ${dataItemId}. Upload Service is Unavailable.`,
+      error,
+    });
     return next();
   }
 

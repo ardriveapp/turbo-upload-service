@@ -25,7 +25,10 @@ import { PaymentService } from "../../../../src/arch/payment";
 import { getQueueUrl } from "../../../../src/arch/queues";
 import { gatewayUrl } from "../../../../src/constants";
 import { finalizeMultipartUploadWithQueueMessage } from "../../../../src/routes/multiPartUploads";
-import { DataItemExistsWarning } from "../../../../src/utils/errors";
+import {
+  DataItemExistsWarning,
+  InsufficientBalance,
+} from "../../../../src/utils/errors";
 import { getArweaveWallet } from "../../../../src/utils/getArweaveWallet";
 import {
   defaultSQSOptions,
@@ -74,8 +77,9 @@ export function createFinalizeUploadConsumerQueue({
               message,
             });
             return;
+          } else if (error instanceof InsufficientBalance) {
+            return;
           }
-
           throw error;
         }
       },

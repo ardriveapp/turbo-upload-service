@@ -18,13 +18,11 @@ import { AxiosInstance } from "axios";
 import { sign } from "jsonwebtoken";
 import winston from "winston";
 
-import {
-  allowListedSignatureTypes,
-  signatureTypeInfo,
-} from "../bundles/verifyDataItem";
+import { signatureTypeInfo } from "../bundles/verifyDataItem";
 import {
   allowArFSData,
   allowListPublicAddresses,
+  allowListedSignatureTypes,
   freeUploadLimitBytes,
   testPrivateRouteSecret,
 } from "../constants";
