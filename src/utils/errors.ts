@@ -120,3 +120,10 @@ export class DataItemsStillPendingWarning extends Error {
     this.name = "DataItemsStillPendingWarning";
   }
 }
+
+export class BundleAlreadySeededWarning extends Error {
+  constructor(bundleId: string) {
+    super(`Bundle with ID "${bundleId}" has already been seeded!`);
+    this.name = "BundleAlreadySeededWarning";
+  }
+}

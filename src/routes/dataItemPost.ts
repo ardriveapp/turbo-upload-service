@@ -85,8 +85,13 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
   };
 
   const requestStartTime = Date.now();
-  const { objectStore, paymentService, arweaveGateway, getArweaveWallet } =
-    ctx.state;
+  const {
+    objectStore,
+    paymentService,
+    arweaveGateway,
+    getArweaveWallet,
+    database,
+  } = ctx.state;
 
   // Validate the content-length header
   const contentLength = ctx.req.headers?.["content-length"];
@@ -291,7 +296,7 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
     isValid = await streamingDataItem.isValid();
   } catch (error) {
     removeFromDataItemCache(dataItemId);
-    void removeDataItem(objectStore, dataItemId); // no need to await - just invoke and forget
+    void removeDataItem(objectStore, dataItemId, database); // no need to await - just invoke and forget
     errorResponse(ctx, {
       errorMessage: "Data item parsing error!",
       error,
@@ -302,7 +307,7 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
   logger.debug(`Got data item validity.`, { isValid });
   if (!isValid) {
     removeFromDataItemCache(dataItemId);
-    void removeDataItem(objectStore, dataItemId);
+    void removeDataItem(objectStore, dataItemId, database);
     errorResponse(ctx, {
       errorMessage: "Invalid Data Item!",
     });
@@ -315,7 +320,7 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
 
   if (totalSize > maxSingleDataItemByteCount) {
     removeFromDataItemCache(dataItemId);
-    void removeDataItem(objectStore, dataItemId);
+    void removeDataItem(objectStore, dataItemId, database);
     errorResponse(ctx, {
       errorMessage: `Data item is too large, this service only accepts data items up to ${maxSingleDataItemByteCount} bytes!`,
     });
@@ -332,7 +337,7 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
     });
 
     removeFromDataItemCache(dataItemId);
-    void removeDataItem(objectStore, dataItemId); // don't need to await this - just invoke and move on
+    void removeDataItem(objectStore, dataItemId, database); // don't need to await this - just invoke and move on
     return next();
   }
 
@@ -481,7 +486,7 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
       });
     }
     removeFromDataItemCache(dataItemId);
-    void removeDataItem(objectStore, dataItemId); // don't need to await this - just invoke and move on
+    void removeDataItem(objectStore, dataItemId, database); // don't need to await this - just invoke and move on
 
     errorResponse(ctx, {
       status: 503,
@@ -531,7 +536,7 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
     }
     // always remove from instance cache
     removeFromDataItemCache(dataItemId);
-    await removeDataItem(objectStore, dataItemId);
+    await removeDataItem(objectStore, dataItemId, database);
 
     errorResponse(ctx, {
       status: 503,

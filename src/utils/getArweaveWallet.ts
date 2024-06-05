@@ -185,7 +185,7 @@ export async function getOpticalPubKey(): Promise<Base64UrlString> {
           }
           throw new Error(`PubKey unexpectedly undefined or zero length!`);
         } catch (error) {
-          logger.error(
+          logger.debug(
             "Couldn't retrieve pubKey from SSM! Falling back to SecretsMgr",
             error
           );

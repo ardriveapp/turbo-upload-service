@@ -1034,7 +1034,7 @@ export async function finalizeMPUWithDataItemInfo({
     });
   } else {
     fnLogger.error(`Failing multipart upload due to insufficient balance.`);
-    void removeDataItem(objectStore, dataItemInfo.dataItemId); // don't need to await this - just invoke and move on
+    void removeDataItem(objectStore, dataItemInfo.dataItemId, database); // don't need to await this - just invoke and move on
     await database.failFinishedMultiPartUpload({
       uploadId,
       failedReason: "UNDERFUNDED",
@@ -1111,7 +1111,7 @@ export async function finalizeMPUWithDataItemInfo({
       });
     }
     if (!dataItemExists) {
-      void removeDataItem(objectStore, dataItemInfo.dataItemId); // don't need to await this - just invoke and move on
+      void removeDataItem(objectStore, dataItemInfo.dataItemId, database); // don't need to await this - just invoke and move on
     }
     throw error;
   }

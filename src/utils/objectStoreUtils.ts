@@ -19,6 +19,7 @@ import Transaction from "arweave/node/lib/transaction";
 import MultiStream from "multistream";
 import { EventEmitter, PassThrough, Readable, once, pipeline } from "stream";
 
+import { Database } from "../arch/db/database";
 import { ObjectStore } from "../arch/objectStore";
 import { S3ObjectStore } from "../arch/s3ObjectStore";
 import "../bundles/assembleBundleHeader";
@@ -26,8 +27,10 @@ import { bundleHeaderInfoFromBuffer } from "../bundles/assembleBundleHeader";
 import { signatureTypeInfo } from "../bundles/verifyDataItem";
 import { octetStreamContentType } from "../constants";
 import logger from "../logger";
+import { MetricRegistry } from "../metricRegistry";
 import { PlanId } from "../types/dbTypes";
 import { ByteCount, TransactionId, UploadId } from "../types/types";
+import { sleep } from "./common";
 import { streamToBuffer } from "./streamToBuffer";
 
 const dataItemPrefix = "raw-data-item";
@@ -457,8 +460,19 @@ export async function getBundlePayload(
 
 export async function removeDataItem(
   objectStore: ObjectStore,
-  dataItemTxId: string
+  dataItemTxId: string,
+  database: Database
 ): Promise<void> {
+  await sleep(100); // Sleep for 100ms to allow the database to catch up from any replication lag
+  const dataItemExistsInDb = await database.getDataItemInfo(dataItemTxId);
+  if (dataItemExistsInDb !== undefined) {
+    logger.warn(
+      `Data item ${dataItemTxId} is still referenced in the database. Skipping removal from object store.`
+    );
+    MetricRegistry.dataItemRemoveCanceledWhenFoundInDb.inc();
+    return;
+  }
+
   return objectStore.removeObject(`${dataItemPrefix}/${dataItemTxId}`);
 }
 

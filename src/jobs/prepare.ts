@@ -46,7 +46,7 @@ import defaultLogger from "../logger";
 import { PlanId } from "../types/dbTypes";
 import { JWKInterface } from "../types/jwkTypes";
 import { W } from "../types/winston";
-import { filterKeysFromObject } from "../utils/common";
+import { filterKeysFromObject, sleep } from "../utils/common";
 import { BundlePlanExistsInAnotherStateWarning } from "../utils/errors";
 import { getArweaveWallet } from "../utils/getArweaveWallet";
 import {
@@ -180,12 +180,15 @@ export async function prepareBundleHandler(
   } catch (error) {
     if (isNoSuchKeyS3Error(error)) {
       const dataItemId = error.Key.split("/")[1];
+
+      // TODO: we need to add refund balance here
       await database.updatePlannedDataItemAsFailed({
         dataItemId,
         failedReason: "missing_from_object_store",
       });
 
       // TODO: This is a hack -- recurse to retry the job without the deleted data item
+      await sleep(100); // Sleep to combat replication lag
       return prepareBundleHandler(planId, {
         database,
         objectStore,
