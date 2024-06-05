@@ -50,6 +50,11 @@ export class MetricRegistry {
     help: "Count of data items that were found already in the local cache",
   });
 
+  public static dataItemRemoveCanceledWhenFoundInDb = new promClient.Counter({
+    name: "data_item_remove_canceled_when_found_in_db_count",
+    help: "Count of data items that were not removed from object store because they were found in the database",
+  });
+
   private constructor() {
     this.registry = new promClient.Registry();
 
@@ -59,6 +64,9 @@ export class MetricRegistry {
     this.registry.registerMetric(MetricRegistry.refundBalanceFail);
     this.registry.registerMetric(MetricRegistry.usdToArRateFail);
     this.registry.registerMetric(MetricRegistry.localCacheDataItemHit);
+    this.registry.registerMetric(
+      MetricRegistry.dataItemRemoveCanceledWhenFoundInDb
+    );
   }
 
   public static getInstance(): MetricRegistry {

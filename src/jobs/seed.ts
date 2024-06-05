@@ -21,8 +21,9 @@ import { ObjectStore } from "../arch/objectStore";
 import { createQueueHandler } from "../arch/queues";
 import { ArweaveInterface } from "../arweaveJs";
 import defaultLogger from "../logger";
-import { PlanId } from "../types/dbTypes";
+import { PlanId, PlannedDataItem, PostedBundle } from "../types/dbTypes";
 import { filterKeysFromObject } from "../utils/common";
+import { BundleAlreadySeededWarning } from "../utils/errors";
 import {
   getBundlePayload,
   getBundleTx,
@@ -44,9 +45,21 @@ export async function seedBundleHandler(
   }: SeedBundleJobInjectableArch,
   logger = defaultLogger.child({ job: "seed-bundle-job", planId })
 ): Promise<void> {
-  const dbResult = await database.getNextBundleAndDataItemsToSeedByPlanId(
-    planId
-  );
+  let dbResult: {
+    bundleToSeed: PostedBundle;
+    dataItemsToSeed: PlannedDataItem[];
+  };
+
+  try {
+    dbResult = await database.getNextBundleAndDataItemsToSeedByPlanId(planId);
+  } catch (error) {
+    if (error instanceof BundleAlreadySeededWarning) {
+      logger.warn(error.message);
+      return;
+    }
+    throw error;
+  }
+
   const { bundleToSeed, dataItemsToSeed } = dbResult;
   const { bundleId, transactionByteCount } = bundleToSeed;
 

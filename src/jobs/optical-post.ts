@@ -100,14 +100,19 @@ export const opticalPostHandler = async ({
     throw Error("OPTICAL_BRIDGE_URL is not set.");
   }
 
+  const headers: Record<string, string> = {
+    "x-bundlr-public-key": opticalPubKey,
+    "Content-Type": "application/json",
+  };
+  if (process.env.AR_IO_ADMIN_KEY !== undefined) {
+    headers["Authorization"] = `Bearer ${process.env.AR_IO_ADMIN_KEY}`;
+  }
+
   const axios = createAxiosInstance({
     retries: 3,
     config: {
       validateStatus: () => true,
-      headers: {
-        "x-bundlr-public-key": opticalPubKey,
-        "Content-Type": "application/json",
-      },
+      headers,
     },
   });
 

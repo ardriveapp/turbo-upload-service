@@ -71,6 +71,7 @@ import {
 } from "../../types/types";
 import { generateArrayChunks } from "../../utils/common";
 import {
+  BundleAlreadySeededWarning,
   BundlePlanExistsInAnotherStateWarning,
   DataItemExistsWarning,
   MultiPartUploadNotFound,
@@ -570,6 +571,14 @@ export class PostgresDatabase implements Database {
     ).where({ plan_id: planId });
 
     if (postedBundleDbResult.length === 0) {
+      // check if its already seeded
+      const seededBundleDbResult = await this.writer<SeededBundleDBResult>(
+        tableNames.seededBundle
+      ).where({ plan_id: planId });
+      if (seededBundleDbResult.length > 0) {
+        throw new BundleAlreadySeededWarning(seededBundleDbResult[0].bundle_id);
+      }
+
       throw Error(`No posted_bundle found for plan id ${planId}!`);
     }
 
