@@ -116,15 +116,16 @@ services:
       - NODE_ENV=${NODE_ENV:-local}
       - ARWEAVE_WALLET=${ARWEAVE_WALLET:-}
       - TURBO_OPTICAL_KEY=${TURBO_OPTICAL_KEY:-$ARWEAVE_WALLET}
+      - DATA_ITEM_BUCKET=${DATA_ITEM_BUCKET:-raw-data-items}
     volumes:
       - "${LOCALSTACK_VOLUME_DIR:-./volume}:/var/lib/localstack"
       - "${LOCALSTACK_VOLUME_DIR:-./volume}:/persisted-data"
       - "/var/run/docker.sock:/var/run/docker.sock"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
-      interval: 90s
+      interval: 10s
       timeout: 30s
-      retries: 1
+      retries: 10
       start_period: 15s
 
   arlocal:

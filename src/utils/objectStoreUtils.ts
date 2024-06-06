@@ -33,10 +33,11 @@ import { ByteCount, TransactionId, UploadId } from "../types/types";
 import { sleep } from "./common";
 import { streamToBuffer } from "./streamToBuffer";
 
-const dataItemPrefix = "raw-data-item";
-const multiPartPrefix = "multipart-uploads";
-const bundlePayloadPrefix = "bundle-payload";
-const bundleTxPrefix = "bundle";
+const dataItemPrefix = process.env.DATA_ITEM_S3_PREFIX ?? "raw-data-item";
+const multiPartPrefix = process.env.MULTIPART_S3_PREFIX ?? "multipart-uploads";
+const bundlePayloadPrefix =
+  process.env.BUNDLE_PAYLOAD_S3_PREFIX ?? "bundle-payload";
+const bundleTxPrefix = process.env.BUNDLE_TX_S3_PREFIX ?? "bundle";
 
 let s3ObjectStore: S3ObjectStore | undefined;
 
