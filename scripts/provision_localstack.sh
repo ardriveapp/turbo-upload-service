@@ -142,8 +142,10 @@ create_secret() {
     fi
 }
 
+bucket_name="${DATA_ITEM_BUCKET:-raw-data-items}"
+
 # Create resources
-create_s3_bucket "raw-data-items"
+create_s3_bucket $bucket_name
 
 create_sqs_queue "finalize-multipart-queue" 3 30 0 "" # Max Receives=3, Visibility Timeout=30s, Delay Seconds=0s, no custom retention period
 create_sqs_queue "batch-insert-new-data-items-queue" 3 60 0 3600
