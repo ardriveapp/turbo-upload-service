@@ -29,7 +29,7 @@ jobs:
 
   push:
     needs: [build]
-    if: ${{ github.ref == 'refs/heads/main' }}
+    if: ${{ github.ref == 'refs/heads/PE-6262_arm_builds' }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -50,8 +50,8 @@ jobs:
         uses: docker/build-push-action@v4
         with:
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: |
-            ghcr.io/ardriveapp/${{ github.event.repository.name }}:latest
             ghcr.io/ardriveapp/${{ github.event.repository.name }}:${{ github.sha }}
 
       - name: Build and push fulfillment container image to GitHub Container Registry
@@ -59,8 +59,8 @@ jobs:
         with:
           file: Dockerfile.fulfillment
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: |
-            ghcr.io/ardriveapp/${{ github.event.repository.name }}-fulfillment:latest
             ghcr.io/ardriveapp/${{ github.event.repository.name }}-fulfillment:${{ github.sha }}
 
       - name: Build and push localstack container image to GitHub Container Registry
@@ -68,6 +68,6 @@ jobs:
         with:
           file: Dockerfile.localstack
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: |
-            ghcr.io/ardriveapp/${{ github.event.repository.name }}-localstack:latest
             ghcr.io/ardriveapp/${{ github.event.repository.name }}-localstack:${{ github.sha }}
