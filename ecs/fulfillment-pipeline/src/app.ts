@@ -15,6 +15,9 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 import { Message } from "@aws-sdk/client-sqs";
+import Koa from "koa";
+import Router from "koa-router";
+import * as promClient from "prom-client";
 import { Consumer } from "sqs-consumer";
 
 import { ArweaveGateway } from "../../../src/arch/arweaveGateway";
@@ -25,6 +28,7 @@ import { postBundleHandler } from "../../../src/jobs/post";
 import { prepareBundleHandler } from "../../../src/jobs/prepare";
 import { seedBundleHandler } from "../../../src/jobs/seed";
 import globalLogger from "../../../src/logger";
+import { MetricRegistry } from "../../../src/metricRegistry";
 import { loadConfig } from "../../../src/utils/config";
 import { getS3ObjectStore } from "../../../src/utils/objectStoreUtils";
 import { createFinalizeUploadConsumerQueue } from "./jobs/finalize";
@@ -236,7 +240,7 @@ type ConsumerProvisioningConfig = {
 const consumerQueues: ConsumerProvisioningConfig[] = [
   {
     envVarCountStr: process.env.NUM_FINALIZE_UPLOAD_CONSUMERS,
-    defaultCount: 10,
+    defaultCount: 2,
     createConsumerQueueFn: () =>
       createFinalizeUploadConsumerQueue({
         logger: globalLogger,
@@ -321,3 +325,32 @@ if (process.env.VERIFY_BUNDLE_ENABLED === "true") {
   });
   setUpAndStartJobScheduler(verifyBundleJobScheduler);
 }
+
+const app = new Koa();
+const router = new Router();
+
+const metricsRegistry = MetricRegistry.getInstance().getRegistry();
+promClient.collectDefaultMetrics({ register: metricsRegistry });
+
+// Prometheus
+router.get(["/fulfillment_metrics", "metrics"], async (ctx, next) => {
+  ctx.body = await metricsRegistry.metrics();
+  return next();
+});
+
+// Health check
+router.get(["/health", "/"], (ctx, next) => {
+  ctx.body = "OK";
+  return next();
+});
+const port = +(process.env.FULFILLMENT_PORT ?? process.env.PORT ?? 4000);
+app.use(router.routes());
+const server = app.listen(port);
+
+globalLogger.info(
+  `Fulfillment pipeline service started with node environment ${process.env.NODE_ENV} on port ${port}...`
+);
+
+server.on("error", (error) => {
+  globalLogger.error("Server error", error);
+});

@@ -73,8 +73,9 @@ export function createFinalizeUploadConsumerQueue({
         } catch (error) {
           if (error instanceof DataItemExistsWarning) {
             finalizeUploadLogger.warn("Data item already exists", {
-              error,
-              message,
+              error: error.message,
+              messageId: message.MessageId,
+              messageBody: message.Body,
             });
             return;
           } else if (error instanceof InsufficientBalance) {

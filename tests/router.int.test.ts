@@ -463,10 +463,8 @@ describe("Router tests", function () {
         stub(paymentService, "reserveBalanceForData").throws();
         const { status, data } = await postStubDataItem(dataItem);
 
-        expect(data).to.contain(
-          "Upload Service is Unavailable. Payment Service is unreachable"
-        );
-        expect(status).to.equal(503);
+        expect(data).to.contain("Insufficient balance");
+        expect(status).to.equal(402);
       });
 
       it("with a data item signed by a non allow listed wallet without balance", async () => {

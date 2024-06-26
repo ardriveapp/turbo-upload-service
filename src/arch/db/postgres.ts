@@ -36,7 +36,6 @@ import {
   FinishedMultiPartUploadDBInsert,
   FinishedMultiPartUploadDBResult,
   InFlightMultiPartUpload,
-  InFlightMultiPartUploadDBInsert,
   InFlightMultiPartUploadDBResult,
   InFlightMultiPartUploadParams,
   InsertNewBundleParams,
@@ -968,18 +967,27 @@ export class PostgresDatabase implements Database {
   public async insertInFlightMultiPartUpload({
     uploadId,
     uploadKey,
-  }: InFlightMultiPartUploadParams): Promise<void> {
+  }: InFlightMultiPartUploadParams): Promise<InFlightMultiPartUpload> {
     this.log.debug("Inserting in flight multipart upload...", {
       uploadId,
       uploadKey,
     });
 
-    return this.writer.transaction(async (knexTransaction) => {
-      await knexTransaction(tableNames.inFlightMultiPartUpload).insert({
-        upload_id: uploadId,
-        upload_key: uploadKey,
-      });
+    const result = await this.writer.transaction(async (knexTransaction) => {
+      const [insertedRow] =
+        await knexTransaction<InFlightMultiPartUploadDBResult>(
+          tableNames.inFlightMultiPartUpload
+        )
+          .insert({
+            upload_id: uploadId,
+            upload_key: uploadKey,
+          })
+          .returning("*"); // Returning the inserted row
+
+      return insertedRow;
     });
+
+    return entityToInFlightMultiPartUpload(result);
   }
 
   public async finalizeMultiPartUpload({
@@ -1042,18 +1050,7 @@ export class PostgresDatabase implements Database {
       throw new MultiPartUploadNotFound(uploadId);
     }
 
-    return {
-      uploadId: inFlightUpload.upload_id,
-      uploadKey: inFlightUpload.upload_key,
-      createdAt: inFlightUpload.created_at,
-      expiresAt: inFlightUpload.expires_at,
-      chunkSize: inFlightUpload.chunk_size
-        ? +inFlightUpload.chunk_size
-        : undefined,
-      failedReason: isMultipartUploadFailedReason(inFlightUpload.failed_reason)
-        ? inFlightUpload.failed_reason
-        : undefined,
-    };
+    return entityToInFlightMultiPartUpload(inFlightUpload);
   }
 
   public async failInflightMultiPartUpload({
@@ -1093,20 +1090,7 @@ export class PostgresDatabase implements Database {
         `Deleted ${numDeletedRows} in flight uploads past their expired dates.`
       );
 
-      return {
-        uploadId: updatedInFlightUpload.upload_id,
-        uploadKey: updatedInFlightUpload.upload_key,
-        createdAt: updatedInFlightUpload.created_at,
-        expiresAt: updatedInFlightUpload.expires_at,
-        chunkSize: updatedInFlightUpload.chunk_size
-          ? +updatedInFlightUpload.chunk_size
-          : undefined,
-        failedReason: isMultipartUploadFailedReason(
-          updatedInFlightUpload.failed_reason
-        )
-          ? updatedInFlightUpload.failed_reason
-          : undefined,
-      };
+      return entityToInFlightMultiPartUpload(updatedInFlightUpload);
     });
   }
 
@@ -1203,20 +1187,56 @@ export class PostgresDatabase implements Database {
 
   public async updateMultipartChunkSize(
     chunkSize: number,
-    uploadId: UploadId
-  ): Promise<void> {
+    upload: InFlightMultiPartUpload
+  ): Promise<number> {
     this.log.debug("Updating multipart chunk size...", {
       chunkSize,
     });
 
-    await this.writer<InFlightMultiPartUploadDBInsert>(
-      tableNames.inFlightMultiPartUpload
-    )
-      .update({
-        chunk_size: chunkSize.toString(),
-      })
-      .where({ upload_id: uploadId })
-      .forUpdate();
+    // TODO: This will be brittle if we add more columns to the inFlightMultiPartUpload table
+    const { uploadId, uploadKey, createdAt, expiresAt, failedReason } = upload;
+    const chunkSizeStr = chunkSize.toString();
+
+    // Use a CAS upsert to ensure we only update the chunk size if it's larger than the current value
+    // This assists in cases where the last chunk might have been processed first
+    const bestKnownChunkSize = await this.writer.transaction(async (trx) => {
+      const query = `
+        INSERT INTO ${tableNames.inFlightMultiPartUpload} (upload_id, upload_key, created_at, expires_at, chunk_size, failed_reason)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT (upload_id) DO UPDATE SET
+          chunk_size = CASE
+            WHEN ${tableNames.inFlightMultiPartUpload}.chunk_size IS NULL OR ${tableNames.inFlightMultiPartUpload}.chunk_size::bigint < EXCLUDED.chunk_size::bigint
+            THEN EXCLUDED.chunk_size
+            ELSE ${tableNames.inFlightMultiPartUpload}.chunk_size
+          END
+        RETURNING chunk_size;
+      `;
+
+      const result = await trx.raw(query, [
+        uploadId,
+        uploadKey,
+        createdAt,
+        expiresAt,
+        chunkSizeStr,
+        failedReason || null,
+      ]);
+      return result.rows[0].chunk_size;
+    });
+
+    if (bestKnownChunkSize !== chunkSizeStr) {
+      this.log.warn(
+        "Chunk size not updated because current size is larger or equal.",
+        {
+          currentChunkSize: bestKnownChunkSize,
+          attemptedChunkSize: chunkSize,
+        }
+      );
+    } else {
+      this.log.debug("Chunk size updated successfully.", {
+        chunkSize,
+      });
+    }
+    return +bestKnownChunkSize;
   }
 
   public async updatePlannedDataItemAsFailed({
@@ -1255,4 +1275,19 @@ function isMultipartUploadFailedReason(
   reason: string | undefined
 ): reason is MultipartUploadFailedReason {
   return ["INVALID", "UNDERFUNDED"].includes(reason ?? "");
+}
+
+function entityToInFlightMultiPartUpload(
+  entity: InFlightMultiPartUploadDBResult
+): InFlightMultiPartUpload {
+  return {
+    uploadId: entity.upload_id,
+    uploadKey: entity.upload_key,
+    createdAt: entity.created_at,
+    expiresAt: entity.expires_at,
+    chunkSize: entity.chunk_size ? +entity.chunk_size : undefined,
+    failedReason: isMultipartUploadFailedReason(entity.failed_reason)
+      ? entity.failed_reason
+      : undefined,
+  };
 }

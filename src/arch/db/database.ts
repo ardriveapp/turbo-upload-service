@@ -152,7 +152,7 @@ export interface Database {
   }: {
     uploadId: UploadId;
     uploadKey: string;
-  }): Promise<void>;
+  }): Promise<InFlightMultiPartUpload>;
   finalizeMultiPartUpload(params: {
     uploadId: UploadId;
     etag: string;
@@ -180,8 +180,8 @@ export interface Database {
   ): Promise<FinishedMultiPartUpload>;
   updateMultipartChunkSize(
     chunkSize: number,
-    uploadId: UploadId
-  ): Promise<void>;
+    upload: InFlightMultiPartUpload
+  ): Promise<number>;
 
   updatePlannedDataItemAsFailed(params: {
     dataItemId: DataItemId;

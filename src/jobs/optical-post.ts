@@ -22,12 +22,7 @@ import winston from "winston";
 import { createAxiosInstance } from "../arch/axiosClient";
 import logger from "../logger";
 import { getOpticalPubKey } from "../utils/getArweaveWallet";
-import {
-  SignedDataItemHeader,
-  encodeTagsForOptical,
-  getNestedDataItemHeaders,
-  signDataItemHeader,
-} from "../utils/opticalUtils";
+import { SignedDataItemHeader } from "../utils/opticalUtils";
 
 /** These don't need to succeed */
 const optionalOpticalUrls =
@@ -62,31 +57,7 @@ export const opticalPostHandler = async ({
   );
 
   const dataItemIds = dataItemHeaders.map((header) => header.id);
-  let childLogger = logger.child({ dataItemIds });
-
-  // If any BDIs are detected, unpack them 1 nested level deep
-  // and include the nested data items in the optical post
-  // TODO: Filter this further for ArDrive data
-  const nestedStringifiedHeaders = await Promise.all(
-    (
-      await getNestedDataItemHeaders({
-        potentialBDIHeaders: dataItemHeaders,
-        logger: childLogger,
-      })
-    ).map(async (nestedHeader) => {
-      const opticalNestedHeader = await signDataItemHeader(
-        encodeTagsForOptical(nestedHeader)
-      );
-      return JSON.stringify(opticalNestedHeader);
-    })
-  );
-  const nestedDataItemIds = nestedStringifiedHeaders.map(
-    (headerString) => (JSON.parse(headerString) as SignedDataItemHeader).id
-  );
-  childLogger = childLogger.child({ nestedDataItemIds });
-  stringifiedDataItemHeaders = stringifiedDataItemHeaders.concat(
-    nestedStringifiedHeaders
-  );
+  const childLogger = logger.child({ dataItemIds });
 
   // Create a JSON array string out of the stringified headers
   const postBody = `[${stringifiedDataItemHeaders.join(",")}]`;

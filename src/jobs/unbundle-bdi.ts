@@ -20,16 +20,21 @@ import { SQSEvent } from "aws-lambda";
 import pLimit from "p-limit";
 import winston from "winston";
 
-import { deleteMessages } from "../arch/queues";
+import { deleteMessages, enqueue } from "../arch/queues";
 import { rawDataItemStartFromParsedHeader } from "../bundles/rawDataItemStartFromParsedHeader";
 import baseLogger from "../logger";
 import { ParsedDataItemHeader, TransactionId } from "../types/types";
+import { ownerToNormalizedB64Address } from "../utils/base64";
 import { payloadContentTypeFromDecodedTags } from "../utils/common";
 import {
   getDataItemData,
   getS3ObjectStore,
   putDataItemRaw,
 } from "../utils/objectStoreUtils";
+import {
+  encodeTagsForOptical,
+  signDataItemHeader,
+} from "../utils/opticalUtils";
 
 export const handler = async (event: SQSEvent) => {
   const handlerLogger = baseLogger.child({ job: "unbundle-bdi-job" });
@@ -126,7 +131,15 @@ export async function unbundleBDIHandler(
           const nestedDataItemParallelLimit = pLimit(10);
           await Promise.all(
             parsedDataItemHeaders.map((parsedDataItemHeader) => {
-              const { id, tags, dataOffset, dataSize } = parsedDataItemHeader;
+              const {
+                id,
+                tags,
+                dataOffset,
+                dataSize,
+                signature,
+                target,
+                owner,
+              } = parsedDataItemHeader;
               const nestedItemLogger = bdiLogger.child({
                 nestedDataItemId: id,
               });
@@ -155,6 +168,23 @@ export async function unbundleBDIHandler(
                   ),
                   payloadContentType,
                   dataOffset - rawDataItemDataStart
+                );
+
+                // TODO: Consider enqueue in batches
+                await enqueue(
+                  "optical-post",
+                  await signDataItemHeader(
+                    encodeTagsForOptical({
+                      id,
+                      signature,
+                      owner,
+                      owner_address: ownerToNormalizedB64Address(owner),
+                      target: target ?? "",
+                      content_type: payloadContentType,
+                      data_size: dataSize,
+                      tags,
+                    })
+                  )
                 );
 
                 nestedItemLogger.debug("Finished caching nested data item.", {

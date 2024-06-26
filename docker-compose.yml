@@ -10,7 +10,7 @@ services:
       DB_HOST: upload-service-pg
       DB_PORT: 5432
       DB_PASSWORD: postgres
-      PAYMENT_SERVICE_BASE_URL: ${PAYMENT_SERVICE_BASE_URL:-payment.ardrive.dev}
+      PAYMENT_SERVICE_BASE_URL: ${PAYMENT_SERVICE_BASE_URL:-}
       MAX_DATA_ITEM_SIZE: ${MAX_DATA_ITEM_SIZE:-10737418240}
       ALLOW_LISTED_ADDRESSES: ${ALLOW_LISTED_ADDRESSES:-}
       AWS_ENDPOINT: ${AWS_ENDPOINT:-}
@@ -68,6 +68,8 @@ services:
       S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-}
       AWS_REGION: ${AWS_REGION:-us-east-1}
       OVERDUE_DATA_ITEM_THRESHOLD_MS: ${OVERDUE_DATA_ITEM_THRESHOLD_MS:-0} # plan data items immediately into bundles when plan-bundle runs
+    ports:
+      - "${FULFILLMENT_PORT:-4000}:${FULFILLMENT_PORT:-4000}"
 
     depends_on:
       localstack:

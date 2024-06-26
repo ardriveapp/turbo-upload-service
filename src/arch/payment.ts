@@ -87,7 +87,7 @@ export interface PaymentService {
   ): Promise<ReserveBalanceResponse>;
   refundBalanceForData(params: RefundBalanceParams): Promise<void>;
   getFiatToARConversionRate(currency: "usd"): Promise<number>; // TODO: create type for currency
-  paymentServiceURL: string;
+  paymentServiceURL: string | undefined;
 }
 
 const allowedReserveBalanceResponse: ReserveBalanceResponse = {
@@ -103,8 +103,8 @@ export class TurboPaymentService implements PaymentService {
     // TODO: create a client config with base url pointing at the base url of the payment service
     private readonly axios: AxiosInstance = createAxiosInstance({}),
     private readonly logger: winston.Logger = defaultLogger,
-    readonly paymentServiceURL: string = process.env.PAYMENT_SERVICE_BASE_URL ??
-      "payment.ardrive.dev",
+    readonly paymentServiceURL: string | undefined = process.env
+      .PAYMENT_SERVICE_BASE_URL,
     paymentServiceProtocol: string = process.env.PAYMENT_SERVICE_PROTOCOL ??
       "https"
   ) {
@@ -114,7 +114,9 @@ export class TurboPaymentService implements PaymentService {
       shouldAllowArFSData,
     });
     this.axios = axios;
-    this.paymentServiceURL = `${paymentServiceProtocol}://${paymentServiceURL}`;
+    this.paymentServiceURL = paymentServiceURL
+      ? `${paymentServiceProtocol}://${paymentServiceURL}`
+      : undefined;
   }
 
   public async checkBalanceForData({
@@ -138,6 +140,17 @@ export class TurboPaymentService implements PaymentService {
       );
       return {
         userHasSufficientBalance: true,
+        bytesCostInWinc: W(0),
+      };
+    }
+
+    if (!this.paymentServiceURL) {
+      logger.debug(
+        "No payment service URL supplied. Simulating no balance at payment service..."
+      );
+
+      return {
+        userHasSufficientBalance: false,
         bytesCostInWinc: W(0),
       };
     }
@@ -235,6 +248,18 @@ export class TurboPaymentService implements PaymentService {
         "Data was allowed via internal upload service business logic. Not calling payment service to reserve balance..."
       );
       return allowedReserveBalanceResponse;
+    }
+
+    if (!this.paymentServiceURL) {
+      logger.debug(
+        "No payment service URL supplied. Simulating unsuccessful balance reservation at payment service..."
+      );
+
+      return {
+        walletExists: false,
+        costOfDataItem: W(0),
+        isReserved: false,
+      };
     }
 
     logger.debug("Calling payment service to reserve balance...");

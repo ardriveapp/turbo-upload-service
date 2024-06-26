@@ -192,12 +192,12 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@ardrive/ardrive-promise-cache@npm:^1.1.4":
-  version: 1.1.4
-  resolution: "@ardrive/ardrive-promise-cache@npm:1.1.4"
+"@ardrive/ardrive-promise-cache@npm:^1.3.0":
+  version: 1.3.0
+  resolution: "@ardrive/ardrive-promise-cache@npm:1.3.0"
   dependencies:
     "@alexsasharegan/simple-cache": ^3.3.3
-  checksum: c92f3f745c2138b2d62c53d6a394900f1691dfe696106cf99d1ca3e71fc284c34cf2c84ceb5ad224ad19964397b2097a41bd9f54bc93464182c095e96b400cba
+  checksum: 69e0e0623ddf6d1d158d446c1da935b0962df36855e24d6ed480c37af11829ab0995d0a09bb6149f69f6dd88522a991907446c4345d1ea32bdb1add0ffa96e99
   languageName: node
   linkType: hard
 
@@ -6076,7 +6076,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "ardrive-upload-service@workspace:."
   dependencies:
-    "@ardrive/ardrive-promise-cache": ^1.1.4
+    "@ardrive/ardrive-promise-cache": ^1.3.0
     "@aws-sdk/abort-controller": ^3.303.0
     "@aws-sdk/client-s3": ^3.367.0
     "@aws-sdk/client-secrets-manager": ^3.363.0
