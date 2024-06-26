@@ -14,6 +14,7 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+import { ReadThroughPromiseCache } from "@ardrive/ardrive-promise-cache";
 import { Message } from "@aws-sdk/client-sqs";
 import { JWKInterface, Tag } from "arbundles";
 import { Base64UrlString } from "arweave/node/lib/utils";
@@ -68,6 +69,7 @@ import {
   uploadPart,
 } from "../utils/objectStoreUtils";
 import {
+  containsAns104Tags,
   encodeTagsForOptical,
   signDataItemHeader,
 } from "../utils/opticalUtils";
@@ -80,10 +82,25 @@ import {
 
 const shouldSkipBalanceCheck = process.env.SKIP_BALANCE_CHECKS === "true";
 const opticalBridgingEnabled = process.env.OPTICAL_BRIDGING_ENABLED !== "false";
+const maxAllowablePartNumber = 10_000; // AWS S3 MultiPartUpload part number limitation
 
 export const chunkMinSize = 1024 * 1024 * 5; // 5MiB - AWS minimum
 export const chunkMaxSize = 1024 * 1024 * 500; // 500MiB // NOTE: AWS supports upto 5GiB
 export const defaultChunkSize = 25_000_000; // 25MB
+
+const inFlightUploadCache = new ReadThroughPromiseCache<
+  UploadId,
+  InFlightMultiPartUpload,
+  Database
+>({
+  cacheParams: {
+    cacheCapacity: 1000,
+    cacheTTL: 60_000,
+  },
+  readThroughFunction: async (uploadId, database) => {
+    return database.getInflightMultiPartUpload(uploadId);
+  },
+});
 
 export async function createMultiPartUpload(ctx: KoaContext) {
   const { database, objectStore, logger } = ctx.state;
@@ -93,10 +110,13 @@ export async function createMultiPartUpload(ctx: KoaContext) {
 
   logger.debug("Created new multipart upload", { newUploadId });
   // create new upload
-  await database.insertInFlightMultiPartUpload({
-    uploadId: newUploadId,
-    uploadKey,
-  });
+  await inFlightUploadCache.put(
+    newUploadId,
+    database.insertInFlightMultiPartUpload({
+      uploadId: newUploadId,
+      uploadKey,
+    })
+  );
 
   // In order to combat RDS replication-lag-related issues with posting chunks (parts)
   // for this uploadId immediately after receiving the fresh uploadId, impose an
@@ -261,7 +281,7 @@ export async function postDataItemChunk(ctx: KoaContext) {
 
   const contentLength = ctx.req.headers["content-length"];
 
-  if (!contentLength) {
+  if (!contentLength || isNaN(+contentLength) || +contentLength <= 0) {
     ctx.status = 400;
     ctx.message =
       "Content-Length header is required a must be a positive integer.";
@@ -271,7 +291,7 @@ export async function postDataItemChunk(ctx: KoaContext) {
   logger.debug("Posting data item chunk", { uploadId, chunkOffset });
   // check that upload exists
   try {
-    const upload = await database.getInflightMultiPartUpload(uploadId);
+    const upload = await inFlightUploadCache.get(uploadId, database);
     logger.debug("Got multipart upload", { ...upload });
 
     // No need to proceed if this upload has already failed
@@ -279,34 +299,47 @@ export async function postDataItemChunk(ctx: KoaContext) {
       throw new InvalidDataItem();
     }
 
-    const sizeOfChunk = contentLength ? +contentLength : defaultChunkSize;
-    const chunkSize = upload.chunkSize || sizeOfChunk;
+    const sizeOfIncomingChunk = +contentLength;
+    const expectedChunkSize = await computeExpectedChunkSize({
+      upload,
+      sizeOfIncomingChunk,
+      logger,
+      database,
+    });
 
-    try {
-      if (!upload.chunkSize || sizeOfChunk > upload.chunkSize) {
-        logger.debug("Updating chunk size in database", {
-          uploadId,
-          sizeOfChunk,
-        });
-        // NOTE: this may be better suited in a redis or read through cache
-        await database.updateMultipartChunkSize(sizeOfChunk, uploadId);
-        logger.debug("Successfully updated chunk size 👍", {
-          uploadId,
-          sizeOfChunk,
-        });
-      }
-      logger.debug("Retrieved chunk size for upload", {
-        uploadId,
-        sizeOfChunk,
-      });
-    } catch (error) {
-      logger.warn("Collision while updating chunk size... continuing.", {
-        uploadId,
-        error: error instanceof Error ? error.message : error,
-      });
+    if (chunkOffset % expectedChunkSize !== 0) {
+      /* This can happen when the last chunk is processed first and
+         has a size that is not a multiple of the expected chunk size.
+         Retrying that chunk upload should usually clear that up.
+
+         A problematic case is when the chunk is smaller than the intended
+         chunk size but is a multiple of it. In this case, we can't tell
+         if the chunk size is wrong or if the chunk is the last one. But
+         two outcomes are possible there:
+         1) The computed part number is large, but sufficiently higher than
+            the preceding chunk's will be. If so, the upload can still complete.
+         2) The part number chosen is too large, and the chunk upload will fail,
+            but might succeed on a successive try. Forcing the part number to
+            the max allowed in this case is not worth the risk of getting it wrong.
+      */
+
+      // TODO: Could also check db again for updated chunk size from other chunks
+      inFlightUploadCache.remove(uploadId); // Precautionary measure
+      throw new InvalidChunk();
     }
 
-    const partNumber = Math.floor(chunkOffset / chunkSize) + 1;
+    const partNumber = Math.floor(chunkOffset / expectedChunkSize) + 1; // + 1 due to 1-indexing of part numbers
+    if (partNumber > maxAllowablePartNumber) {
+      // This can happen if the user chose a chunk size too small for the number of chunks their upload needs
+      logger.error("Part number exceeds maximum allowable part number", {
+        uploadId,
+        partNumber,
+        chunkOffset,
+        expectedChunkSize,
+        sizeOfIncomingChunk,
+      });
+      throw new InvalidChunk();
+    }
 
     // Need to give content length here for last chunk or s3 will wait for more data
     const etag = await uploadPart({
@@ -315,9 +348,14 @@ export async function postDataItemChunk(ctx: KoaContext) {
       stream: ctx.req,
       uploadId,
       partNumber,
-      sizeOfChunk,
+      sizeOfChunk: sizeOfIncomingChunk,
     });
-    logger.info("Uploaded part", { uploadId, partNumber, etag, sizeOfChunk });
+    logger.info("Uploaded part", {
+      uploadId,
+      partNumber,
+      etag,
+      sizeOfChunk: sizeOfIncomingChunk,
+    });
 
     ctx.status = 200;
   } catch (error) {
@@ -342,6 +380,49 @@ export async function postDataItemChunk(ctx: KoaContext) {
     }
   }
   return; // do not return next();
+}
+
+async function computeExpectedChunkSize({
+  upload,
+  logger,
+  sizeOfIncomingChunk,
+  database,
+}: {
+  upload: InFlightMultiPartUpload;
+  sizeOfIncomingChunk: number;
+  logger: winston.Logger;
+  database: Database;
+}): Promise<number> {
+  const uploadId = upload.uploadId;
+  let expectedChunkSize = upload.chunkSize;
+
+  if (!expectedChunkSize || sizeOfIncomingChunk > expectedChunkSize) {
+    logger.debug("Updating chunk size in database", {
+      uploadId,
+      prevChunkSize: expectedChunkSize,
+      newChunkSize: sizeOfIncomingChunk,
+    });
+    // NOTE: this may be better suited in a redis + read through cache
+    expectedChunkSize = await database.updateMultipartChunkSize(
+      sizeOfIncomingChunk,
+      upload
+    );
+    // Memoize this update
+    upload.chunkSize = expectedChunkSize;
+    void inFlightUploadCache.put(uploadId, Promise.resolve(upload));
+    logger.debug("Successfully updated chunk size 👍", {
+      uploadId,
+      estimatedSizeOfIncomingChunk: sizeOfIncomingChunk,
+      expectedChunkSize,
+    });
+  }
+  logger.debug("Retrieved chunk size for upload", {
+    uploadId,
+    sizeOfChunk: sizeOfIncomingChunk,
+    expectedChunkSize,
+  });
+
+  return expectedChunkSize;
 }
 
 export async function finalizeMultipartUploadWithQueueMessage({
@@ -544,7 +625,7 @@ export async function finalizeMultipartUpload({
     };
   }
 
-  const inFlightMPUEntity = await database.getInflightMultiPartUpload(uploadId);
+  const inFlightMPUEntity = await inFlightUploadCache.get(uploadId, database);
   const signedReceipt = await finalizeMPUWithInFlightEntity({
     uploadId,
     paymentService,
@@ -696,6 +777,7 @@ export async function finalizeMPUWithInFlightEntity({
       uploadId,
       failedReason: "INVALID",
     });
+    inFlightUploadCache.remove(uploadId);
     dataItemReadable.destroy();
     throw new InvalidDataItem();
   }
@@ -732,8 +814,6 @@ export async function finalizeMPUWithInFlightEntity({
   };
   fnLogger = fnLogger.child(filterKeysFromObject(dataItemInfo, ["signature"]));
 
-  // TODO: handle bdis?
-
   fnLogger.info("Parsed multi-part upload data item id and tags", {
     tags,
   });
@@ -745,6 +825,7 @@ export async function finalizeMPUWithInFlightEntity({
     etag: finalizedEtag,
     dataItemId,
   });
+  inFlightUploadCache.remove(uploadId);
 
   return await finalizeMPUWithValidatedInfo({
     uploadId,
@@ -1039,6 +1120,7 @@ export async function finalizeMPUWithDataItemInfo({
       uploadId,
       failedReason: "UNDERFUNDED",
     });
+    inFlightUploadCache.remove(uploadId);
     throw new InsufficientBalance();
   }
 
@@ -1075,6 +1157,21 @@ export async function finalizeMPUWithDataItemInfo({
     // Attach skip feature to logger for log parsing in final receipt log statement
     fnLogger = fnLogger.child({ skipOpticalPost: true });
     fnLogger.debug("Skipped optical posting.");
+  }
+
+  // Enqueue data item for unbundling if it appears to be a BDI
+  if (containsAns104Tags(dataItemInfo.tags)) {
+    try {
+      logger.debug("Enqueuing BDI for unbundling...");
+      await enqueue("unbundle-bdi", dataItemInfo.dataItemId);
+    } catch (bdiEnqueueError) {
+      // Soft error, just log
+      logger.error(
+        `Error while attempting to enqueue for bdi unbundling!`,
+        bdiEnqueueError
+      );
+      MetricRegistry.unbundleBdiEnqueueFail.inc();
+    }
   }
 
   fnLogger.debug("Inserting new_data_item into db...");

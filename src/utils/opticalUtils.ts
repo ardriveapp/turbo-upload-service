@@ -14,17 +14,11 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-import { ArweaveSigner, Tag, deepHash, processStream } from "arbundles";
+import { ArweaveSigner, Tag, deepHash } from "arbundles";
 import { stringToBuffer } from "arweave/node/lib/utils";
-import pLimit from "p-limit";
-import winston from "winston";
 
-import { ObjectStore } from "../arch/objectStore";
-import { ParsedDataItemHeader } from "../types/types";
-import { fromB64Url, ownerToNormalizedB64Address, toB64Url } from "./base64";
-import { payloadContentTypeFromDecodedTags } from "./common";
+import { fromB64Url, toB64Url } from "./base64";
 import { getOpticalWallet } from "./getArweaveWallet";
-import { getDataItemData, getS3ObjectStore } from "./objectStoreUtils";
 
 export type DataItemHeader = {
   id: string;
@@ -87,87 +81,6 @@ export async function signDataItemHeader(
     ...dataItemHeader,
     bundlr_signature,
   };
-}
-
-export async function getNestedDataItemHeaders({
-  potentialBDIHeaders,
-  objectStore = getS3ObjectStore(),
-  logger,
-}: {
-  potentialBDIHeaders: DataItemHeader[];
-  objectStore?: ObjectStore;
-  logger: winston.Logger;
-}): Promise<DataItemHeader[]> {
-  const decodedDataItemHeaders = potentialBDIHeaders.map(decodeOpticalizedTags);
-  const headersRequiringUnpacking = decodedDataItemHeaders.filter(
-    filterForNestedBundles
-  );
-
-  // Keep the parallelization of this work capped at sensible limits
-  const bdiParallelLimit = pLimit(10);
-  const bdiDataItemsIds = headersRequiringUnpacking.map((header) => header.id);
-  const nestedHeadersPromises = bdiDataItemsIds.map((bdiDataItemId) => {
-    return bdiParallelLimit(async () => {
-      // Fetch the data item
-      const dataItemReadable = await getDataItemData(
-        objectStore,
-        bdiDataItemId
-      );
-
-      logger.debug("Processing BDI stream...", {
-        bdiDataItemId,
-      });
-
-      let parsedDataItemHeaders: ParsedDataItemHeader[] = [];
-      try {
-        // Process it as a bundle and get all the data item info
-        parsedDataItemHeaders = (await processStream(
-          dataItemReadable
-        )) as ParsedDataItemHeader[];
-      } catch (error) {
-        logger.error("Error processing BDI stream.", {
-          bdiDataItemId,
-          error,
-        });
-        return [];
-      }
-
-      logger.debug("Finished processing BDI stream.", {
-        bdiDataItemId,
-        parsedDataItemHeaders,
-      });
-
-      // Return the encoded, signed, and serialized headers for all the nested data items
-      const dataItemParallelLimit = pLimit(10);
-      const nestedDataItemHeaders = await Promise.all(
-        parsedDataItemHeaders.map((parsedDataItemHeader) => {
-          return dataItemParallelLimit(async () => {
-            const decodedTags = parsedDataItemHeader.tags;
-
-            // Get content type from tag if possible
-            const contentType = payloadContentTypeFromDecodedTags(decodedTags);
-
-            return {
-              id: parsedDataItemHeader.id,
-              signature: parsedDataItemHeader.signature,
-              owner: parsedDataItemHeader.owner,
-              owner_address: ownerToNormalizedB64Address(
-                parsedDataItemHeader.owner
-              ),
-              target: parsedDataItemHeader.target ?? "",
-              content_type: contentType,
-              data_size: parsedDataItemHeader.dataSize,
-              tags: decodedTags,
-            };
-          });
-        })
-      );
-
-      return nestedDataItemHeaders;
-    });
-  });
-
-  return (await Promise.all(nestedHeadersPromises)).flat(1);
 }
 
 export function filterForNestedBundles(decodedHeader: DataItemHeader): boolean {
