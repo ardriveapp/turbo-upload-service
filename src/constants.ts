@@ -147,6 +147,8 @@ export const aoAddresses = process.env.AO_ADDRESSES?.split(
   "," // cspell:disable
 ) ?? ["fcoN_xJeisVsPXA-trzVAuIiqO3ydLQxM-L4XbrQKzY"]; // cspell:enable
 
+const kyveAddresses = process.env.KYVE_ADDRESSES?.split(",") ?? [];
+
 export const skipOpticalPostAddresses: string[] =
   process.env.SKIP_OPTICAL_POST_ADDRESSES?.split(",") ??
   redstoneOracleAddresses;
@@ -157,12 +159,14 @@ export const redstoneOracleDedicatedBundlesPremiumFeatureType =
 export const firstBatchDedicatedBundlesPremiumFeatureType =
   "first_batch_dedicated_bundles";
 export const aoDedicatedBundlesPremiumFeatureType = "ao_dedicated_bundles";
+export const kyveDedicatedBundlesPremiumFeatureType = "kyve_dedicated_bundles";
 
 export const premiumPaidFeatureTypes = [
   warpDedicatedBundlesPremiumFeatureType,
   redstoneOracleDedicatedBundlesPremiumFeatureType,
   firstBatchDedicatedBundlesPremiumFeatureType,
   aoDedicatedBundlesPremiumFeatureType,
+  kyveDedicatedBundlesPremiumFeatureType,
 ] as const;
 export type PremiumPaidFeatureType = (typeof premiumPaidFeatureTypes)[number];
 
@@ -198,6 +202,10 @@ export const dedicatedBundleTypes: Record<
     allowedWallets: aoAddresses,
     bundlerAppName: "AO",
   },
+  [kyveDedicatedBundlesPremiumFeatureType]: {
+    allowedWallets: kyveAddresses,
+    bundlerAppName: "KYVE",
+  },
 } as const;
 
 /**
@@ -227,3 +235,16 @@ export const allowListedSignatureTypes = process.env
   .ALLOW_LISTED_SIGNATURE_TYPES
   ? new Set(process.env.ALLOW_LISTED_SIGNATURE_TYPES.split(",").map((s) => +s))
   : new Set([]);
+
+export const jobLabels = {
+  finalizeUpload: "finalize-upload",
+  opticalPost: "optical-post",
+  unbundleBdi: "unbundle-bdi",
+  newDataItem: "new-data-item",
+  planBundle: "plan-bundle",
+  prepareBundle: "prepare-bundle",
+  postBundle: "post-bundle",
+  seedBundle: "seed-bundle",
+  verifyBundle: "verify-bundle",
+} as const;
+export type JobLabel = (typeof jobLabels)[keyof typeof jobLabels];

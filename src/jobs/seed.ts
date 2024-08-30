@@ -20,6 +20,7 @@ import { PostgresDatabase } from "../arch/db/postgres";
 import { ObjectStore } from "../arch/objectStore";
 import { createQueueHandler } from "../arch/queues";
 import { ArweaveInterface } from "../arweaveJs";
+import { jobLabels } from "../constants";
 import defaultLogger from "../logger";
 import { PlanId, PlannedDataItem, PostedBundle } from "../types/dbTypes";
 import { filterKeysFromObject } from "../utils/common";
@@ -102,7 +103,7 @@ export async function seedBundleHandler(
 }
 
 export const handler = createQueueHandler(
-  "seed-bundle",
+  jobLabels.seedBundle,
   (message: { planId: PlanId }) =>
     seedBundleHandler(message.planId, defaultArchitecture),
   {

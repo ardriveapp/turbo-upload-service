@@ -24,10 +24,12 @@ import { NodeHttpHandler } from "@aws-sdk/node-http-handler";
 import { SQSEvent, SQSHandler, SQSRecord } from "aws-lambda";
 import * as https from "https";
 
+import { jobLabels } from "../constants";
+import { UnbundleBDIMessageBody } from "../jobs/unbundle-bdi";
 import logger from "../logger";
 import { PlanId, PostedNewDataItem } from "../types/dbTypes";
-import { DataItemId, UploadId } from "../types/types";
-import { SignedDataItemHeader } from "../utils/opticalUtils";
+import { UploadId } from "../types/types";
+import { DatedSignedDataItemHeader } from "../utils/opticalUtils";
 
 type SQSQueueUrl = string;
 
@@ -37,13 +39,13 @@ export type EnqueuedNewDataItem = Omit<PostedNewDataItem, "signature"> & {
   signature: string;
 };
 type QueueTypeToMessageType = {
-  "prepare-bundle": PlanMessage;
-  "post-bundle": PlanMessage;
-  "seed-bundle": PlanMessage;
-  "optical-post": SignedDataItemHeader;
-  "unbundle-bdi": DataItemId;
-  "finalize-upload": { uploadId: UploadId };
-  "new-data-item": EnqueuedNewDataItem;
+  [jobLabels.prepareBundle]: PlanMessage;
+  [jobLabels.postBundle]: PlanMessage;
+  [jobLabels.seedBundle]: PlanMessage;
+  [jobLabels.opticalPost]: DatedSignedDataItemHeader;
+  [jobLabels.unbundleBdi]: UnbundleBDIMessageBody;
+  [jobLabels.finalizeUpload]: { uploadId: UploadId };
+  [jobLabels.newDataItem]: EnqueuedNewDataItem;
 };
 
 export type QueueType = keyof QueueTypeToMessageType;
@@ -84,23 +86,22 @@ const sqs = new SQSClient({
 });
 
 export const getQueueUrl = (type: QueueType): SQSQueueUrl => {
-  const queues: { [key in QueueType]: SQSQueueUrl } = {
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    "prepare-bundle": process.env.SQS_PREPARE_BUNDLE_URL!,
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    "post-bundle": process.env.SQS_POST_BUNDLE_URL!,
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    "seed-bundle": process.env.SQS_SEED_BUNDLE_URL!,
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    "optical-post": process.env.SQS_OPTICAL_URL!,
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    "unbundle-bdi": process.env.SQS_UNBUNDLE_BDI_URL!,
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    "finalize-upload": process.env.SQS_FINALIZE_UPLOAD_URL!,
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    "new-data-item": process.env.SQS_NEW_DATA_ITEM_URL!, // TODO: Ensure fulfillment has URL env var
-  };
-  return queues[type];
+  const queueUrlFromEnvVarMap: { [key in QueueType]: SQSQueueUrl | undefined } =
+    {
+      [jobLabels.prepareBundle]: process.env.SQS_PREPARE_BUNDLE_URL,
+      [jobLabels.postBundle]: process.env.SQS_POST_BUNDLE_URL,
+      [jobLabels.seedBundle]: process.env.SQS_SEED_BUNDLE_URL,
+      [jobLabels.opticalPost]: process.env.SQS_OPTICAL_URL,
+      [jobLabels.unbundleBdi]: process.env.SQS_UNBUNDLE_BDI_URL,
+      [jobLabels.finalizeUpload]: process.env.SQS_FINALIZE_UPLOAD_URL,
+      [jobLabels.newDataItem]: process.env.SQS_NEW_DATA_ITEM_URL,
+    };
+  const queueUrl = queueUrlFromEnvVarMap[type];
+  if (!queueUrl) {
+    throw new Error(`Queue URL not found for type ${type}`);
+  }
+
+  return queueUrl;
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

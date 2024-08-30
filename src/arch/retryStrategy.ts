@@ -141,7 +141,6 @@ export class ExponentialBackoffRetryStrategy<
 
       this.lastError = resp.statusText ?? JSON.stringify(resp);
     } catch (err) {
-      logger.warn(err);
       this.lastError = err instanceof Error ? err.message : "unknown error";
     }
 

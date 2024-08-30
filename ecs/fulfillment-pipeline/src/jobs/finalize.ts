@@ -23,17 +23,15 @@ import { Database } from "../../../../src/arch/db/database";
 import { ObjectStore } from "../../../../src/arch/objectStore";
 import { PaymentService } from "../../../../src/arch/payment";
 import { getQueueUrl } from "../../../../src/arch/queues";
-import { gatewayUrl } from "../../../../src/constants";
+import { gatewayUrl, jobLabels } from "../../../../src/constants";
 import { finalizeMultipartUploadWithQueueMessage } from "../../../../src/routes/multiPartUploads";
 import {
   DataItemExistsWarning,
   InsufficientBalance,
 } from "../../../../src/utils/errors";
 import { getArweaveWallet } from "../../../../src/utils/getArweaveWallet";
-import {
-  defaultSQSOptions,
-  stubQueueHandler,
-} from "../utils/queueHandlerConfig";
+import { fulfillmentJobHandler } from "../utils/jobHandler";
+import { defaultSQSOptions } from "../utils/queueHandlerConfig";
 
 export function createFinalizeUploadConsumerQueue({
   logger,
@@ -46,8 +44,10 @@ export function createFinalizeUploadConsumerQueue({
   objectStore: ObjectStore;
   paymentService: PaymentService;
 }) {
-  const finalizeUploadQueueUrl = getQueueUrl("finalize-upload");
-  const finalizeUploadLogger = logger.child({ queue: "finalize-upload" });
+  const finalizeUploadQueueUrl = getQueueUrl(jobLabels.finalizeUpload);
+  const finalizeUploadLogger = logger.child({
+    queue: jobLabels.finalizeUpload,
+  });
   return {
     consumer: Consumer.create({
       queueUrl: finalizeUploadQueueUrl,
@@ -59,17 +59,21 @@ export function createFinalizeUploadConsumerQueue({
           }
         );
         try {
-          await finalizeMultipartUploadWithQueueMessage({
-            message,
-            logger: finalizeUploadLogger,
-            objectStore,
-            paymentService,
-            database,
-            getArweaveWallet,
-            arweaveGateway: new ArweaveGateway({
-              endpoint: gatewayUrl,
-            }),
-          });
+          await fulfillmentJobHandler(
+            () =>
+              finalizeMultipartUploadWithQueueMessage({
+                message,
+                logger: finalizeUploadLogger,
+                objectStore,
+                paymentService,
+                database,
+                getArweaveWallet,
+                arweaveGateway: new ArweaveGateway({
+                  endpoint: gatewayUrl,
+                }),
+              }),
+            jobLabels.finalizeUpload
+          );
         } catch (error) {
           if (error instanceof DataItemExistsWarning) {
             finalizeUploadLogger.warn("Data item already exists", {
@@ -91,8 +95,6 @@ export function createFinalizeUploadConsumerQueue({
       visibilityTimeout: 30,
       pollingWaitTimeMs: 500,
     }),
-    queueUrl: finalizeUploadQueueUrl, // unused
-    handler: stubQueueHandler, // unused
     logger: finalizeUploadLogger,
   };
 }

@@ -126,8 +126,8 @@ function stubPermanentDataItemInsert({
     plan_id: planId ?? stubPlanId,
     planned_date: stubDates.earliestDate,
     bundle_id: bundleId,
-    block_height: stubBlockHeight.toString(),
-    deadline_height: "200",
+    block_height: stubBlockHeight,
+    deadline_height: 200,
   };
 }
 
@@ -218,7 +218,7 @@ export class DbTestHelper {
   public async insertStubPermanentDataItem(
     insertParams: InsertStubPermanentDataItemParams
   ): Promise<void> {
-    return this.knex(tableNames.permanentDataItem).insert(
+    return this.knex(tableNames.permanentDataItems).insert(
       stubPermanentDataItemInsert(insertParams)
     );
   }
@@ -390,7 +390,7 @@ export class DbTestHelper {
     const dataItemTables: TableNameValues[] = [
       "new_data_item",
       "planned_data_item",
-      "permanent_data_item",
+      "permanent_data_items",
     ];
 
     const where =

@@ -40,6 +40,7 @@ import {
   arnsContractTxId,
   dedicatedBundleTypes,
   gatewayUrl,
+  jobLabels,
   tickArnsContractEnabled,
 } from "../constants";
 import defaultLogger from "../logger";
@@ -96,7 +97,7 @@ export async function prepareBundleHandler(
     pricing = new PricingService(arweaveGateway),
     arweave = new ArweaveInterface(),
   }: PrepareBundleJobInjectableArch,
-  logger = defaultLogger.child({ job: "prepare-bundle-job", planId })
+  logger = defaultLogger.child({ job: jobLabels.prepareBundle, planId })
 ): Promise<void> {
   if (!jwk) {
     jwk = await getArweaveWallet();
@@ -289,7 +290,7 @@ export async function prepareBundleHandler(
     }
     throw error;
   }
-  await enqueue("post-bundle", { planId });
+  await enqueue(jobLabels.postBundle, { planId });
 
   logger.info("Successfully updated object-store with bundle transaction", {
     bundleTx: filterKeysFromObject(bundleTx, [
@@ -301,7 +302,7 @@ export async function prepareBundleHandler(
   });
 }
 export const handler = createQueueHandler(
-  "prepare-bundle",
+  jobLabels.prepareBundle,
   (message: { planId: PlanId }) =>
     prepareBundleHandler(message.planId, defaultArchitecture),
   {

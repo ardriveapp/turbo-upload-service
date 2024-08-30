@@ -18,15 +18,26 @@ import { Next } from "koa";
 
 import { KoaContext } from "../server";
 
+const pendingCacheAgeSeconds = 15;
+const permanentCacheAgeSeconds = 86_400; // 1 day in seconds
+
 export async function statusHandler(ctx: KoaContext, next: Next) {
   const { logger, database } = ctx.state;
+
   try {
     const info = await database.getDataItemInfo(ctx.params.id);
+
     if (info === undefined) {
       ctx.status = 404;
       ctx.body = "TX doesn't exist";
       return next();
     }
+
+    const cacheControlAgeSeconds =
+      info.status === "permanent"
+        ? permanentCacheAgeSeconds
+        : pendingCacheAgeSeconds;
+    ctx.set("Cache-Control", `public, max-age=${cacheControlAgeSeconds}`);
 
     ctx.body = {
       status:

@@ -30,7 +30,7 @@ export async function newDataItemBatchInsertHandler({
   dataItemBatch: EnqueuedNewDataItem[];
   uploadDatabase?: Database;
 }): Promise<void> {
-  logger.info(`Inserting new data items.`, {
+  logger.debug(`Inserting new data items.`, {
     dataItemBatchLength: dataItemBatch.length,
   });
 

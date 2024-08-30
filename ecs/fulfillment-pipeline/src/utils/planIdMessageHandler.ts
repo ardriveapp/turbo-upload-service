@@ -22,6 +22,7 @@ import { ArweaveGateway } from "../../../../src/arch/arweaveGateway";
 import { Database } from "../../../../src/arch/db/database";
 import { ObjectStore } from "../../../../src/arch/objectStore";
 import { PaymentService } from "../../../../src/arch/payment";
+import { fulfillmentJobHandler } from "./jobHandler";
 import { QueueHandlerConfig, defaultSQSOptions } from "./queueHandlerConfig";
 
 // A utility function for running message handlers driven by a planId field
@@ -85,6 +86,7 @@ export function createPlanIdHandlingSQSConsumer({
   objectStore,
   paymentService,
   arweaveGateway,
+  logger,
 }: {
   queue: QueueHandlerConfig;
   sqsOptions?: Partial<SQSClientConfig>;
@@ -92,20 +94,25 @@ export function createPlanIdHandlingSQSConsumer({
   objectStore: ObjectStore;
   paymentService: PaymentService;
   arweaveGateway: ArweaveGateway;
+  logger: winston.Logger;
 }) {
-  const { queueUrl, consumerOptions, logger } = queue;
+  const { queueUrl, consumerOptions } = queue;
   return Consumer.create({
     queueUrl,
     handleMessage: (message: Message) =>
-      planIdMessageHandler({
-        message,
-        logger,
-        queue,
-        database,
-        objectStore,
-        paymentService,
-        arweaveGateway,
-      }),
+      fulfillmentJobHandler(
+        () =>
+          planIdMessageHandler({
+            message,
+            logger,
+            queue,
+            database,
+            objectStore,
+            paymentService,
+            arweaveGateway,
+          }),
+        queue.jobName
+      ),
     sqs: new SQSClient(sqsOptions),
     batchSize: 1,
     // NOTE: this causes messages that experience processing_error to be reprocessed right away, we may want to create a small delay to avoid them constantly failing and blocking the queue

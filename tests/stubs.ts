@@ -69,12 +69,13 @@ export const stubPlanId = "00000000-0000-0000-0000-000000000001";
 export const stubPlanId2 = "00000000-0000-0000-0000-000000000002";
 export const stubPlanId3 = "00000000-0000-0000-0000-000000000003";
 export const stubUsdToArRate = 5.63;
-
-const baseDate = new Date("2022-09-01 16:20:00");
+const baseDate = new Date(new Date().getTime() - 28 * 24 * 60 * 60 * 1_000);
 export const stubDates = {
   earliestDate: baseDate.toISOString(),
-  middleDate: new Date(baseDate.getTime() + 60_000).toISOString(),
-  latestDate: new Date(baseDate.getTime() + 60_000).toISOString(),
+  middleDate: new Date(baseDate.getTime() + 60 * 60 * 1_000).toISOString(), // 1 hour later
+  latestDate: new Date(
+    baseDate.getTime() + 60 * 60 * 24 * 5 * 1_000 // 5 days later
+  ).toISOString(),
 };
 
 /** Stub signature will fail bundling verification */

@@ -20,10 +20,11 @@ import { SQSEvent } from "aws-lambda";
 import pLimit from "p-limit";
 import winston from "winston";
 
-import { deleteMessages, enqueue } from "../arch/queues";
+import { enqueue } from "../arch/queues";
 import { rawDataItemStartFromParsedHeader } from "../bundles/rawDataItemStartFromParsedHeader";
+import { jobLabels } from "../constants";
 import baseLogger from "../logger";
-import { ParsedDataItemHeader, TransactionId } from "../types/types";
+import { ParsedDataItemHeader } from "../types/types";
 import { ownerToNormalizedB64Address } from "../utils/base64";
 import { payloadContentTypeFromDecodedTags } from "../utils/common";
 import {
@@ -35,6 +36,15 @@ import {
   encodeTagsForOptical,
   signDataItemHeader,
 } from "../utils/opticalUtils";
+
+export type UnbundleBDIMessageBody = {
+  id: string;
+  // TODO: Make non-nullable after initial deploy. Existing records will have a string value.
+  uploaded_at?: number;
+};
+
+// TODO: Remove after initial deploy. Existing records will have a string value.
+type IncomingBDIMessageBody = string | UnbundleBDIMessageBody;
 
 export const handler = async (event: SQSEvent) => {
   const handlerLogger = baseLogger.child({ job: "unbundle-bdi-job" });
@@ -55,44 +65,40 @@ export async function unbundleBDISQSHandler(
   messages: Message[],
   logger: winston.Logger
 ) {
-  const bdiIdsToRecordsMap = messages.reduce((acc, record) => {
-    const bdiId = JSON.parse(record.Body ?? "");
-    acc[bdiId] = record;
-    return acc;
-  }, {} as Record<TransactionId, Message>);
+  const bdisToUnpack: UnbundleBDIMessageBody[] = [];
 
-  const bdisToUnpack = Object.keys(bdiIdsToRecordsMap);
+  messages.forEach((record) => {
+    const body: IncomingBDIMessageBody = JSON.parse(record.Body ?? "");
+
+    if (typeof body === "string") {
+      bdisToUnpack.push({
+        id: body,
+      });
+    } else if (typeof body === "object" && Object.keys(body).includes("id")) {
+      bdisToUnpack.push({
+        id: body.id,
+        uploaded_at: body.uploaded_at,
+      });
+    } else {
+      logger.error("Invalid message body", { body });
+    }
+  });
+
   const handledBdiIds = await unbundleBDIHandler(bdisToUnpack, logger);
 
-  // Compute unhandledRecords by getting the minusSet of handledBdiIds from bdisToUnpack and then filtering the records
-  const recordsToDelete = handledBdiIds.map(
-    (bdiId) => bdiIdsToRecordsMap[bdiId]
-  );
-  const unhandledRecords = messages.filter((record) => {
-    !recordsToDelete.includes(record);
-  });
-
-  logger.debug("Cleaning up records...", {
-    recordsToDelete,
-    unhandledRecords,
-  });
-
-  void deleteMessages(
-    "unbundle-bdi",
-    recordsToDelete.map((record) => {
-      return {
-        Id: record.MessageId,
-        ReceiptHandle: record.ReceiptHandle,
-      };
-    })
-  );
-  if (unhandledRecords.length > 0) {
-    throw new Error(`Some messages could not handled!`);
+  if (bdisToUnpack.length !== handledBdiIds.length) {
+    throw new Error(
+      `Some BDI records were not handled: ${JSON.stringify(
+        bdisToUnpack.filter(
+          (bdiToUnpack) => !handledBdiIds.includes(bdiToUnpack.id)
+        )
+      )}`
+    );
   }
 }
 
 export async function unbundleBDIHandler(
-  bdisToUnpack: string[],
+  bdisToUnpack: UnbundleBDIMessageBody[],
   logger: winston.Logger
 ) {
   logger.info("Go!", { bdisToUnpack });
@@ -103,7 +109,7 @@ export async function unbundleBDIHandler(
   // Make a best effort to unpack the BDI and stash its nested data items' payloads in the object store
   const handledBdiIds: string[] = [];
   await Promise.all(
-    bdisToUnpack.map((bdiIdToUnpack) => {
+    bdisToUnpack.map(({ id: bdiIdToUnpack, uploaded_at }) => {
       const bdiLogger = logger.child({ bdiIdToUnpack });
       return bdiParallelLimit(async () => {
         try {
@@ -120,12 +126,26 @@ export async function unbundleBDIHandler(
             dataItemReadable
           )) as ParsedDataItemHeader[];
 
-          const nestedIds = parsedDataItemHeaders.map(
-            (parsedDataItemHeader) => parsedDataItemHeader.id
+          const nestedIdsAndTags = parsedDataItemHeaders.map(
+            (parsedDataItemHeader) => {
+              return {
+                id: parsedDataItemHeader.id,
+                tags: parsedDataItemHeader.tags.map((tag) => {
+                  return {
+                    // Clamp the lengths to 64 chars
+                    name: tag.name.substring(0, 64),
+                    value: tag.value.substring(0, 64),
+                  };
+                }),
+                owner_adddress: ownerToNormalizedB64Address(
+                  parsedDataItemHeader.owner
+                ),
+              };
+            }
           );
 
           bdiLogger.info("nestedIds", {
-            nestedIds,
+            nestedIdsAndTags,
           });
 
           const nestedDataItemParallelLimit = pLimit(10);
@@ -171,9 +191,8 @@ export async function unbundleBDIHandler(
                 );
 
                 // TODO: Consider enqueue in batches
-                await enqueue(
-                  "optical-post",
-                  await signDataItemHeader(
+                await enqueue(jobLabels.opticalPost, {
+                  ...(await signDataItemHeader(
                     encodeTagsForOptical({
                       id,
                       signature,
@@ -184,8 +203,9 @@ export async function unbundleBDIHandler(
                       data_size: dataSize,
                       tags,
                     })
-                  )
-                );
+                  )),
+                  uploaded_at: uploaded_at ?? 0, // TODO: Make non-nullable after initial deploy
+                });
 
                 nestedItemLogger.debug("Finished caching nested data item.", {
                   payloadContentType,

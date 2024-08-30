@@ -20,7 +20,7 @@ import { Next } from "koa";
 import { CheckBalanceResponse, ReserveBalanceResponse } from "../arch/payment";
 import { enqueue } from "../arch/queues";
 import { StreamingDataItem } from "../bundles/streamingDataItem";
-import { signatureTypeInfo } from "../bundles/verifyDataItem";
+import { SignatureConfig, signatureTypeInfo } from "../bundles/verifyDataItem";
 import {
   anchorLength,
   blocklistedAddresses,
@@ -29,6 +29,7 @@ import {
   emptyAnchorLength,
   emptyTargetLength,
   fastFinalityIndexes,
+  jobLabels,
   maxSingleDataItemByteCount,
   octetStreamContentType,
   receiptVersion,
@@ -83,6 +84,12 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
     extractDuration: 0,
     dbInsertDuration: 0,
   };
+
+  const token = ctx.params.token;
+  let signatureTypeOverride: number | undefined;
+  if (token === "kyve") {
+    signatureTypeOverride = SignatureConfig.KYVE;
+  }
 
   const requestStartTime = Date.now();
   const {
@@ -142,7 +149,12 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
     ownerPublicAddress = await streamingDataItem.getOwnerAddress();
 
     dataItemId = await streamingDataItem.getDataItemId();
-    // signature and owner will be too noisy in the logs and the latter hashes down to ownerPublicAddress
+
+    if (signatureTypeOverride !== undefined) {
+      logger.debug("Overriding signature type from token route...");
+      signatureType = signatureTypeOverride;
+    }
+
     logger = logger.child({
       signatureType,
       ownerPublicAddress,
@@ -296,7 +308,9 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
     isValid = await streamingDataItem.isValid();
   } catch (error) {
     removeFromDataItemCache(dataItemId);
-    void removeDataItem(objectStore, dataItemId, database); // no need to await - just invoke and forget
+    await removeDataItem(objectStore, dataItemId, database).catch((error) => {
+      logger.error("Remove data item failed!", error);
+    });
     errorResponse(ctx, {
       errorMessage: "Data item parsing error!",
       error,
@@ -307,7 +321,9 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
   logger.debug(`Got data item validity.`, { isValid });
   if (!isValid) {
     removeFromDataItemCache(dataItemId);
-    void removeDataItem(objectStore, dataItemId, database);
+    await removeDataItem(objectStore, dataItemId, database).catch((error) => {
+      logger.error("Remove data item failed!", error);
+    });
     errorResponse(ctx, {
       errorMessage: "Invalid Data Item!",
     });
@@ -320,7 +336,9 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
 
   if (totalSize > maxSingleDataItemByteCount) {
     removeFromDataItemCache(dataItemId);
-    void removeDataItem(objectStore, dataItemId, database);
+    await removeDataItem(objectStore, dataItemId, database).catch((error) => {
+      logger.error("Remove data item failed!", error);
+    });
     errorResponse(ctx, {
       errorMessage: `Data item is too large, this service only accepts data items up to ${maxSingleDataItemByteCount} bytes!`,
     });
@@ -337,7 +355,9 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
     });
 
     removeFromDataItemCache(dataItemId);
-    void removeDataItem(objectStore, dataItemId, database); // don't need to await this - just invoke and move on
+    await removeDataItem(objectStore, dataItemId, database).catch((error) => {
+      logger.error("Remove data item failed!", error);
+    });
     return next();
   }
 
@@ -387,6 +407,7 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
       return next();
     }
   }
+  const uploadTimestamp = Date.now();
 
   // Enqueue data item for optical bridging
   const confirmedFeatures: {
@@ -402,21 +423,23 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
       !skipOpticalPostAddresses.includes(ownerPublicAddress)
     ) {
       logger.debug("Enqueuing data item to optical...");
-      await enqueue(
-        "optical-post",
-        await signDataItemHeader(
-          encodeTagsForOptical({
-            id: dataItemId,
-            signature,
-            owner,
-            owner_address: ownerPublicAddress,
-            target: target ?? "",
-            content_type: payloadContentType,
-            data_size: payloadDataByteCount,
-            tags,
-          })
-        )
+      const signedDataItemHeader = await signDataItemHeader(
+        encodeTagsForOptical({
+          id: dataItemId,
+          signature,
+          owner,
+          owner_address: ownerPublicAddress,
+          target: target ?? "",
+          content_type: payloadContentType,
+          data_size: payloadDataByteCount,
+          tags,
+        })
       );
+
+      await enqueue(jobLabels.opticalPost, {
+        ...signedDataItemHeader,
+        uploaded_at: uploadTimestamp,
+      });
       confirmedFeatures.fastFinalityIndexes = fastFinalityIndexes;
     } else {
       // Attach skip feature to logger for log parsing in final receipt log statement
@@ -435,7 +458,10 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
   if (containsAns104Tags(tags)) {
     try {
       logger.debug("Enqueuing BDI for unbundling...");
-      await enqueue("unbundle-bdi", dataItemId);
+      await enqueue(jobLabels.unbundleBdi, {
+        id: dataItemId,
+        uploaded_at: uploadTimestamp,
+      });
     } catch (bdiEnqueueError) {
       // Soft error, just log
       logger.error(
@@ -446,7 +472,6 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
     }
   }
 
-  let uploadTimestamp: number;
   let signedReceipt: SignedReceipt;
   let deadlineHeight: number;
   try {
@@ -458,7 +483,6 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
     const jwk = await getArweaveWallet();
 
     deadlineHeight = currentBlockHeight + deadlineHeightIncrement;
-    uploadTimestamp = Date.now();
     const receipt: UnsignedReceipt = {
       id: dataItemId,
       timestamp: uploadTimestamp,
@@ -486,7 +510,9 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
       });
     }
     removeFromDataItemCache(dataItemId);
-    void removeDataItem(objectStore, dataItemId, database); // don't need to await this - just invoke and move on
+    await removeDataItem(objectStore, dataItemId, database).catch((error) => {
+      logger.error("Remove data item failed!", error);
+    });
 
     errorResponse(ctx, {
       status: 503,
@@ -496,11 +522,15 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
     return next();
   }
 
-  const premiumFeatureType = getPremiumFeatureType(ownerPublicAddress, tags);
+  const premiumFeatureType = getPremiumFeatureType(
+    ownerPublicAddress,
+    tags,
+    signatureType
+  );
 
   const dbInsertStart = Date.now();
   try {
-    await enqueue("new-data-item", {
+    await enqueue(jobLabels.newDataItem, {
       dataItemId,
       ownerPublicAddress,
       assessedWinstonPrice: paymentResponse.costOfDataItem,

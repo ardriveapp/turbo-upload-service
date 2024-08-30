@@ -43,6 +43,7 @@ if (optionalOpticalUrls) {
     );
   });
 }
+let cachedAxios: AxiosInstance | undefined = undefined;
 
 export const opticalPostHandler = async ({
   stringifiedDataItemHeaders,
@@ -79,7 +80,7 @@ export const opticalPostHandler = async ({
     headers["Authorization"] = `Bearer ${process.env.AR_IO_ADMIN_KEY}`;
   }
 
-  const axios = createAxiosInstance({
+  cachedAxios ??= createAxiosInstance({
     retries: 3,
     config: {
       validateStatus: () => true,
@@ -90,7 +91,7 @@ export const opticalPostHandler = async ({
   try {
     for (const circuitBreaker of optionalCircuitBreakers) {
       circuitBreaker
-        .fire(axios, postBody)
+        .fire(cachedAxios, postBody)
         .then(() => {
           childLogger.debug(`Successfully posted to optional optical bridge`);
         })
@@ -100,7 +101,7 @@ export const opticalPostHandler = async ({
           );
         });
     }
-    const { status, statusText } = await axios.post(
+    const { status, statusText } = await cachedAxios.post(
       primaryOpticalUrl,
       postBody
     );

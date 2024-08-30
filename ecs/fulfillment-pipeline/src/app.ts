@@ -14,16 +14,17 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-import { Message } from "@aws-sdk/client-sqs";
+import { Message, SQSClient } from "@aws-sdk/client-sqs";
 import Koa from "koa";
 import Router from "koa-router";
 import * as promClient from "prom-client";
 import { Consumer } from "sqs-consumer";
+import { Logger } from "winston";
 
 import { ArweaveGateway } from "../../../src/arch/arweaveGateway";
 import { PostgresDatabase } from "../../../src/arch/db/postgres";
 import { TurboPaymentService } from "../../../src/arch/payment";
-import { migrateOnStartup } from "../../../src/constants";
+import { jobLabels, migrateOnStartup } from "../../../src/constants";
 import { postBundleHandler } from "../../../src/jobs/post";
 import { prepareBundleHandler } from "../../../src/jobs/prepare";
 import { seedBundleHandler } from "../../../src/jobs/seed";
@@ -39,7 +40,10 @@ import { createUnbundleBDIQueueConsumer } from "./jobs/unbundleBdi";
 import { VerifyBundleJobScheduler } from "./jobs/verify";
 import { JobScheduler } from "./utils/jobScheduler";
 import { createPlanIdHandlingSQSConsumer } from "./utils/planIdMessageHandler";
-import { QueueHandlerConfig } from "./utils/queueHandlerConfig";
+import {
+  QueueHandlerConfig,
+  defaultSQSOptions,
+} from "./utils/queueHandlerConfig";
 
 // let otelExporter: OTELExporter | undefined; // eslint-disable-line
 
@@ -81,11 +85,11 @@ const paymentService = new TurboPaymentService();
 const arweaveGateway = new ArweaveGateway();
 
 // Set up queue handler configurations for jobs based on a planId
-export const queues: QueueHandlerConfig[] = [
+const planIdQueueHandlerConfigs: QueueHandlerConfig[] = [
   {
     queueUrl: prepareBundleQueueUrl,
+    jobName: jobLabels.prepareBundle,
     handler: prepareBundleHandler,
-    logger: globalLogger.child({ queue: "prepare-bundle" }),
     consumerOptions: {
       pollingWaitTimeMs: 1000,
       visibilityTimeout: 360,
@@ -94,8 +98,8 @@ export const queues: QueueHandlerConfig[] = [
   },
   {
     queueUrl: postBundleQueueUrl,
+    jobName: jobLabels.postBundle,
     handler: postBundleHandler,
-    logger: globalLogger.child({ queue: "post-bundle" }),
     consumerOptions: {
       pollingWaitTimeMs: 1000,
       visibilityTimeout: 90,
@@ -103,8 +107,8 @@ export const queues: QueueHandlerConfig[] = [
   },
   {
     queueUrl: seedBundleQueueUrl,
+    jobName: jobLabels.seedBundle,
     handler: seedBundleHandler,
-    logger: globalLogger.child({ queue: "seed-bundle" }),
     consumerOptions: {
       pollingWaitTimeMs: 10,
       visibilityTimeout: 360,
@@ -113,18 +117,22 @@ export const queues: QueueHandlerConfig[] = [
   },
 ];
 
-type ConsumerQueue = QueueHandlerConfig & { consumer: Consumer };
+type ConsumerQueue = { consumer: Consumer; logger: Logger };
 
-const consumers: ConsumerQueue[] = queues.map((queue) => ({
-  consumer: createPlanIdHandlingSQSConsumer({
-    queue,
-    database: uploadDatabase,
-    objectStore,
-    paymentService,
-    arweaveGateway,
-  }),
-  ...queue,
-}));
+const consumers: ConsumerQueue[] = planIdQueueHandlerConfigs.map((queue) => {
+  const logger = globalLogger.child({ queue: queue.jobName });
+  return {
+    logger,
+    consumer: createPlanIdHandlingSQSConsumer({
+      logger,
+      queue,
+      database: uploadDatabase,
+      objectStore,
+      paymentService,
+      arweaveGateway,
+    }),
+  };
+});
 
 let shouldExit = false;
 let numInflightMessages = 0;
@@ -237,6 +245,8 @@ type ConsumerProvisioningConfig = {
   friendlyQueueName: string;
 };
 
+const sqsClient = new SQSClient(defaultSQSOptions);
+
 const consumerQueues: ConsumerProvisioningConfig[] = [
   {
     envVarCountStr: process.env.NUM_FINALIZE_UPLOAD_CONSUMERS,
@@ -248,13 +258,13 @@ const consumerQueues: ConsumerProvisioningConfig[] = [
         objectStore,
         paymentService,
       }),
-    friendlyQueueName: "finalize-upload",
+    friendlyQueueName: jobLabels.finalizeUpload,
   },
   {
     envVarCountStr: process.env.NUM_OPTICAL_CONSUMERS,
     defaultCount: 3,
     createConsumerQueueFn: () => createOpticalConsumerQueue(globalLogger),
-    friendlyQueueName: "optical",
+    friendlyQueueName: jobLabels.opticalPost,
   },
   {
     envVarCountStr: process.env.NUM_NEW_DATA_ITEM_INSERT_CONSUMERS,
@@ -263,14 +273,15 @@ const consumerQueues: ConsumerProvisioningConfig[] = [
       createNewDataItemBatchInsertQueue({
         database: uploadDatabase,
         logger: globalLogger,
+        sqsClient,
       }),
-    friendlyQueueName: "new-data-item",
+    friendlyQueueName: jobLabels.newDataItem,
   },
   {
     envVarCountStr: process.env.NUM_UNBUNDLE_BDI_CONSUMERS,
     defaultCount: 1,
     createConsumerQueueFn: () => createUnbundleBDIQueueConsumer(globalLogger),
-    friendlyQueueName: "unbundle-bdi",
+    friendlyQueueName: jobLabels.unbundleBdi,
   },
 ];
 

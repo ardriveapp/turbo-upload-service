@@ -46,6 +46,7 @@ export enum SignatureConfig {
   INJECTEDAPTOS = 5,
   MULTIAPTOS = 6,
   TYPEDETHEREUM = 7,
+  KYVE = 101,
 }
 
 export const signatureTypeInfo: Record<number, SigInfo> = {
@@ -83,6 +84,11 @@ export const signatureTypeInfo: Record<number, SigInfo> = {
     signatureLength: 65,
     pubkeyLength: 42,
     name: "typedEthereum",
+  },
+  [SignatureConfig.KYVE]: {
+    signatureLength: 65,
+    pubkeyLength: 65,
+    name: "kyve",
   },
 };
 

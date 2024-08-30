@@ -17,7 +17,9 @@
 import winston from "winston";
 
 import { Database } from "../../../../src/arch/db/database";
+import { jobLabels } from "../../../../src/constants";
 import { planBundleHandler } from "../../../../src/jobs/plan";
+import { fulfillmentJobHandler } from "../utils/jobHandler";
 import { JobScheduler } from "../utils/jobScheduler";
 
 export class PlanBundleJobScheduler extends JobScheduler {
@@ -32,15 +34,19 @@ export class PlanBundleJobScheduler extends JobScheduler {
     logger: winston.Logger;
     database: Database;
   }) {
-    super({ intervalMs, schedulerName: "plan-bundle", logger });
+    super({ intervalMs, schedulerName: jobLabels.planBundle, logger });
     this.database = database;
   }
 
   async processJob(): Promise<void> {
-    await planBundleHandler(this.database, undefined, this.logger).catch(
-      (error) => {
-        this.logger.error("Error planning bundle", error);
-      }
+    await fulfillmentJobHandler(
+      () =>
+        planBundleHandler(this.database, undefined, this.logger).catch(
+          (error) => {
+            this.logger.error("Error planning bundle", error);
+          }
+        ),
+      jobLabels.planBundle
     );
   }
 }

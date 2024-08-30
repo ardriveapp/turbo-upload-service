@@ -21,7 +21,7 @@ import { PostgresDatabase } from "../arch/db/postgres";
 import { ObjectStore } from "../arch/objectStore";
 import { PaymentService, TurboPaymentService } from "../arch/payment";
 import { createQueueHandler, enqueue } from "../arch/queues";
-import { gatewayUrl } from "../constants";
+import { gatewayUrl, jobLabels } from "../constants";
 import defaultLogger from "../logger";
 import { MetricRegistry } from "../metricRegistry";
 import { PlanId } from "../types/dbTypes";
@@ -88,7 +88,7 @@ export async function postBundleHandler(
     });
 
     await database.insertPostedBundle({ bundleId, usdToArRate });
-    await enqueue("seed-bundle", { planId });
+    await enqueue(jobLabels.seedBundle, { planId });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error.";
     logger.error("Post Bundle Job has failed!", {
@@ -115,7 +115,7 @@ export async function postBundleHandler(
   }
 }
 export const handler = createQueueHandler(
-  "post-bundle",
+  jobLabels.postBundle,
   (message) => postBundleHandler(message.planId, defaultArchitecture),
   {
     before: async () => {

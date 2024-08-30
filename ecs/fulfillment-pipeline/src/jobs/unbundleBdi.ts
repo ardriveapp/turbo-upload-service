@@ -19,16 +19,15 @@ import { Consumer } from "sqs-consumer";
 import winston from "winston";
 
 import { getQueueUrl } from "../../../../src/arch/queues";
+import { jobLabels } from "../../../../src/constants";
 import { unbundleBDISQSHandler } from "../../../../src/jobs/unbundle-bdi";
-import {
-  defaultSQSOptions,
-  stubQueueHandler,
-} from "../utils/queueHandlerConfig";
+import { fulfillmentJobHandler } from "../utils/jobHandler";
+import { defaultSQSOptions } from "../utils/queueHandlerConfig";
 
 export function createUnbundleBDIQueueConsumer(logger: winston.Logger) {
-  const unbundleBDIQueueUrl = getQueueUrl("unbundle-bdi");
+  const unbundleBDIQueueUrl = getQueueUrl(jobLabels.unbundleBdi);
   const unbundleBDILogger = logger.child({
-    queue: "unbundle-bdi",
+    queue: jobLabels.unbundleBdi,
   });
   return {
     consumer: Consumer.create({
@@ -41,13 +40,14 @@ export function createUnbundleBDIQueueConsumer(logger: winston.Logger) {
             messages,
           }
         );
-        return unbundleBDISQSHandler(messages, unbundleBDILogger);
+        return fulfillmentJobHandler(
+          () => unbundleBDISQSHandler(messages, unbundleBDILogger),
+          jobLabels.unbundleBdi
+        );
       },
       batchSize: 10,
       terminateVisibilityTimeout: true, // Re-enqueue failures immediately on processing error
     }),
-    queueUrl: unbundleBDIQueueUrl, // unused
-    handler: stubQueueHandler, // unused
     logger: unbundleBDILogger,
   };
 }
