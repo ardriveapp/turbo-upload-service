@@ -22,7 +22,7 @@ import { Database } from "../arch/db/database";
 import { PostgresDatabase } from "../arch/db/postgres";
 import { enqueue } from "../arch/queues";
 import { BundlePacker, PackerBundlePlan } from "../bundles/bundlePacker";
-import { dedicatedBundleTypes } from "../constants";
+import { dedicatedBundleTypes, jobLabels } from "../constants";
 import defaultLogger from "../logger";
 import { NewDataItem } from "../types/dbTypes";
 import { generateArrayChunks } from "../utils/common";
@@ -34,10 +34,6 @@ export async function planBundleHandler(
   bundlePacker: BundlePacker = new BundlePacker({}),
   logger = defaultLogger.child({ job: "plan-bundle-job" })
 ) {
-  /**
-   * NOTE: this locks DB items, but only for the duration of this query.
-   * The primary intent is to prevent 2 concurrent executions competing for work.
-   * */
   const dbDataItems = await database.getNewDataItems();
 
   if (dbDataItems.length === 0) {
@@ -125,7 +121,7 @@ export async function planBundleHandler(
         });
       }
       await database.insertBundlePlan(planId, dataItemIds);
-      await enqueue("prepare-bundle", { planId });
+      await enqueue(jobLabels.prepareBundle, { planId });
     })
   );
 

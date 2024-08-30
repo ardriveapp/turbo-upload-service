@@ -172,8 +172,8 @@ export function permanentDataItemDbResultToPermanentDataItemMap({
     plannedDate: planned_date,
     bundleId: bundle_id,
     permanentDate: permanent_date,
-    blockHeight: +block_height,
-    deadlineHeight: deadline_height ? +deadline_height : undefined,
+    blockHeight: block_height,
+    deadlineHeight: deadline_height ? deadline_height : undefined,
   };
 }
 

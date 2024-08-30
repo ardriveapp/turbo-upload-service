@@ -30,6 +30,7 @@ import { StreamingDataItem } from "../bundles/streamingDataItem";
 import {
   blocklistedAddresses,
   deadlineHeightIncrement,
+  jobLabels,
   receiptVersion,
   skipOpticalPostAddresses,
 } from "../constants";
@@ -687,19 +688,20 @@ export async function finalizeMPUWithInFlightEntity({
     });
 
   const verifyDataStartTime = Date.now();
-  let { readable: dataItemReadable, etag: finalizedEtag } =
-    await getMultipartUpload().catch((error) => {
-      if ((error as { Code: string }).Code === "AccessDenied") {
-        fnLogger.debug(
-          "Access denied to multipart upload object, key may not yet exist."
-        );
-      } else {
-        fnLogger.error("Error getting multipart upload object", {
-          error,
-        });
-      }
-      return { readable: undefined, etag: undefined };
-    });
+  const multipartUploadObject = await getMultipartUpload().catch((error) => {
+    if ((error as { Code: string }).Code === "AccessDenied") {
+      fnLogger.debug(
+        "Access denied to multipart upload object, key may not yet exist."
+      );
+    } else {
+      fnLogger.error("Error getting multipart upload object", {
+        error,
+      });
+    }
+    return { readable: undefined, etag: undefined };
+  });
+  let dataItemReadable = multipartUploadObject.readable;
+  let finalizedEtag = multipartUploadObject.etag;
 
   if (dataItemReadable === undefined || finalizedEtag === undefined) {
     // Check for parts. If it throws, we're done... (hopefully 404)
@@ -721,21 +723,18 @@ export async function finalizeMPUWithInFlightEntity({
     });
 
     if (asyncValidation) {
-      await enqueue("finalize-upload", {
+      await enqueue(jobLabels.finalizeUpload, {
         uploadId,
       });
 
       // Use a thrown custom error to shift control flow
       throw new EnqueuedForValidationError(uploadId);
     }
+
+    dataItemReadable ??= (await getMultipartUpload()).readable;
   }
 
   // Stream out the data items headers (for accounting and receipts) and verify the data item
-  const multipartUploadObject = await getMultipartUpload();
-  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-  dataItemReadable = multipartUploadObject.readable!;
-  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-  finalizedEtag = multipartUploadObject.etag!;
   const dataItemStream = new StreamingDataItem(dataItemReadable, fnLogger);
   const cleanUpDataItemStreamAndThrow = (error: Error) => {
     dataItemReadable?.destroy();
@@ -794,7 +793,11 @@ export async function finalizeMPUWithInFlightEntity({
     msPerByte: (Date.now() - verifyDataStartTime) / payloadDataByteCount,
   });
 
-  const premiumFeatureType = getPremiumFeatureType(ownerPublicAddress, tags);
+  const premiumFeatureType = getPremiumFeatureType(
+    ownerPublicAddress,
+    tags,
+    signatureType
+  );
 
   // Prepare the data needed for optical posting and new_data_item insert
   const dataItemInfo: Omit<
@@ -948,7 +951,8 @@ export async function finalizeMPUWithValidatedInfo({
       payloadContentType,
       premiumFeatureType: getPremiumFeatureType(
         ownerPublicAddress,
-        dataItemHeaders.tags
+        dataItemHeaders.tags,
+        signatureType
       ),
       signatureType,
       assessedWinstonPrice: W("0"), // Stubbed until new_data_item insert
@@ -1022,7 +1026,8 @@ export async function finalizeMPUWithRawDataItem({
     payloadContentType: payloadContentTypeFromDecodedTags(dataItemHeaders.tags),
     premiumFeatureType: getPremiumFeatureType(
       ownerPublicAddress,
-      dataItemHeaders.tags
+      dataItemHeaders.tags,
+      signatureType
     ),
     signatureType,
     assessedWinstonPrice: W("0"), // Stubbed until new_data_item insert
@@ -1130,21 +1135,22 @@ export async function finalizeMPUWithDataItemInfo({
   ) {
     fnLogger.debug("Asynchronously optical posting...");
     try {
-      void enqueue(
-        "optical-post",
-        await signDataItemHeader(
-          encodeTagsForOptical({
-            id: dataItemInfo.dataItemId,
-            signature: toB64Url(dataItemInfo.signature),
-            owner: dataItemInfo.owner,
-            owner_address: dataItemInfo.ownerPublicAddress,
-            target: dataItemInfo.target ?? "",
-            content_type: dataItemInfo.payloadContentType,
-            data_size: dataItemInfo.byteCount - dataItemInfo.payloadDataStart,
-            tags: dataItemInfo.tags,
-          })
-        )
-      ).catch((error) => {
+      const signedDataItemHeader = await signDataItemHeader(
+        encodeTagsForOptical({
+          id: dataItemInfo.dataItemId,
+          signature: toB64Url(dataItemInfo.signature),
+          owner: dataItemInfo.owner,
+          owner_address: dataItemInfo.ownerPublicAddress,
+          target: dataItemInfo.target ?? "",
+          content_type: dataItemInfo.payloadContentType,
+          data_size: dataItemInfo.byteCount - dataItemInfo.payloadDataStart,
+          tags: dataItemInfo.tags,
+        })
+      );
+      void enqueue(jobLabels.opticalPost, {
+        ...signedDataItemHeader,
+        uploaded_at: uploadTimestamp,
+      }).catch((error) => {
         fnLogger.error("Error enqueuing data item to optical", { error });
         MetricRegistry.opticalBridgeEnqueueFail.inc();
       });
@@ -1163,7 +1169,10 @@ export async function finalizeMPUWithDataItemInfo({
   if (containsAns104Tags(dataItemInfo.tags)) {
     try {
       logger.debug("Enqueuing BDI for unbundling...");
-      await enqueue("unbundle-bdi", dataItemInfo.dataItemId);
+      await enqueue(jobLabels.unbundleBdi, {
+        id: dataItemInfo.dataItemId,
+        uploaded_at: uploadTimestamp,
+      });
     } catch (bdiEnqueueError) {
       // Soft error, just log
       logger.error(

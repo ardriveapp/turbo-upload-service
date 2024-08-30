@@ -123,9 +123,9 @@ const regionsToClients: Record<BucketRegion, S3Client> = {};
         requestHandler: new NodeHttpHandler({
           httpsAgent: new https.Agent({
             keepAlive: true,
-            timeout: 0,
+            timeout: 60_000,
           }),
-          requestTimeout: 0,
+          connectionTimeout: 5_000,
         }),
         region,
         retryStrategy: defaultRetryStrategy,
@@ -165,9 +165,9 @@ const defaultS3Client = new S3Client({
   requestHandler: new NodeHttpHandler({
     httpsAgent: new https.Agent({
       keepAlive: true,
-      timeout: 0,
+      timeout: 60_000,
     }),
-    requestTimeout: 0,
+    connectionTimeout: 5_000,
   }),
   retryStrategy: defaultRetryStrategy,
   region: process.env.AWS_REGION ?? "us-east-1",
@@ -314,12 +314,10 @@ export class S3ObjectStore implements ObjectStore {
   public async createMultipartUpload(Key: string): Promise<string> {
     try {
       let Metadata;
-      let Tagging: string | undefined;
       if (awsAccountId) {
         Metadata = {
           uploader: awsAccountId,
         };
-        Tagging = `uploader=${encodeURIComponent(awsAccountId)}`;
       }
 
       // Step 1: Start the multipart upload and get the upload ID
@@ -327,7 +325,6 @@ export class S3ObjectStore implements ObjectStore {
         Bucket: this.bucketName,
         Key,
         Metadata,
-        Tagging,
       });
       const createMultipartUploadResponse = await s3ClientForBucket(
         this.bucketName
@@ -549,12 +546,10 @@ export class S3ObjectStore implements ObjectStore {
     ContentType?: string;
     ContentLength?: number;
     Metadata?: Record<string, string>;
-    Tagging?: string;
   } {
     const { contentType, contentLength, payloadInfo } = Options;
 
     const Metadata: Record<string, string> = {};
-    let Tagging: string | undefined;
     if (payloadInfo) {
       Metadata[
         payloadDataStartS3MetaDataTag
@@ -564,7 +559,6 @@ export class S3ObjectStore implements ObjectStore {
     }
     if (awsAccountId) {
       Metadata.uploader = awsAccountId;
-      Tagging = `uploader=${encodeURIComponent(awsAccountId)}`;
     }
 
     return {
@@ -576,7 +570,6 @@ export class S3ObjectStore implements ObjectStore {
             Metadata,
           }
         : {}),
-      Tagging,
     };
   }
 
@@ -599,7 +592,6 @@ export class S3ObjectStore implements ObjectStore {
         CopySource: `${sourceBucketName}/${encodeURIComponent(sourceKey)}`,
         Key: destinationKey,
         MetadataDirective: "REPLACE",
-        TaggingDirective: "COPY",
       };
 
       fnLogger.debug(`Moving S3 object...`, {

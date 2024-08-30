@@ -18,15 +18,16 @@ import { ConsumerOptions } from "sqs-consumer";
 import winston from "winston";
 
 import { Architecture } from "../../../../src/arch/architecture";
+import { JobLabel } from "../../../../src/constants";
 
 export type QueueHandlerConfig = {
   queueUrl: string;
+  jobName: JobLabel;
   handler: (
     planId: string,
     arch: Partial<Omit<Architecture, "logger">>,
     logger: winston.Logger
   ) => Promise<void>;
-  logger: winston.Logger;
   consumerOptions?: Partial<ConsumerOptions>;
 };
 
@@ -58,12 +59,4 @@ export const defaultSQSOptions = {
         credentials: awsCredentials,
       }
     : {}),
-};
-
-export const stubQueueHandler = async (
-  _: string,
-  __: Partial<Omit<Architecture, "logger">>,
-  ___: winston.Logger
-) => {
-  return;
 };

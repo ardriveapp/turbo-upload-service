@@ -14,6 +14,9 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+import { pubkeyToAddress } from "@cosmjs/amino";
+import { Secp256k1 } from "@cosmjs/crypto";
+import { toBase64 } from "@cosmjs/encoding";
 import { computePublicKey } from "@ethersproject/signing-key";
 import bs58 from "bs58";
 import { computeAddress } from "ethers";
@@ -35,6 +38,15 @@ export function ownerToNativeAddress(
 
     case SignatureConfig.ETHEREUM:
       return computeAddress(computePublicKey(fromB64Url(owner)));
+
+    case SignatureConfig.KYVE:
+      return pubkeyToAddress(
+        {
+          type: "tendermint/PubKeySecp256k1",
+          value: toBase64(Secp256k1.compressPubkey(fromB64Url(owner))),
+        },
+        "kyve"
+      );
 
     case SignatureConfig.ARWEAVE:
     default:

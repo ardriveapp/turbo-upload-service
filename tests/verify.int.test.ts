@@ -76,7 +76,7 @@ describe("Verify bundle job handler function integrated with PostgresDatabase cl
           dataItemId
         );
         await dbTestHelper.cleanUpEntityInDb(
-          tableNames.permanentDataItem,
+          tableNames.permanentDataItems,
           dataItemId
         );
         await dbTestHelper.cleanUpEntityInDb(
@@ -117,7 +117,7 @@ describe("Verify bundle job handler function integrated with PostgresDatabase cl
 
     const permanentDataItemDbResult = await db[
       "writer"
-    ]<PermanentDataItemDBResult>(tableNames.permanentDataItem).whereIn(
+    ]<PermanentDataItemDBResult>(tableNames.permanentDataItems).whereIn(
       columnNames.dataItemId,
       dataItemIds
     );
@@ -175,7 +175,7 @@ describe("Verify bundle job handler function integrated with PostgresDatabase cl
 
     const permanentDataItemDbResult = await db[
       "writer"
-    ]<PermanentDataItemDBResult>(tableNames.permanentDataItem).whereIn(
+    ]<PermanentDataItemDBResult>(tableNames.permanentDataItems).whereIn(
       columnNames.dataItemId,
       dataItemIds
     );
@@ -216,7 +216,7 @@ describe("Verify bundle job handler function integrated with PostgresDatabase cl
 
     const permanentDataItemDbResult = await db[
       "writer"
-    ]<PermanentDataItemDBResult>(tableNames.permanentDataItem).whereIn(
+    ]<PermanentDataItemDBResult>(tableNames.permanentDataItems).whereIn(
       columnNames.dataItemId,
       dataItemIds
     );
@@ -357,7 +357,7 @@ describe("Verify bundle job handler function integrated with PostgresDatabase cl
 
     const permanentDataItemDbResult = await db[
       "writer"
-    ]<PermanentDataItemDBResult>(tableNames.permanentDataItem).where(
+    ]<PermanentDataItemDBResult>(tableNames.permanentDataItems).where(
       columnNames.dataItemId,
       stubTxId14
     );

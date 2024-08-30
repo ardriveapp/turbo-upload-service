@@ -40,8 +40,8 @@ const router = new Router();
 // post routes
 router.post("/v1/tx", dataItemRoute);
 router.post("/tx", dataItemRoute);
-router.post("/v1/tx/:currency", dataItemRoute);
-router.post("/tx/:currency", dataItemRoute);
+router.post("/v1/tx/:token", dataItemRoute);
+router.post("/tx/:token", dataItemRoute);
 
 /**
  * START TEMPORARY PATCH TO SUPPORT up.arweave.net

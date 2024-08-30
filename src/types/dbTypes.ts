@@ -193,15 +193,29 @@ export interface PlannedDataItemDBInsert extends NewDataItemDBResult {
 
 export type PlannedDataItemDBResult = PlannedDataItemDBInsert;
 
-export interface PermanentDataItemDBInsert
-  extends Omit<PlannedDataItemDBResult, "signature"> {
-  block_height: string;
+export type PermanentDataItemDBInsert = {
+  data_item_id: string;
+  owner_public_address: string;
+  byte_count: string;
+  uploaded_date: string;
+  assessed_winston_price: string;
+  plan_id: string;
+  planned_date: string;
   bundle_id: string;
-}
 
-export interface PermanentDataItemDBResult extends PermanentDataItemDBInsert {
+  block_height: number;
+
+  data_start: number | null;
+  signature_type: number | null;
+  failed_bundles: string | null;
+  content_type: string | null;
+  premium_feature_type: string | null;
+  deadline_height: number | null;
+};
+
+export type PermanentDataItemDBResult = PermanentDataItemDBInsert & {
   permanent_date: string;
-}
+};
 
 export interface FailedDataItemDBInsert extends PlannedDataItemDBResult {
   failed_reason: DataItemFailedReason;
@@ -338,4 +352,5 @@ export type MultipartUploadFailedReason = "INVALID" | "UNDERFUNDED";
 export type DataItemDbResults =
   | NewDataItemDBResult
   | PlannedDataItemDBResult
-  | PermanentDataItemDBResult; // TODO: FailedDataItemDBResult
+  | PermanentDataItemDBResult
+  | FailedDataItemDBResult;

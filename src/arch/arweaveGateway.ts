@@ -20,7 +20,7 @@ import axios, { AxiosInstance, AxiosResponse } from "axios";
 
 import { gatewayUrl, msPerMinute } from "../constants";
 import logger from "../logger";
-import GQLResultInterface from "../types/gqlTypes";
+import GQLResultInterface, { GQLEdgeInterface } from "../types/gqlTypes";
 import {
   ConfirmedTransactionStatus,
   TransactionStatus,
@@ -28,6 +28,7 @@ import {
 } from "../types/txStatus";
 import { ByteCount, PublicArweaveAddress, TransactionId } from "../types/types";
 import { W, Winston } from "../types/winston";
+import { getHttpAgents } from "./axiosClient";
 import {
   ExponentialBackoffRetryStrategy,
   RetryStrategy,
@@ -80,7 +81,9 @@ export class ArweaveGateway implements Gateway {
   constructor({
     endpoint = gatewayUrl,
     retryStrategy = new ExponentialBackoffRetryStrategy({}),
-    axiosInstance = axios.create(), // defaults to throwing errors for status codes >400
+    axiosInstance = axios.create({
+      ...getHttpAgents(),
+    }), // defaults to throwing errors for status codes >400
   }: GatewayAPIConstParams = {}) {
     this.endpoint = endpoint;
     this.retryStrategy = retryStrategy;
@@ -195,41 +198,44 @@ export class ArweaveGateway implements Gateway {
         dataItemIds,
       });
 
-      const dataItems = await this.axiosInstance
-        .post<GQLResultInterface>(this.endpoint.href + "graphql", {
-          query: `
-                query {
-                  transactions(ids: [${dataItemIds.map(
-                    (id) => `"${id}"`
-                  )}] first: ${this.gqlPageSize}) {
-                    edges {
-                      node {
-                        id
-                        block {
-                          height
-                        }
-                        bundledIn {
-                          id
-                        }
-                      }
-                    }
+      const gqlResponse = await this.retryStrategy.sendRequest(() =>
+        this.axiosInstance.post<GQLResultInterface>(
+          this.endpoint.href + "graphql",
+          {
+            query: `
+          query {
+            transactions(ids: [${dataItemIds.map((id) => `"${id}"`)}] first: ${
+              this.gqlPageSize
+            }) {
+              edges {
+                node {
+                  id
+                  block {
+                    height
                   }
-                }`,
-        })
-        .then((statusResponse) => {
-          if (statusResponse?.data?.data?.transactions?.edges?.length > 0) {
-            return statusResponse.data.data.transactions.edges.map((edge) => ({
-              id: edge.node.id,
-              blockHeight: edge.node.block?.height,
-              bundledIn: edge.node.bundledIn?.id,
-            }));
+                  bundledIn {
+                    id
+                  }
+                }
+              }
+            }
+          }`,
           }
-          return [];
-        });
+        )
+      );
 
-      return dataItems;
+      return gqlResponse?.data.data.transactions.edges.map(
+        (edge: GQLEdgeInterface) => ({
+          id: edge.node.id,
+          blockHeight: edge.node.block?.height,
+          bundledIn: edge.node.bundledIn?.id,
+        })
+      );
     } catch (error) {
-      logger.error("Error querying transaction on GQL", error);
+      logger.error("Error querying transaction on GQL", {
+        dataItemIds,
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
       throw error;
     }
   }
@@ -266,7 +272,10 @@ export class ArweaveGateway implements Gateway {
         throw Error("Could not fetch tx anchor");
       }
     } catch (error) {
-      logger.error("Error getting block height for tx anchor", error);
+      logger.error("Error getting block height for tx anchor", {
+        txAnchor,
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
       throw error;
     }
   }
@@ -370,7 +379,9 @@ export class ArweaveGateway implements Gateway {
         timestamp,
       };
     } catch (error) {
-      logger.error("Error getting current block info", error);
+      logger.error("Error getting current block info", {
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
       throw error;
     }
   }

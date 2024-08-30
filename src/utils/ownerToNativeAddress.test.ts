@@ -14,6 +14,10 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+import { Secp256k1HdWallet, makeCosmoshubPath } from "@cosmjs/amino";
+import { Slip10, Slip10Curve } from "@cosmjs/crypto";
+import { toHex } from "@cosmjs/encoding";
+import KyveSDK from "@kyvejs/sdk";
 import {
   ArweaveSigner,
   EthereumSigner,
@@ -26,6 +30,7 @@ import { Wallet } from "ethers";
 import { readFileSync } from "node:fs";
 
 import { testArweaveJWK } from "../../tests/test_helpers";
+import { SignatureConfig } from "../bundles/verifyDataItem";
 import { ownerToNativeAddress } from "./ownerToNativeAddress";
 
 describe("ownerToNativeAddress", () => {
@@ -81,5 +86,34 @@ describe("ownerToNativeAddress", () => {
 
     // cspell:disable
     expect(result).to.equal("8wgRDgvYOrtSaWEIV21g0lTuWDUnTu4_iYj4hmA7PI0"); // cspell:enable
+  });
+
+  it("should return a native address for a kyve owner", async () => {
+    const KYVE_SEED_PHRASE = await KyveSDK.generateMnemonic();
+    const kyveAddress = await KyveSDK.getAddressFromMnemonic(KYVE_SEED_PHRASE);
+
+    const kyveWallet = await Secp256k1HdWallet.fromMnemonic(KYVE_SEED_PHRASE, {
+      prefix: "kyve",
+    });
+
+    const privateKey = toHex(
+      Slip10.derivePath(
+        Slip10Curve.Secp256k1,
+        kyveWallet["seed"],
+        makeCosmoshubPath(0)
+      ).privkey
+    );
+    const signer = new EthereumSigner(privateKey);
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-ignore
+    // signer.signatureType = SignatureConfig.KYVE;
+
+    const dataItem = createData("data", signer);
+    await dataItem.sign(signer);
+
+    const { owner } = dataItem;
+    const result = ownerToNativeAddress(owner, SignatureConfig.KYVE);
+
+    expect(result).to.equal(kyveAddress);
   });
 });

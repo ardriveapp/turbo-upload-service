@@ -35,6 +35,7 @@ import {
   PostedBundleDBResult,
   SeededBundleDBResult,
 } from "../src/types/dbTypes";
+import { sleep } from "../src/utils/common";
 import { DbTestHelper } from "./helpers/dbTestHelpers";
 import {
   failedBundleExpectations,
@@ -423,6 +424,10 @@ describe("PostgresDatabase class", () => {
   });
 
   describe("updateSeededBundleToDropped method", () => {
+    before(async () => {
+      await sleep(333); // Sleep to avoid db race conditions
+    });
+
     it("deletes existing seeded_bundle, inserts failed_bundle, deletes each planned_data_item, and inserts them as new_data_items", async () => {
       const bundleId = "Stub bundle ID updateSeededBundleToDropped";
       const planId = "Stub plan ID updateSeededBundleToDropped";
@@ -494,6 +499,8 @@ describe("PostgresDatabase class", () => {
     });
 
     it("moves planned_data_item to failed_data_item table if they contain more than the retry limit of failed bundles", async () => {
+      await sleep(200); // Sleep before this test to avoid race conditions with new_data_item table
+
       const dataItemId = "updateSeededBundleToDropped f ailed test";
       const planId = "updateSeededBundleToDrop ailed test";
       const bundleId = "updateSeededBundleToD TxID failed test";
@@ -543,6 +550,8 @@ describe("PostgresDatabase class", () => {
 
   describe("updateNewBundleToFailedToPost method", () => {
     it("updates the expected new bundle", async () => {
+      await sleep(100); // Sleep before this test to avoid race conditions with new_data_item table
+
       const bundleId = "updateNewBundleToFailedToPost Bundle ID";
       const planId = "updateNewBundleToFailedToPost Plan ID";
       const dataItemIds = [
@@ -663,7 +672,7 @@ describe("PostgresDatabase class", () => {
       expect(bundleIdInDb).to.equal(bundleId);
 
       await dbTestHelper.cleanUpEntityInDb(
-        tableNames.permanentDataItem,
+        tableNames.permanentDataItems,
         dataItemId
       );
     });
@@ -706,14 +715,14 @@ describe("PostgresDatabase class", () => {
 
       // Permanent data items are inserted as expected
       const permanentDbResult = await db["writer"](
-        tableNames.permanentDataItem
+        tableNames.permanentDataItems
       ).whereIn("data_item_id", dataItemIds);
       expect(permanentDbResult.length).to.equal(3);
 
       await Promise.all(
         dataItemIds.map((dataItemId) =>
           dbTestHelper.cleanUpEntityInDb(
-            tableNames.permanentDataItem,
+            tableNames.permanentDataItems,
             dataItemId
           )
         )
@@ -879,6 +888,49 @@ describe("PostgresDatabase class", () => {
         data_item_id: testIds[0],
       });
       expect(failedDataItems.length).to.equal(0);
+    });
+
+    it("deduplicates data items within the batch", async () => {
+      const testIds = [
+        "unique deduplication id one",
+        "unique deduplication id two",
+      ];
+      const dataItemBatch = testIds.map((dataItemId) =>
+        stubNewDataItem(dataItemId)
+      );
+
+      // Run batch insert with the same data item twice
+      await db.insertNewDataItemBatch([...dataItemBatch, ...dataItemBatch]);
+
+      const newDataItems =
+        await dbTestHelper.getAndDeleteNewDataItemDbResultsByIds(testIds);
+
+      // Expect only one data item to have been inserted to new data item table
+      expect(newDataItems.length).to.equal(2);
+    });
+
+    it("catches primary key constraint errors and gracefully continues the rest of the batch", async () => {
+      const testIds = [
+        "0000000000000000000000000000000000000000122",
+        "0000000000000000000000000000000000000000222",
+        "0000000000000000000000000000000000000000322",
+      ];
+      const dataItemBatch = testIds.map((dataItemId) =>
+        stubNewDataItem(dataItemId)
+      );
+
+      // Run the batch insert with the first data item, with two data items, and with all three data items concurrently
+      await Promise.all([
+        db.insertNewDataItemBatch([dataItemBatch[0]]),
+        db.insertNewDataItemBatch(dataItemBatch.slice(0, 2)),
+        db.insertNewDataItemBatch(dataItemBatch),
+      ]);
+
+      const newDataItems =
+        await dbTestHelper.getAndDeleteNewDataItemDbResultsByIds(testIds);
+
+      // Expect all data items to have been inserted to new data item table
+      expect(newDataItems.length).to.equal(3);
     });
   });
 

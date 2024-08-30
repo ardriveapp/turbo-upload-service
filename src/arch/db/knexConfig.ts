@@ -23,7 +23,7 @@ import logger from "../../logger";
 
 const baseConfig = {
   client: KnexDialect,
-  version: "13.8",
+  version: process.env.POSTGRES_VERSION ?? "16.1",
   migrations: {
     tableName: "knex_migrations",
     directory: path.join(__dirname, "../../migrations"),

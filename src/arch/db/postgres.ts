@@ -25,6 +25,7 @@ import {
   retryLimitForFailedDataItems,
 } from "../../constants";
 import logger from "../../logger";
+import { MetricRegistry } from "../../metricRegistry";
 import {
   BundlePlanDBResult,
   DataItemDbResults,
@@ -68,6 +69,7 @@ import {
   W,
   Winston,
 } from "../../types/types";
+import { isValidArweaveBase64URL } from "../../utils/base64";
 import { generateArrayChunks } from "../../utils/common";
 import {
   BundleAlreadySeededWarning,
@@ -126,8 +128,7 @@ export class PostgresDatabase implements Database {
     });
 
     if (
-      (await this.getExistingDataItemsDbResultsById([newDataItem.dataItemId]))
-        .length > 0
+      (await this.getExistingDataItemIds([newDataItem.dataItemId])).size > 0
     ) {
       throw new DataItemExistsWarning(newDataItem.dataItemId);
     }
@@ -156,49 +157,46 @@ export class PostgresDatabase implements Database {
   private dataItemTables = [
     tableNames.newDataItem,
     tableNames.plannedDataItem,
-    tableNames.permanentDataItem,
+    tableNames.permanentDataItems,
     tableNames.failedDataItem,
   ] as const;
 
-  private async getExistingDataItemsDbResultsById(
+  private async getExistingDataItemIds(
     dataItemIds: TransactionId[]
-  ): Promise<DataItemDbResults[]> {
-    const results: DataItemDbResults[] = await this.reader.transaction(
-      async (knexTransaction) => {
-        const dataItemResults = await Promise.all(
-          this.dataItemTables.map((tableName) =>
-            knexTransaction(tableName).whereIn(
-              columnNames.dataItemId,
-              dataItemIds
-            )
+  ): Promise<Set<TransactionId>> {
+    const [
+      existingNewIds,
+      existingPlannedIds,
+      existingPermanentIds,
+      existingFailedIds,
+    ] = await Promise.all(
+      this.dataItemTables.map((tableName) =>
+        this.reader<DataItemDbResults>(tableName)
+          .whereIn(columnNames.dataItemId, dataItemIds)
+          .andWhereRaw(
+            `${columnNames.uploadedDate} > NOW() - interval '30 days'`
           )
-        );
-
-        return dataItemResults.flat();
-      }
+          .select(columnNames.dataItemId)
+          .then((results) => results.map((r) => r.data_item_id))
+      )
     );
 
     // Delete any failed data items, as this read is checking before a re-insert
-    const failedDataItems = results.filter(
-      (result) => "failed_reason" in result
-    );
-    if (failedDataItems.length) {
+    if (existingFailedIds.length > 0) {
       this.log.warn(
         "Data items already exist in database as failed! Removing from database to retry...",
-        { dataItemIds }
+        { existingFailedIds }
       );
       await this.writer(tableNames.failedDataItem)
-        .whereIn(
-          columnNames.dataItemId,
-          failedDataItems.map((r) => r.data_item_id)
-        )
+        .whereIn(columnNames.dataItemId, existingFailedIds)
         .del();
-      failedDataItems.forEach((r) => {
-        results.splice(results.indexOf(r), 1);
-      });
     }
 
-    return results;
+    return new Set([
+      ...existingNewIds,
+      ...existingPlannedIds,
+      ...existingPermanentIds,
+    ]);
   }
 
   public async insertNewDataItemBatch(
@@ -207,37 +205,107 @@ export class PostgresDatabase implements Database {
     this.log.debug("Inserting new data item batch...", {
       dataItemBatch,
     });
+    // Dedupe any data items duplicated within a batch by dataItemId
+    const seenDataItemIds = new Set<string>();
+    dataItemBatch = dataItemBatch.filter((newDataItem) => {
+      if (seenDataItemIds.has(newDataItem.dataItemId)) {
+        this.log.warn("Duplicate data item found in batch!", {
+          dataItemId: newDataItem.dataItemId,
+        });
+        MetricRegistry.duplicateDataItemsWithinBatch.inc();
+        return false;
+      } else {
+        seenDataItemIds.add(newDataItem.dataItemId);
+        return true;
+      }
+    });
 
     // Check if any data items already exist in the database
-    const existingDataItemDbResults =
-      await this.getExistingDataItemsDbResultsById(
-        dataItemBatch.map((newDataItem) => newDataItem.dataItemId)
-      );
-    if (existingDataItemDbResults.length > 0) {
-      const existingDataItemIds = new Set<TransactionId>(
-        existingDataItemDbResults.map((r) => r.data_item_id)
-      );
-
+    const existingDataItemIds = await this.getExistingDataItemIds(
+      dataItemBatch.map((newDataItem) => newDataItem.dataItemId)
+    );
+    if (existingDataItemIds.size > 0) {
       this.log.warn(
         "Data items already exist in database! Removing from batch insert...",
         {
-          existingDataItemIds,
+          existingDataItemIds: Array.from(existingDataItemIds),
         }
       );
+      MetricRegistry.duplicateDataItemsFoundFromDatabaseReader.inc();
 
       dataItemBatch = dataItemBatch.filter(
         (newDataItem) => !existingDataItemIds.has(newDataItem.dataItemId)
       );
     }
 
+    const performInsert: (
+      dataItemInserts: NewDataItemDBInsert[]
+    ) => Promise<void> = async (dataItemInserts: NewDataItemDBInsert[]) => {
+      try {
+        await this.writer.batchInsert<NewDataItemDBInsert, NewDataItemDBResult>(
+          tableNames.newDataItem,
+          dataItemInserts
+        );
+      } catch (error) {
+        const failedId = (error as PostgresError).detail.match(
+          /\(data_item_id\)=\(([^)]+)\)/
+        )?.[1];
+
+        if (
+          (error as PostgresError).code ===
+            postgresInsertFailedPrimaryKeyNotUniqueCode &&
+          failedId &&
+          isValidArweaveBase64URL(failedId)
+        ) {
+          this.log.warn(
+            "Data Item Insert Failed on Duplicate Data Item Primary Key -- Removing item from batch and trying again",
+            {
+              error,
+              failedId,
+            }
+          );
+          MetricRegistry.primaryKeyErrorsEncounteredOnNewDataItemBatchInsert.inc();
+
+          // Remove failed data item from batch and recurse to try again
+          const batchExcludingFailedDataItem = dataItemInserts.filter(
+            (insert) => insert.data_item_id !== failedId
+          );
+
+          if (batchExcludingFailedDataItem.length === dataItemInserts.length) {
+            this.log.error(
+              "Data Item Batch Insert Failed on Duplicate Data Item Primary Key -- Failed data item not found in batch!",
+              {
+                error,
+                failedId,
+                dataItemIds: dataItemBatch.map((d) => d.dataItemId),
+              }
+            );
+            throw error;
+          }
+
+          if (batchExcludingFailedDataItem.length === 0) {
+            this.log.warn(
+              "Data Item Batch is empty! No more work left to do in this job -- exiting..."
+            );
+            return;
+          }
+
+          return performInsert(batchExcludingFailedDataItem);
+        }
+
+        this.log.error("Data Item Batch Insert Failed: ", {
+          error,
+          dataItemIds: dataItemBatch.map((d) => d.dataItemId),
+        });
+        throw error;
+      }
+    };
+
     // Insert new data items
     const dataItemInserts = dataItemBatch.map((newDataItem) =>
       this.newDataItemToDbInsert(newDataItem)
     );
-    await this.writer.batchInsert<NewDataItemDBInsert, NewDataItemDBResult>(
-      tableNames.newDataItem,
-      dataItemInserts
-    );
+    await performInsert(dataItemInserts);
   }
 
   private newDataItemToDbInsert({
@@ -274,21 +342,15 @@ export class PostgresDatabase implements Database {
     this.log.debug("Getting new data items from database...");
 
     try {
-      /**
-       * Note: Locking will only occur for the duration of this query, it will be released
-       * once the query completes.
-       */
       // Using a raw query here due to the db driver's behavior of returning uploaded_date in the "wrong" UTC timezone
       const fetchStartTimestamp = Date.now();
       const dbResult: (NewDataItemDBResult & { uploaded_date_utc: string })[] =
         (
-          (await this.writer.raw(
+          (await this.reader.raw(
             `SELECT *, uploaded_date AT TIME ZONE 'UTC' as uploaded_date_utc
               FROM ${tableNames.newDataItem}
               ORDER BY uploaded_date
               LIMIT ${maxDataItemsPerBundle * 5}
-              FOR UPDATE
-              NOWAIT
             `
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
           )) as any
@@ -688,12 +750,15 @@ export class PostgresDatabase implements Database {
       const permanentDataItemInserts: PermanentDataItemDBInsert[] =
         dataItems.map(({ signature: _, ...restOfPlannedDataItem }) => ({
           ...restOfPlannedDataItem,
-          block_height: blockHeight.toString(),
+          block_height: blockHeight,
+          deadline_height: restOfPlannedDataItem.deadline_height
+            ? +restOfPlannedDataItem.deadline_height
+            : null,
           bundle_id: bundleId,
         }));
 
       await dbTx.batchInsert<PermanentDataItemDBResult>(
-        tableNames.permanentDataItem,
+        tableNames.permanentDataItems,
         permanentDataItemInserts
       );
     });
@@ -903,7 +968,7 @@ export class PostgresDatabase implements Database {
     // Check for a permanent data item
     const permanentDataItemDbResult =
       await this.reader<PermanentDataItemDBResult>(
-        tableNames.permanentDataItem
+        tableNames.permanentDataItems
       ).where({ data_item_id: dataItemId });
     if (permanentDataItemDbResult.length > 0) {
       return {

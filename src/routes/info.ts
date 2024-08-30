@@ -31,6 +31,7 @@ export async function rootResponse(ctx: KoaContext, next: Next) {
       ethereum: process.env.ETHEREUM_ADDRESS,
       solana: process.env.SOLANA_ADDRESS,
       matic: process.env.MATIC_ADDRESS,
+      kyve: process.env.KYVE_ADDRESS,
     },
     gateway: ctx.state.arweaveGateway["endpoint"].hostname,
     freeUploadLimitBytes: freeUploadLimitBytes,

@@ -93,7 +93,7 @@ services:
       - upload-service-pg
 
   upload-service-pg:
-    image: postgres:13.8
+    image: postgres:16.1
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres

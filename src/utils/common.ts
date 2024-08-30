@@ -19,9 +19,11 @@ import { PathLike, existsSync, rmSync } from "fs";
 import { PassThrough, Readable } from "stream";
 import winston from "winston";
 
+import { SignatureConfig } from "../bundles/verifyDataItem";
 import {
   dedicatedBundleTypes,
   defaultPremiumFeatureType,
+  kyveDedicatedBundlesPremiumFeatureType,
   octetStreamContentType,
   premiumPaidFeatureTypes,
   rePostDataItemThresholdNumberOfBlocks,
@@ -138,8 +140,13 @@ export function payloadContentTypeFromDecodedTags(tags: Tag[]): string {
 
 export function getPremiumFeatureType(
   ownerPublicAddress: string,
-  tags: Tag[]
+  tags: Tag[],
+  signatureType: SignatureConfig
 ): string {
+  if (signatureType === SignatureConfig.KYVE) {
+    return kyveDedicatedBundlesPremiumFeatureType;
+  }
+
   for (const premiumFeatureType of premiumPaidFeatureTypes) {
     const { allowedWallets } = dedicatedBundleTypes[premiumFeatureType];
     if (allowedWallets.includes(ownerPublicAddress)) {

@@ -20,7 +20,9 @@ export const tableNames = {
   newBundle: "new_bundle",
   newDataItem: "new_data_item",
   permanentBundle: "permanent_bundle",
+  /** @deprecated in favor of partitioned table `permanent_data_items`  */
   permanentDataItem: "permanent_data_item",
+  permanentDataItems: "permanent_data_items",
   plannedDataItem: "planned_data_item",
   failedDataItem: "failed_data_item",
   postedBundle: "posted_bundle",

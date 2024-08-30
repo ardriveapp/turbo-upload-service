@@ -35,6 +35,10 @@ export type SignedDataItemHeader = DataItemHeader & {
   bundlr_signature: string; // TODO: Update optical bridge to use bundler_signature
 };
 
+export type DatedSignedDataItemHeader = SignedDataItemHeader & {
+  uploaded_at: number;
+};
+
 export function encodeTagsForOptical(
   dataItemHeader: DataItemHeader
 ): DataItemHeader {

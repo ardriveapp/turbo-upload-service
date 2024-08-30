@@ -19,15 +19,14 @@ import { Consumer } from "sqs-consumer";
 import winston from "winston";
 
 import { getQueueUrl } from "../../../../src/arch/queues";
+import { jobLabels } from "../../../../src/constants";
 import { opticalPostHandler } from "../../../../src/jobs/optical-post";
-import {
-  defaultSQSOptions,
-  stubQueueHandler,
-} from "../utils/queueHandlerConfig";
+import { fulfillmentJobHandler } from "../utils/jobHandler";
+import { defaultSQSOptions } from "../utils/queueHandlerConfig";
 
 export function createOpticalConsumerQueue(logger: winston.Logger) {
-  const opticalQueueUrl = getQueueUrl("optical-post");
-  const opticalPostLogger = logger.child({ queue: "optical-post" });
+  const opticalQueueUrl = getQueueUrl(jobLabels.opticalPost);
+  const opticalPostLogger = logger.child({ queue: jobLabels.opticalPost });
   return {
     consumer: Consumer.create({
       queueUrl: opticalQueueUrl,
@@ -38,11 +37,17 @@ export function createOpticalConsumerQueue(logger: winston.Logger) {
             messages,
           }
         );
-        return opticalPostHandler({
-          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-          stringifiedDataItemHeaders: messages.map((message) => message.Body!),
-          logger: opticalPostLogger,
-        });
+        return fulfillmentJobHandler(
+          () =>
+            opticalPostHandler({
+              stringifiedDataItemHeaders: messages.map(
+                // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+                (message) => message.Body!
+              ),
+              logger: opticalPostLogger,
+            }),
+          jobLabels.opticalPost
+        );
       },
       sqs: new SQSClient(defaultSQSOptions),
       batchSize: 10, // TODO: Tune as needed - starting with value in terraform
@@ -51,8 +56,6 @@ export function createOpticalConsumerQueue(logger: winston.Logger) {
       pollingWaitTimeMs: 1000,
       visibilityTimeout: 120,
     }),
-    queueUrl: opticalQueueUrl, // unused
-    handler: stubQueueHandler, // unused
     logger: opticalPostLogger,
   };
 }
