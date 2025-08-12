@@ -16,7 +16,11 @@
  */
 import { Next } from "koa";
 
-import { freeUploadLimitBytes, receiptVersion } from "../constants";
+import {
+  freeUploadLimitBytes,
+  publicAccessGatewayUrl,
+  receiptVersion,
+} from "../constants";
 import { KoaContext } from "../server";
 import { jwkToPublicArweaveAddress } from "../utils/base64";
 
@@ -33,7 +37,7 @@ export async function rootResponse(ctx: KoaContext, next: Next) {
       matic: process.env.MATIC_ADDRESS,
       kyve: process.env.KYVE_ADDRESS,
     },
-    gateway: ctx.state.arweaveGateway["endpoint"].hostname,
+    gateway: publicAccessGatewayUrl.origin,
     freeUploadLimitBytes: freeUploadLimitBytes,
   };
   return next();

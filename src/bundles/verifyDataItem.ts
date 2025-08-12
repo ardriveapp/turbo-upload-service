@@ -14,90 +14,24 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-import { byteArrayToLong, deepHash, indexToType } from "arbundles";
+import { byteArrayToLong, deepHash, indexToType } from "@dha-team/arbundles";
 import { stringToBuffer } from "arweave/node/lib/utils";
 import { EventEmitter, PassThrough, Readable } from "stream";
 import winston from "winston";
 
+import { signatureTypeInfo } from "../constants";
 import { CircularBuffer } from "../utils/circularBuffer";
 import { tapStream } from "../utils/common";
 import { InvalidDataItem } from "../utils/errors";
 
-export const arweaveSignatureLength = 512;
-export const dataItemTagsByteLimit = 4096;
-export interface SigInfo {
-  signatureLength: number;
-  pubkeyLength: number;
-  name: string;
-}
 const fiveMiB = 1024 * 1024 * 5;
+export const dataItemTagsByteLimit = 4096;
 
 const arweaveSigInfo = {
   signatureLength: 512,
   pubkeyLength: 512,
   name: "arweave",
 };
-
-export enum SignatureConfig {
-  ARWEAVE = 1,
-  ED25519,
-  ETHEREUM,
-  SOLANA,
-  INJECTEDAPTOS = 5,
-  MULTIAPTOS = 6,
-  TYPEDETHEREUM = 7,
-  KYVE = 101,
-}
-
-export const signatureTypeInfo: Record<number, SigInfo> = {
-  [SignatureConfig.ARWEAVE]: {
-    signatureLength: 512,
-    pubkeyLength: 512,
-    name: "arweave",
-  },
-  [SignatureConfig.ED25519]: {
-    signatureLength: 64,
-    pubkeyLength: 32,
-    name: "ed25519",
-  },
-  [SignatureConfig.ETHEREUM]: {
-    signatureLength: 65,
-    pubkeyLength: 65,
-    name: "ethereum",
-  },
-  [SignatureConfig.SOLANA]: {
-    signatureLength: 64,
-    pubkeyLength: 32,
-    name: "solana",
-  },
-  [SignatureConfig.INJECTEDAPTOS]: {
-    signatureLength: 64,
-    pubkeyLength: 32,
-    name: "injectedAptos",
-  },
-  [SignatureConfig.MULTIAPTOS]: {
-    signatureLength: 64 * 32 + 4, // max 32 64 byte signatures, +4 for 32-bit bitmap
-    pubkeyLength: 32 * 32 + 1, // max 64 32 byte keys, +1 for 8-bit threshold value
-    name: "multiAptos",
-  },
-  [SignatureConfig.TYPEDETHEREUM]: {
-    signatureLength: 65,
-    pubkeyLength: 42,
-    name: "typedEthereum",
-  },
-  [SignatureConfig.KYVE]: {
-    signatureLength: 65,
-    pubkeyLength: 65,
-    name: "kyve",
-  },
-};
-
-export const sigNameToSigInfo: Record<string, SigInfo> = Object.values(
-  signatureTypeInfo
-).reduce((acc, info) => {
-  acc[info.name] = info;
-  return acc;
-}, {} as Record<string, SigInfo>);
 
 function streamDebugLog(
   logger: winston.Logger | undefined,
@@ -460,16 +394,10 @@ export function createVerifiedDataItemStream(
         `Input stream encountered error: ${error.message ?? "Unknown error"}`
       )
     );
-    logger?.error("Ending payload stream due to error...", error);
+    logger?.debug("Ending payload stream due to error...", error);
     payloadStream?.end();
 
     emitter.emit("error", error);
-  });
-
-  let errorsCaught = 0;
-  inputStream.on("error", (error) => {
-    errorsCaught++;
-    logger?.error(`Input stream encountered error # ${errorsCaught}`, error);
   });
 
   // Stop consuming data from the input stream once we encounter an error
@@ -511,7 +439,7 @@ export function createVerifiedDataItemStream(
       });
 
       payloadStream.on("error", (err) => {
-        logger?.error("Payload stream has received an error...", err);
+        logger?.debug("Payload stream has received an error...", err);
         payloadStream?.end();
       });
       emitter.emit("payloadStream", payloadStream);

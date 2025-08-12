@@ -347,7 +347,11 @@ export interface FinishedMultiPartUpload extends InFlightMultiPartUpload {
   etag: string;
 }
 
-export type MultipartUploadFailedReason = "INVALID" | "UNDERFUNDED";
+export type MultipartUploadFailedReason =
+  | "INVALID"
+  | "UNDERFUNDED"
+  | "APPROVAL_FAILED"
+  | "REVOKE_FAILED";
 
 export type DataItemDbResults =
   | NewDataItemDBResult

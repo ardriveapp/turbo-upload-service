@@ -18,7 +18,7 @@ import { AxiosInstance } from "axios";
 import { sign } from "jsonwebtoken";
 import winston from "winston";
 
-import { signatureTypeInfo } from "../bundles/verifyDataItem";
+import { signatureTypeInfo } from "../constants";
 import {
   allowArFSData,
   allowListPublicAddresses,
@@ -30,11 +30,13 @@ import defaultLogger from "../logger";
 import { MetricRegistry } from "../metricRegistry";
 import {
   ByteCount,
+  DataItemId,
   NativeAddress,
   TransactionId,
   W,
   Winston,
 } from "../types/types";
+import { PaymentServiceReturnedError } from "../utils/errors";
 import { createAxiosInstance } from "./axiosClient";
 
 // TODO: Payment service response API
@@ -50,6 +52,19 @@ export interface CheckBalanceResponse {
   userBalanceInWinc?: Winston;
 }
 
+export interface DelegatedPaymentApproval {
+  approvalDataItemId: DataItemId;
+  approvedAddress: NativeAddress;
+  payingAddress: NativeAddress;
+  approvedWincAmount: string;
+  usedWincAmount: string;
+  creationDate: string;
+  expirationDate: string;
+}
+export type CreateDelegatedPaymentApprovalResponse =
+  | string // error message or the approval created
+  | DelegatedPaymentApproval;
+
 interface PaymentServiceCheckBalanceResponse {
   userHasSufficientBalance: boolean;
   bytesCostInWinc: Winston;
@@ -61,6 +76,21 @@ interface CheckBalanceParams {
   size: ByteCount;
   nativeAddress: NativeAddress;
   signatureType: number;
+  paidBy?: NativeAddress[];
+}
+
+interface CreateDelegatedPaymentApprovalParams {
+  dataItemId: TransactionId;
+  winc: string;
+  payingAddress: NativeAddress;
+  approvedAddress: NativeAddress;
+  expiresInSeconds?: string;
+}
+
+interface RevokeDelegatedPaymentApprovalsParams {
+  dataItemId: DataItemId;
+  revokedAddress: NativeAddress;
+  payingAddress: NativeAddress;
 }
 
 interface ReserveBalanceParams extends CheckBalanceParams {
@@ -88,6 +118,12 @@ export interface PaymentService {
   refundBalanceForData(params: RefundBalanceParams): Promise<void>;
   getFiatToARConversionRate(currency: "usd"): Promise<number>; // TODO: create type for currency
   paymentServiceURL: string | undefined;
+  createDelegatedPaymentApproval(
+    params: CreateDelegatedPaymentApprovalParams
+  ): Promise<DelegatedPaymentApproval>;
+  revokeDelegatedPaymentApprovals(
+    params: RevokeDelegatedPaymentApprovalsParams
+  ): Promise<DelegatedPaymentApproval[]>;
 }
 
 const allowedReserveBalanceResponse: ReserveBalanceResponse = {
@@ -123,11 +159,16 @@ export class TurboPaymentService implements PaymentService {
     size,
     nativeAddress,
     signatureType,
+    paidBy = [],
   }: CheckBalanceParams): Promise<CheckBalanceResponse> {
     const logger = this.logger.child({ nativeAddress, size });
 
     logger.debug("Checking balance for wallet.");
 
+    const allowedCheckBalanceResponse: CheckBalanceResponse = {
+      userHasSufficientBalance: true,
+      bytesCostInWinc: W(0),
+    };
     if (
       await this.checkBalanceForDataInternal({
         size,
@@ -138,10 +179,11 @@ export class TurboPaymentService implements PaymentService {
       logger.debug(
         "Data was allowed via internal upload service business logic. Not calling payment service to check balance..."
       );
-      return {
-        userHasSufficientBalance: true,
-        bytesCostInWinc: W(0),
-      };
+      return allowedCheckBalanceResponse;
+    }
+
+    if (allowListedSignatureTypes.has(signatureType)) {
+      return allowedCheckBalanceResponse;
     }
 
     if (!this.paymentServiceURL) {
@@ -160,11 +202,18 @@ export class TurboPaymentService implements PaymentService {
     const token = sign({}, secret, {
       expiresIn: "1h",
     });
-    const url = `${this.paymentServiceURL}/v1/check-balance/${signatureTypeInfo[signatureType].name}/${nativeAddress}?byteCount=${size}`;
+
+    const url = new URL(
+      `${this.paymentServiceURL}/v1/check-balance/${signatureTypeInfo[signatureType].name}/${nativeAddress}`
+    );
+    url.searchParams.append("byteCount", size.toString());
+    for (const address of paidBy) {
+      url.searchParams.append("paidBy", address);
+    }
 
     const { status, statusText, data } = await this.axios.get<
       PaymentServiceCheckBalanceResponse | string
-    >(url, {
+    >(url.href, {
       headers: {
         Authorization: `Bearer ${token}`,
       },
@@ -194,7 +243,6 @@ export class TurboPaymentService implements PaymentService {
   private async checkBalanceForDataInternal({
     size,
     nativeAddress,
-    signatureType,
   }: CheckBalanceParams): Promise<boolean> {
     const logger = this.logger.child({ nativeAddress, size });
 
@@ -216,14 +264,6 @@ export class TurboPaymentService implements PaymentService {
       return true;
     }
 
-    if (allowListedSignatureTypes.has(signatureType)) {
-      logger.info(
-        "Allow listed signature detected. Allowing data item to be bundled by the service...",
-        { signatureType }
-      );
-      return true;
-    }
-
     return false;
   }
 
@@ -232,6 +272,7 @@ export class TurboPaymentService implements PaymentService {
     nativeAddress,
     dataItemId,
     signatureType,
+    paidBy = [],
   }: ReserveBalanceParams): Promise<ReserveBalanceResponse> {
     const logger = this.logger.child({ nativeAddress, size });
 
@@ -267,9 +308,16 @@ export class TurboPaymentService implements PaymentService {
     const token = sign({}, secret, {
       expiresIn: "1h",
     });
-    const url = `${this.paymentServiceURL}/v1/reserve-balance/${signatureTypeInfo[signatureType].name}/${nativeAddress}?byteCount=${size}&dataItemId=${dataItemId}`;
+    const url = new URL(
+      `${this.paymentServiceURL}/v1/reserve-balance/${signatureTypeInfo[signatureType].name}/${nativeAddress}`
+    );
+    url.searchParams.append("byteCount", size.toString());
+    url.searchParams.append("dataItemId", dataItemId);
+    for (const address of paidBy) {
+      url.searchParams.append("paidBy", address);
+    }
 
-    const { status, statusText, data } = await this.axios.get(url, {
+    const { status, statusText, data } = await this.axios.get(url.href, {
       headers: {
         Authorization: `Bearer ${token}`,
       },
@@ -290,6 +338,17 @@ export class TurboPaymentService implements PaymentService {
     const walletExists = +status !== 404;
     const costOfDataItem = +status === 200 ? W(+data) : W(0);
     const isReserved = +status === 200;
+
+    // Allowed signature types can reserve balance if they have balance, else they may upload for free
+    if (!isReserved) {
+      if (allowListedSignatureTypes.has(signatureType)) {
+        logger.info(
+          "Allow listed signature detected. Allowing data item to be bundled by the service...",
+          { signatureType }
+        );
+        return allowedReserveBalanceResponse;
+      }
+    }
 
     return {
       walletExists,
@@ -347,5 +406,79 @@ export class TurboPaymentService implements PaymentService {
       `${this.paymentServiceURL}/v1/rates/${currency}`
     );
     return +fiatToArRate.rate;
+  }
+
+  public async createDelegatedPaymentApproval({
+    approvedAddress,
+    dataItemId,
+    payingAddress,
+    winc,
+    expiresInSeconds,
+  }: CreateDelegatedPaymentApprovalParams): Promise<DelegatedPaymentApproval> {
+    const token = sign({}, secret, {
+      expiresIn: "1h",
+    });
+
+    const { status, statusText, data } =
+      await this.axios.get<CreateDelegatedPaymentApprovalResponse>(
+        `${
+          this.paymentServiceURL
+        }/v1/account/approvals/create?dataItemId=${dataItemId}&winc=${winc}&payingAddress=${payingAddress}&approvedAddress=${approvedAddress}${
+          expiresInSeconds ? `&expiresInSeconds=${expiresInSeconds}` : ""
+        }`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+          validateStatus: (status) => status < 500,
+        }
+      );
+
+    if (typeof data === "string") {
+      throw new PaymentServiceReturnedError(data);
+    }
+
+    if (status !== 200) {
+      throw new Error(
+        `Failed to create delegated payment approval. Status: ${status} | StatusText: ${statusText} | Body ${data}`
+      );
+    }
+
+    return data;
+  }
+
+  public async revokeDelegatedPaymentApprovals({
+    revokedAddress,
+    dataItemId,
+    payingAddress,
+  }: RevokeDelegatedPaymentApprovalsParams): Promise<
+    DelegatedPaymentApproval[]
+  > {
+    const token = sign({}, secret, {
+      expiresIn: "1h",
+    });
+
+    const { status, statusText, data } = await this.axios.get<
+      DelegatedPaymentApproval[]
+    >(
+      `${this.paymentServiceURL}/v1/account/approvals/revoke?dataItemId=${dataItemId}&payingAddress=${payingAddress}&approvedAddress=${revokedAddress}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
+
+    if (typeof data === "string") {
+      throw new PaymentServiceReturnedError(data);
+    }
+
+    if (status !== 200) {
+      throw new Error(
+        `Failed to revoke delegated payment approval. Status: ${status} | StatusText: ${statusText} | Body ${data}`
+      );
+    }
+
+    return data;
   }
 }

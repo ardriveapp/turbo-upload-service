@@ -19,8 +19,10 @@ import { Readable } from "stream";
 
 import { defaultArchitecture } from "../arch/architecture";
 import { ArweaveGateway, Gateway } from "../arch/arweaveGateway";
+import { CacheService } from "../arch/cacheServiceTypes";
 import { Database } from "../arch/db/database";
 import { PostgresDatabase } from "../arch/db/postgres";
+import { getElasticacheService } from "../arch/elasticacheService";
 import { ObjectStore } from "../arch/objectStore";
 import { PricingService } from "../arch/pricing";
 import { createQueueHandler, enqueue } from "../arch/queues";
@@ -34,28 +36,33 @@ import {
   bufferIdFromBufferSignature,
   bufferIdFromReadableSignature,
 } from "../bundles/idFromSignature";
-import { signatureTypeInfo } from "../bundles/verifyDataItem";
+import { signatureTypeInfo } from "../constants";
 import {
   PremiumPaidFeatureType,
-  arnsContractTxId,
   dedicatedBundleTypes,
   gatewayUrl,
   jobLabels,
-  tickArnsContractEnabled,
 } from "../constants";
 import defaultLogger from "../logger";
 import { PlanId } from "../types/dbTypes";
 import { JWKInterface } from "../types/jwkTypes";
 import { W } from "../types/winston";
-import { filterKeysFromObject, sleep } from "../utils/common";
+import {
+  filterKeysFromObject,
+  generateArrayChunks,
+  sleep,
+} from "../utils/common";
+import {
+  DataItemAttributes,
+  assembleBundlePayload,
+  getRawSignatureOfDataItem,
+  getSignatureTypeOfDataItem,
+} from "../utils/dataItemUtils";
 import { BundlePlanExistsInAnotherStateWarning } from "../utils/errors";
 import { getArweaveWallet } from "../utils/getArweaveWallet";
 import {
-  assembleBundlePayload,
   getBundlePayload,
-  getRawSignatureOfDataItem,
   getS3ObjectStore,
-  getSignatureTypeOfDataItem,
   putBundlePayload,
   putBundleTx,
 } from "../utils/objectStoreUtils";
@@ -67,15 +74,12 @@ const PARALLEL_LIMIT = 100;
 interface PrepareBundleJobInjectableArch {
   database?: Database;
   objectStore?: ObjectStore;
+  cacheService?: CacheService;
   jwk?: JWKInterface;
   pricing?: PricingService;
   arweaveGateway?: Gateway;
   arweave?: ArweaveInterface;
 }
-
-// TODO: move this to an SSM param so all tasks have access to it using a read through promise cache to avoid hitting SSM too much
-let lastArnsTickTimestamp: number | undefined = undefined;
-const arnsTickIntervalMs = 1000 * 60 * 60; // 1 hour
 
 /**
  * Uses next bundle plan from to prepare a Bundle Transaction for posting
@@ -90,6 +94,7 @@ export async function prepareBundleHandler(
   {
     database = new PostgresDatabase(),
     objectStore = getS3ObjectStore(),
+    cacheService = getElasticacheService(),
     jwk,
     arweaveGateway = new ArweaveGateway({
       endpoint: gatewayUrl,
@@ -129,14 +134,25 @@ export async function prepareBundleHandler(
         });
         const sigType =
           signatureType ??
-          (await getSignatureTypeOfDataItem(objectStore, dataItemId));
+          (await getSignatureTypeOfDataItem(
+            objectStore,
+            cacheService,
+            dataItemId,
+            logger
+          ));
 
         const dataItemRawId = signature
           ? // Use signature from db if exists
             await bufferIdFromBufferSignature(signature)
           : await bufferIdFromReadableSignature(
               // Else fallback to raw signature from object store
-              await getRawSignatureOfDataItem(objectStore, dataItemId, sigType),
+              await getRawSignatureOfDataItem(
+                objectStore,
+                cacheService,
+                dataItemId,
+                sigType,
+                logger
+              ),
               signatureTypeInfo[sigType].signatureLength
             );
 
@@ -170,15 +186,24 @@ export async function prepareBundleHandler(
     payloadSize: totalPayloadSize,
   });
 
+  // Assemble bundle payload and get data item attributes generator
+  const { payloadReadable, dataItemAttributesPromise } = assembleBundlePayload(
+    objectStore,
+    cacheService,
+    bundleHeaderBuffer,
+    logger
+  );
+
   try {
     await putBundlePayload(
       objectStore,
       planId,
-      assembleBundlePayload(objectStore, bundleHeaderBuffer)
+      payloadReadable
       // HACK: Attempting to remove totalPayloadSize to appease AWS V3 SDK
       // totalPayloadSize
     );
   } catch (error) {
+    // TODO: Determine equivalent error for DynamoDB
     if (isNoSuchKeyS3Error(error)) {
       const dataItemId = error.Key.split("/")[1];
 
@@ -193,6 +218,7 @@ export async function prepareBundleHandler(
       return prepareBundleHandler(planId, {
         database,
         objectStore,
+        cacheService,
         jwk,
         pricing,
         arweaveGateway,
@@ -240,30 +266,61 @@ export async function prepareBundleHandler(
   bundleTx.addTag("Contract", "KTzTXT_ANmF84fWEKHzWURD1LWd9QaFR9yfYUwH2Lxw"); // cspell:enable
   bundleTx.addTag("Input", JSON.stringify({ function: "mint" }));
 
-  // add tags to tick arns contract if it has not been ticked within interval
-  const shouldTickArns =
-    !lastArnsTickTimestamp ||
-    Date.now() - lastArnsTickTimestamp >= arnsTickIntervalMs;
-  if (tickArnsContractEnabled && arnsContractTxId && shouldTickArns) {
-    logger.debug(
-      "Adding tick interaction to ArNS registry to bundle transaction.",
-      {
-        txId: bundleTx.id,
-        arnsContractTxId,
-      }
-    );
-    // update the last ticked timestamp
-    bundleTx.addTag("Contract", arnsContractTxId);
-    bundleTx.addTag("Input", JSON.stringify({ function: "tick" }));
-    // update the timestamp
-    lastArnsTickTimestamp = Date.now();
-  }
-
   await arweave.signTx(bundleTx, jwk);
 
   logger.debug("Successfully signed bundle transaction.", {
     txId: bundleTx.id,
   });
+
+  // Send the collected data item offsets info to DynamoDB
+  try {
+    const dataItemAttributes = await dataItemAttributesPromise;
+
+    // Store data item metadata in DynamoDB
+    logger.debug("Storing data item metadata in DynamoDB.", {
+      dataItemCount: dataItemAttributes.length,
+      bundleId: bundleTx.id,
+    });
+
+    let batchNumber = 1;
+    for (const attributesBatch of generateArrayChunks(
+      dataItemAttributes,
+      250
+    )) {
+      // Enqueue the offsets info to be put into DynamoDB
+      try {
+        await enqueue(jobLabels.putOffsets, {
+          offsets: attributesBatch.map((attributes: DataItemAttributes) => ({
+            dataItemId: attributes.dataItemId,
+            rootParentInfo: {
+              rootParentId: bundleTx.id,
+              startOffsetInRootTx: attributes.rawDataItemOffsetInBundle,
+            },
+            rawContentLength: attributes.rawDataItemSize,
+            payloadContentType: attributes.payloadContentType,
+            payloadDataStart: attributes.payloadDataStartOffset,
+          })),
+        });
+        batchNumber++;
+      } catch (error) {
+        logger.error("Failed to enqueue offsets for DynamoDB insert", {
+          bundleId: bundleTx.id,
+          error: error instanceof Error ? error.message : error,
+          batchNumber,
+        });
+        throw error;
+      }
+    }
+  } catch (error) {
+    logger.error("Failed to collect data item attributes!", {
+      bundleId: bundleTx.id,
+      error,
+    });
+
+    // TODO: Is this the control flow we want?
+    throw error;
+  }
+
   bundleTx.data = new Uint8Array(0);
   const serializedBundleTx = JSON.stringify(bundleTx.toJSON());
   const bundleTxBuffer = Buffer.from(serializedBundleTx);

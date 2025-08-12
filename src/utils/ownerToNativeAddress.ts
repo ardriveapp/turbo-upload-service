@@ -21,9 +21,9 @@ import { computePublicKey } from "@ethersproject/signing-key";
 import bs58 from "bs58";
 import { computeAddress } from "ethers";
 
-import { SignatureConfig, sigNameToSigInfo } from "../bundles/verifyDataItem";
+import { sigNameToSigInfo } from "../constants";
 import { SignatureType } from "../types/dbTypes";
-import { NativeAddress } from "../types/types";
+import { NativeAddress, SignatureConfig } from "../types/types";
 import { fromB64Url, ownerToNormalizedB64Address } from "./base64";
 
 export function ownerToNativeAddress(

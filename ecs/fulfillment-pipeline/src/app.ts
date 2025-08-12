@@ -23,6 +23,7 @@ import { Logger } from "winston";
 
 import { ArweaveGateway } from "../../../src/arch/arweaveGateway";
 import { PostgresDatabase } from "../../../src/arch/db/postgres";
+import { getElasticacheService } from "../../../src/arch/elasticacheService";
 import { TurboPaymentService } from "../../../src/arch/payment";
 import { jobLabels, migrateOnStartup } from "../../../src/constants";
 import { postBundleHandler } from "../../../src/jobs/post";
@@ -36,6 +37,7 @@ import { createFinalizeUploadConsumerQueue } from "./jobs/finalize";
 import { createNewDataItemBatchInsertQueue } from "./jobs/newDataItem";
 import { createOpticalConsumerQueue } from "./jobs/optical";
 import { PlanBundleJobScheduler } from "./jobs/plan";
+import { createPutOffsetsQueueConsumer } from "./jobs/putOffsets";
 import { createUnbundleBDIQueueConsumer } from "./jobs/unbundleBdi";
 import { VerifyBundleJobScheduler } from "./jobs/verify";
 import { JobScheduler } from "./utils/jobScheduler";
@@ -83,6 +85,7 @@ const uploadDatabase = new PostgresDatabase({
 const objectStore = getS3ObjectStore();
 const paymentService = new TurboPaymentService();
 const arweaveGateway = new ArweaveGateway();
+const cacheService = getElasticacheService();
 
 // Set up queue handler configurations for jobs based on a planId
 const planIdQueueHandlerConfigs: QueueHandlerConfig[] = [
@@ -280,8 +283,15 @@ const consumerQueues: ConsumerProvisioningConfig[] = [
   {
     envVarCountStr: process.env.NUM_UNBUNDLE_BDI_CONSUMERS,
     defaultCount: 1,
-    createConsumerQueueFn: () => createUnbundleBDIQueueConsumer(globalLogger),
+    createConsumerQueueFn: () =>
+      createUnbundleBDIQueueConsumer(globalLogger, cacheService),
     friendlyQueueName: jobLabels.unbundleBdi,
+  },
+  {
+    envVarCountStr: process.env.NUM_PUT_OFFSETS_CONSUMERS,
+    defaultCount: 1,
+    createConsumerQueueFn: () => createPutOffsetsQueueConsumer(globalLogger),
+    friendlyQueueName: jobLabels.putOffsets,
   },
 ];
 

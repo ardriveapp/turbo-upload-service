@@ -41,7 +41,7 @@ function getDbConnection(host: string) {
     dbPort,
   });
 
-  return `postgres://${dbUser}:${encodeURIComponent(dbPassword)}@${host}:${dbPort}/${dbDatabase}?sslmode=disable`;
+  return `postgres://${dbUser}:${dbPassword}@${host}:${dbPort}/${dbDatabase}?sslmode=disable`;
 }
 
 export function getWriterConfig() {

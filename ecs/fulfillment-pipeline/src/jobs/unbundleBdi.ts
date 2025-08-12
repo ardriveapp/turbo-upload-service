@@ -18,13 +18,17 @@ import { Message, SQSClient } from "@aws-sdk/client-sqs";
 import { Consumer } from "sqs-consumer";
 import winston from "winston";
 
+import { CacheService } from "../../../../src/arch/cacheServiceTypes";
 import { getQueueUrl } from "../../../../src/arch/queues";
 import { jobLabels } from "../../../../src/constants";
 import { unbundleBDISQSHandler } from "../../../../src/jobs/unbundle-bdi";
 import { fulfillmentJobHandler } from "../utils/jobHandler";
 import { defaultSQSOptions } from "../utils/queueHandlerConfig";
 
-export function createUnbundleBDIQueueConsumer(logger: winston.Logger) {
+export function createUnbundleBDIQueueConsumer(
+  logger: winston.Logger,
+  cacheService: CacheService
+) {
   const unbundleBDIQueueUrl = getQueueUrl(jobLabels.unbundleBdi);
   const unbundleBDILogger = logger.child({
     queue: jobLabels.unbundleBdi,
@@ -41,7 +45,8 @@ export function createUnbundleBDIQueueConsumer(logger: winston.Logger) {
           }
         );
         return fulfillmentJobHandler(
-          () => unbundleBDISQSHandler(messages, unbundleBDILogger),
+          () =>
+            unbundleBDISQSHandler(messages, unbundleBDILogger, cacheService),
           jobLabels.unbundleBdi
         );
       },

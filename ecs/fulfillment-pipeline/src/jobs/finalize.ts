@@ -28,6 +28,7 @@ import { finalizeMultipartUploadWithQueueMessage } from "../../../../src/routes/
 import {
   DataItemExistsWarning,
   InsufficientBalance,
+  InvalidDataItem,
 } from "../../../../src/utils/errors";
 import { getArweaveWallet } from "../../../../src/utils/getArweaveWallet";
 import { fulfillmentJobHandler } from "../utils/jobHandler";
@@ -55,7 +56,7 @@ export function createFinalizeUploadConsumerQueue({
         finalizeUploadLogger.info(
           "Finalize upload sqs handler has been triggered.",
           {
-            message,
+            messageId: message.MessageId,
           }
         );
         try {
@@ -83,6 +84,13 @@ export function createFinalizeUploadConsumerQueue({
             });
             return;
           } else if (error instanceof InsufficientBalance) {
+            return;
+          } else if (error instanceof InvalidDataItem) {
+            finalizeUploadLogger.warn("Invalid data item", {
+              error: error.message,
+              messageId: message.MessageId,
+              messageBody: message.Body,
+            });
             return;
           }
           throw error;

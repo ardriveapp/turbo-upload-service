@@ -247,50 +247,53 @@ export class PostgresDatabase implements Database {
           dataItemInserts
         );
       } catch (error) {
-        const failedId = (error as PostgresError).detail.match(
-          /\(data_item_id\)=\(([^)]+)\)/
-        )?.[1];
+        if (isPostgresError(error)) {
+          const failedId = error.detail.match(
+            /\(data_item_id\)=\(([^)]+)\)/
+          )?.[1];
 
-        if (
-          (error as PostgresError).code ===
-            postgresInsertFailedPrimaryKeyNotUniqueCode &&
-          failedId &&
-          isValidArweaveBase64URL(failedId)
-        ) {
-          this.log.warn(
-            "Data Item Insert Failed on Duplicate Data Item Primary Key -- Removing item from batch and trying again",
-            {
-              error,
-              failedId,
-            }
-          );
-          MetricRegistry.primaryKeyErrorsEncounteredOnNewDataItemBatchInsert.inc();
-
-          // Remove failed data item from batch and recurse to try again
-          const batchExcludingFailedDataItem = dataItemInserts.filter(
-            (insert) => insert.data_item_id !== failedId
-          );
-
-          if (batchExcludingFailedDataItem.length === dataItemInserts.length) {
-            this.log.error(
-              "Data Item Batch Insert Failed on Duplicate Data Item Primary Key -- Failed data item not found in batch!",
+          if (
+            error.code === postgresInsertFailedPrimaryKeyNotUniqueCode &&
+            failedId &&
+            isValidArweaveBase64URL(failedId)
+          ) {
+            this.log.warn(
+              "Data Item Insert Failed on Duplicate Data Item Primary Key -- Removing item from batch and trying again",
               {
                 error,
                 failedId,
-                dataItemIds: dataItemBatch.map((d) => d.dataItemId),
               }
             );
-            throw error;
-          }
+            MetricRegistry.primaryKeyErrorsEncounteredOnNewDataItemBatchInsert.inc();
 
-          if (batchExcludingFailedDataItem.length === 0) {
-            this.log.warn(
-              "Data Item Batch is empty! No more work left to do in this job -- exiting..."
+            // Remove failed data item from batch and recurse to try again
+            const batchExcludingFailedDataItem = dataItemInserts.filter(
+              (insert) => insert.data_item_id !== failedId
             );
-            return;
-          }
 
-          return performInsert(batchExcludingFailedDataItem);
+            if (
+              batchExcludingFailedDataItem.length === dataItemInserts.length
+            ) {
+              this.log.error(
+                "Data Item Batch Insert Failed on Duplicate Data Item Primary Key -- Failed data item not found in batch!",
+                {
+                  error,
+                  failedId,
+                  dataItemIds: dataItemBatch.map((d) => d.dataItemId),
+                }
+              );
+              throw error;
+            }
+
+            if (batchExcludingFailedDataItem.length === 0) {
+              this.log.warn(
+                "Data Item Batch is empty! No more work left to do in this job -- exiting..."
+              );
+              return;
+            }
+
+            return performInsert(batchExcludingFailedDataItem);
+          }
         }
 
         this.log.error("Data Item Batch Insert Failed: ", {
@@ -1355,4 +1358,15 @@ function entityToInFlightMultiPartUpload(
       ? entity.failed_reason
       : undefined,
   };
+}
+
+function isPostgresError(error: unknown): error is PostgresError {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof (error as PostgresError).code === "string" &&
+    "detail" in error &&
+    typeof (error as PostgresError).detail === "string"
+  );
 }

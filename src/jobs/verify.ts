@@ -19,9 +19,12 @@ import winston from "winston";
 
 import { defaultArchitecture } from "../arch/architecture";
 import { ArweaveGateway, Gateway } from "../arch/arweaveGateway";
+import { CacheService } from "../arch/cacheServiceTypes";
 import { Database } from "../arch/db/database";
 import { PostgresDatabase } from "../arch/db/postgres";
+import { getElasticacheService } from "../arch/elasticacheService";
 import { ObjectStore } from "../arch/objectStore";
+import { BundleHeaderInfo } from "../bundles/assembleBundleHeader";
 import {
   batchingSize,
   dropBundleTxThresholdNumberOfBlocks,
@@ -31,12 +34,17 @@ import {
 import defaultLogger from "../logger";
 import { PlannedDataItem } from "../types/dbTypes";
 import { ByteCount, TransactionId } from "../types/types";
+import { removeDataItemsFromCache } from "../utils/cacheServiceUtils";
 import {
   generateArrayChunks,
   getByteCountBasedRePackThresholdBlockCount,
 } from "../utils/common";
 import { DataItemsStillPendingWarning } from "../utils/errors";
-import { getBundleTx, getS3ObjectStore } from "../utils/objectStoreUtils";
+import {
+  getBundleHeaderInfo,
+  getBundleTx,
+  getS3ObjectStore,
+} from "../utils/objectStoreUtils";
 
 interface VerifyBundleJobArch {
   database?: Database;
@@ -44,6 +52,7 @@ interface VerifyBundleJobArch {
   arweaveGateway?: Gateway;
   logger?: winston.Logger;
   batchSize?: number;
+  cacheService?: CacheService;
 }
 
 async function hasBundleBeenPostedLongerThanTheDroppedThreshold(
@@ -76,6 +85,7 @@ export async function verifyBundleHandler({
   arweaveGateway = new ArweaveGateway({ endpoint: gatewayUrl }),
   logger = defaultLogger.child({ job: "verify-bundle-job" }),
   batchSize = batchingSize,
+  cacheService = getElasticacheService(),
 }: VerifyBundleJobArch): Promise<void> {
   /**
    * NOTE: this locks DB items, but only for the duration of this query.
@@ -88,7 +98,13 @@ export async function verifyBundleHandler({
   }
 
   for (const bundle of seededBundles) {
-    const { planId, bundleId, transactionByteCount, payloadByteCount } = bundle;
+    const {
+      planId,
+      bundleId,
+      transactionByteCount,
+      payloadByteCount,
+      headerByteCount,
+    } = bundle;
 
     try {
       const transactionStatus = await arweaveGateway.getTransactionStatus(
@@ -119,27 +135,34 @@ export async function verifyBundleHandler({
         if (number_of_confirmations >= txPermanentThreshold) {
           const plannedDataItems =
             await database.getPlannedDataItemsForVerification(planId);
+          const bundleHeaderInfo = await getBundleHeaderInfo({
+            objectStore,
+            planId,
+            // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+            headerSize: headerByteCount!, // headerByteCount is always defined on new seeded_bundle(s)
+          });
 
           const dataItemBatches = [
             ...generateArrayChunks(plannedDataItems, batchSize),
           ];
 
-          // Start concurrent processes to check GQL for blocks and update data item batches to permanent
+          // Start concurrent processes to check bundle header for data items and then update them in batches to permanent
           let batchFailedUnexpectedly = false;
           let dataItemsStillPending = false;
           const parallelLimit = pLimit(10);
           const promises = dataItemBatches.map((batch) =>
             parallelLimit(() =>
-              checkGQLForBlocksThenUpdateDataItemBatch(
+              checkHeaderForItemsThenUpdateDataItemBatch(
                 batch,
-                arweaveGateway,
+                bundleHeaderInfo,
                 database,
                 bundleId,
                 block_height,
                 number_of_confirmations,
                 payloadByteCount ?? 0,
                 logger,
-                planId
+                planId,
+                cacheService
               ).catch((error) => {
                 if (error instanceof DataItemsStillPendingWarning) {
                   dataItemsStillPending = true;
@@ -178,7 +201,7 @@ export async function verifyBundleHandler({
             continue;
           }
 
-          const isLastDataItemIndexedOnGQL = true; // all remaining data items are indexed on GQL
+          const isLastDataItemIndexedOnGQL = false; // TBD: Depends on which gateway
           logger.info("Updating bundle as permanent", {
             planId,
             block_height,
@@ -208,68 +231,77 @@ export async function handler(eventPayload?: unknown) {
   return verifyBundleHandler(defaultArchitecture);
 }
 
-async function checkGQLForBlocksThenUpdateDataItemBatch(
+async function checkHeaderForItemsThenUpdateDataItemBatch(
   dataItemBatch: PlannedDataItem[],
-  arweaveGateway: Gateway,
+  bundleHeaderInfo: BundleHeaderInfo,
   database: Database,
   bundleId: TransactionId,
   block_height: number,
   bundleTxConfirmations: number,
   payloadSize: ByteCount,
   logger: winston.Logger,
-  planId: string
+  planId: string,
+  cacheService: CacheService
 ) {
-  const dataItemGQLResults = await arweaveGateway.getDataItemsFromGQL(
-    dataItemBatch.map(({ dataItemId }) => dataItemId)
-  );
+  const dataItemsInHeader: PlannedDataItem[] = [];
+  const dataItemsNotInHeader: PlannedDataItem[] = [];
 
-  const idsToPlannedDataItemsMap = dataItemBatch.reduce(
-    (acc, plannedDataItem) => {
-      acc[plannedDataItem.dataItemId] = plannedDataItem;
-      return acc;
-    },
-    {} as Record<string, PlannedDataItem>
-  );
+  const idsToPlannedDataItemsInBundleHeader: Record<string, PlannedDataItem> =
+    {};
 
-  const idsToPlannedDataItemsInGQLMap = dataItemGQLResults.reduce(
-    (acc, gqlResult) => {
-      if (gqlResult.blockHeight) {
-        acc[gqlResult.id] = idsToPlannedDataItemsMap[gqlResult.id];
-      }
-      return acc;
-    },
-    {} as Record<string, PlannedDataItem>
+  const dataItemIdsInHeaderSet = new Set(
+    bundleHeaderInfo.dataItems.map(({ id }) => id)
   );
+  for (const dataItem of dataItemBatch) {
+    if (dataItemIdsInHeaderSet.has(dataItem.dataItemId)) {
+      dataItemsInHeader.push(dataItem);
+      idsToPlannedDataItemsInBundleHeader[dataItem.dataItemId] = dataItem;
+    } else {
+      dataItemsNotInHeader.push(dataItem);
+    }
+  }
 
-  const dataItemsInGQL = Object.values(idsToPlannedDataItemsInGQLMap);
-  const dataItemsNotInGQL =
-    Object.keys(idsToPlannedDataItemsMap).length === dataItemsInGQL.length
-      ? []
-      : dataItemBatch.filter(
-          (dataItem) =>
-            idsToPlannedDataItemsInGQLMap[dataItem.dataItemId] === undefined
-        );
+  const dataItemIdsInHeader = Object.keys(idsToPlannedDataItemsInBundleHeader);
 
   logger.debug("Updating data items as permanent", {
     bundleId,
     planId,
     block_height,
-    dataItemIds: Object.keys(idsToPlannedDataItemsInGQLMap),
+    dataItemIds: dataItemIdsInHeader,
   });
   await database.updateDataItemsAsPermanent({
-    dataItemIds: Object.keys(idsToPlannedDataItemsInGQLMap),
+    dataItemIds: dataItemIdsInHeader,
     blockHeight: block_height,
     bundleId,
   });
+  const numRemovedItems =
+    dataItemIdsInHeader.length > 0
+      ? await removeDataItemsFromCache(
+          cacheService,
+          dataItemIdsInHeader,
+          logger
+        ).catch((error) => {
+          // Treat these as soft errors to allow the job to continue
+          logger.error("Error removing data items from cache", {
+            error,
+          });
+          return 0;
+        })
+      : 0;
+  logger.debug(
+    `Removed ${numRemovedItems} of up to ${
+      dataItemIdsInHeader.length * 2
+    } metadata and data item cache entries from Elasticache`
+  );
   logger.debug("Updated data items as permanent", {
     bundleId,
     planId,
     block_height,
-    dataItemIds: Object.keys(idsToPlannedDataItemsInGQLMap),
+    dataItemIds: dataItemIdsInHeader,
   });
 
-  if (dataItemsNotInGQL.length > 0) {
-    const notFoundDataItemIds = dataItemsNotInGQL.map(
+  if (dataItemsNotInHeader.length > 0) {
+    const notFoundDataItemIds = dataItemsNotInHeader.map(
       ({ dataItemId }) => dataItemId
     );
 
@@ -277,7 +309,7 @@ async function checkGQLForBlocksThenUpdateDataItemBatch(
       getByteCountBasedRePackThresholdBlockCount(payloadSize);
 
     if (bundleTxConfirmations < byteCountBasedRepackThresholdBlockCount) {
-      logger.warn(
+      logger.debug(
         "Data items not found on GQL, but data posted within repack threshold... not yet repacking data items, will continue processing",
         {
           bundleTxConfirmations,
@@ -294,7 +326,7 @@ async function checkGQLForBlocksThenUpdateDataItemBatch(
     logger.error("Mismatched data item count!", {
       bundleId,
       planId,
-      foundDataItemLength: dataItemsInGQL.length,
+      foundDataItemLength: dataItemsInHeader.length,
       notFoundDataItemLength: notFoundDataItemIds.length,
       notFoundDataItemIds,
     });

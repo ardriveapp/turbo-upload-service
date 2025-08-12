@@ -16,7 +16,7 @@
  */
 import * as fs from "fs";
 
-import { PublicArweaveAddress } from "./types/types";
+import { PublicArweaveAddress, SigInfo, SignatureConfig } from "./types/types";
 
 export const port = process.env.PORT ? +process.env.PORT : 3000;
 
@@ -58,10 +58,6 @@ export const maxSingleDataItemByteCount = process.env.MAX_DATA_ITEM_SIZE
   ? +process.env.MAX_DATA_ITEM_SIZE
   : fourGiB;
 
-export const tickArnsContractEnabled =
-  process.env.TICK_ARNS_REGISTRY_ENABLED === "true";
-export const arnsContractTxId = process.env.ARNS_CONTRACT_TX_ID;
-
 export const freeUploadLimitBytes = +(
   process.env.FREE_UPLOAD_LIMIT ?? oneKiB * 505
 ); // Extra to account for the header sizes
@@ -71,12 +67,16 @@ export const gatewayUrl = new URL(
   process.env.ARWEAVE_GATEWAY || "https://arweave.net:443"
 );
 
+export const publicAccessGatewayUrl = new URL(
+  process.env.PUBLIC_ACCESS_GATEWAY || "https://arweave.net:443"
+);
+
 export const dataCaches = process.env.DATA_CACHES?.split(",") ?? [
-  "arweave.net",
+  publicAccessGatewayUrl.host,
 ];
 export const fastFinalityIndexes = process.env.FAST_FINALITY_INDEXES?.split(
   ","
-) ?? ["arweave.net"];
+) ?? [publicAccessGatewayUrl.host];
 
 /**
  * Error delay for the first failed request for a transaction header post or chunk upload
@@ -99,7 +99,6 @@ export const FATAL_CHUNK_UPLOAD_ERRORS = [
 ];
 
 export const txPermanentThreshold = 18;
-export const txWellSeededThreshold = 30;
 export const txConfirmationThreshold = 1;
 
 export const dropBundleTxThresholdNumberOfBlocks = 50;
@@ -149,6 +148,24 @@ export const aoAddresses = process.env.AO_ADDRESSES?.split(
 
 const kyveAddresses = process.env.KYVE_ADDRESSES?.split(",") ?? [];
 
+export const arioMainnetProcesses = process.env.ARIO_MAINNET_PROCESSES?.split(
+  ","
+) ?? ["qNvAoz0TgcH7DMg8BCVn8jF32QH5L6T29VjHxhHqqGE"];
+export const arioTestnetProcesses = process.env.ARIO_TESTNET_PROCESSES?.split(
+  ","
+) ?? [
+  "agYcCFJtrMG6cqMuZfskIkFTGvUPddICmtQSBIoPdiA", // testnet
+  "GaQrvEMKBpkjofgnBi_B3IgIDmY_XYelVLB6GcRGrHc", // devnet
+];
+export const antRegistryMainnetProcesses =
+  process.env.ANT_REGISTRY_MAINNET_PROCESSES?.split(",") ?? [
+    "i_le_yKKPVstLTDSmkHRqf-wYphMnwB9OhleiTgMkWc",
+  ];
+export const antRegistryTestnetProcesses =
+  process.env.ANT_REGISTRY_TESTNET_PROCESSES?.split(",") ?? [
+    "RR0vheYqtsKuJCWh6xj0beE35tjaEug5cejMw9n2aa8",
+  ];
+
 export const skipOpticalPostAddresses: string[] =
   process.env.SKIP_OPTICAL_POST_ADDRESSES?.split(",") ??
   redstoneOracleAddresses;
@@ -160,6 +177,9 @@ export const firstBatchDedicatedBundlesPremiumFeatureType =
   "first_batch_dedicated_bundles";
 export const aoDedicatedBundlesPremiumFeatureType = "ao_dedicated_bundles";
 export const kyveDedicatedBundlesPremiumFeatureType = "kyve_dedicated_bundles";
+export const arDriveDedicatedBundlesPremiumFeatureType =
+  "ardrive_dedicated_bundles";
+export const arioDedicatedBundlesPremiumFeatureType = "ario_dedicated_bundles";
 
 export const premiumPaidFeatureTypes = [
   warpDedicatedBundlesPremiumFeatureType,
@@ -167,6 +187,8 @@ export const premiumPaidFeatureTypes = [
   firstBatchDedicatedBundlesPremiumFeatureType,
   aoDedicatedBundlesPremiumFeatureType,
   kyveDedicatedBundlesPremiumFeatureType,
+  arDriveDedicatedBundlesPremiumFeatureType,
+  arioDedicatedBundlesPremiumFeatureType,
 ] as const;
 export type PremiumPaidFeatureType = (typeof premiumPaidFeatureTypes)[number];
 
@@ -176,11 +198,19 @@ export const allFeatureTypes = [
 ] as const;
 export type PremiumFeatureType = (typeof allFeatureTypes)[number];
 
+export const arioProcesses = [
+  ...arioMainnetProcesses,
+  ...arioTestnetProcesses,
+  ...antRegistryMainnetProcesses,
+  ...antRegistryTestnetProcesses,
+];
+
 export const dedicatedBundleTypes: Record<
   PremiumPaidFeatureType,
   {
     allowedWallets: string[];
     bundlerAppName?: string;
+    allowedProcesses?: string[];
   }
 > = {
   [warpDedicatedBundlesPremiumFeatureType]: {
@@ -205,6 +235,15 @@ export const dedicatedBundleTypes: Record<
   [kyveDedicatedBundlesPremiumFeatureType]: {
     allowedWallets: kyveAddresses,
     bundlerAppName: "KYVE",
+  },
+  [arDriveDedicatedBundlesPremiumFeatureType]: {
+    allowedWallets: [] as string[],
+    bundlerAppName: "ArDrive",
+  },
+  [arioDedicatedBundlesPremiumFeatureType]: {
+    allowedWallets: [] as string[],
+    bundlerAppName: "AR.IO Network",
+    allowedProcesses: arioProcesses,
   },
 } as const;
 
@@ -246,5 +285,207 @@ export const jobLabels = {
   postBundle: "post-bundle",
   seedBundle: "seed-bundle",
   verifyBundle: "verify-bundle",
+  cleanupFs: "cleanup-fs",
+  putOffsets: "put-offsets",
 } as const;
 export type JobLabel = (typeof jobLabels)[keyof typeof jobLabels];
+
+export const createDelegatedPaymentApprovalTagName = "x-approve-payment";
+export const approvalAmountTagName = "x-amount";
+export const approvalExpiresBySecondsTagName = "x-expires-seconds";
+export const revokeDelegatePaymentApprovalTagName = "x-delete-payment-approval";
+
+export const multipartChunkMinSize = 1024 * 1024 * 5; // 5MiB - AWS minimum
+export const multipartChunkMaxSize = 1024 * 1024 * 500; // 500MiB // NOTE: AWS supports upto 5GiB
+export const multipartDefaultChunkSize = 25_000_000; // 25MB
+
+export const signatureTypeInfo: Record<number, SigInfo> = {
+  [SignatureConfig.ARWEAVE]: {
+    signatureLength: 512,
+    pubkeyLength: 512,
+    name: "arweave",
+  },
+  [SignatureConfig.ED25519]: {
+    signatureLength: 64,
+    pubkeyLength: 32,
+    name: "ed25519",
+  },
+  [SignatureConfig.ETHEREUM]: {
+    signatureLength: 65,
+    pubkeyLength: 65,
+    name: "ethereum",
+  },
+  [SignatureConfig.SOLANA]: {
+    signatureLength: 64,
+    pubkeyLength: 32,
+    name: "solana",
+  },
+  [SignatureConfig.INJECTEDAPTOS]: {
+    signatureLength: 64,
+    pubkeyLength: 32,
+    name: "injectedAptos",
+  },
+  [SignatureConfig.MULTIAPTOS]: {
+    signatureLength: 64 * 32 + 4, // max 32 64 byte signatures, +4 for 32-bit bitmap
+    pubkeyLength: 32 * 32 + 1, // max 64 32 byte keys, +1 for 8-bit threshold value
+    name: "multiAptos",
+  },
+  [SignatureConfig.TYPEDETHEREUM]: {
+    signatureLength: 65,
+    pubkeyLength: 42,
+    name: "typedEthereum",
+  },
+  [SignatureConfig.KYVE]: {
+    signatureLength: 65,
+    pubkeyLength: 65,
+    name: "kyve",
+  },
+};
+
+export const sigNameToSigInfo: Record<string, SigInfo> = Object.values(
+  signatureTypeInfo
+).reduce((acc, info) => {
+  acc[info.name] = info;
+  return acc;
+}, {} as Record<string, SigInfo>);
+
+export const DataItemOffsets = {
+  signatureTypeStart: 0,
+  signatureTypeEnd: 1,
+  signatureStart: 2,
+  signatureEnd: (signatureType: number) =>
+    DataItemOffsets.signatureStart +
+    signatureTypeInfo[signatureType].signatureLength -
+    1,
+  ownerStart: (signatureType: number) =>
+    DataItemOffsets.signatureEnd(signatureType) + 1,
+  ownerEnd: (signatureType: number) =>
+    DataItemOffsets.ownerStart(signatureType) +
+    signatureTypeInfo[signatureType].pubkeyLength -
+    1,
+  targetFlagStart: (signatureType: number) =>
+    DataItemOffsets.ownerEnd(signatureType) + 1,
+  targetFlagEnd: (signatureType: number) =>
+    DataItemOffsets.targetFlagStart(signatureType), // 1 byte for target flag
+  targetStart: (signatureType: number, haveTarget: boolean) =>
+    haveTarget ? DataItemOffsets.targetFlagEnd(signatureType) + 1 : undefined,
+  targetEnd: (signatureType: number, haveTarget: boolean) =>
+    haveTarget
+      ? // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        DataItemOffsets.targetStart(signatureType, haveTarget)! + 31 // 32 bytes for target
+      : undefined,
+  anchorFlagStart: (signatureType: number, haveTarget: boolean) =>
+    haveTarget
+      ? // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        DataItemOffsets.targetEnd(signatureType, haveTarget)! + 1
+      : DataItemOffsets.targetFlagEnd(signatureType) + 1,
+  anchorFlagEnd: (signatureType: number, haveTarget: boolean) =>
+    DataItemOffsets.anchorFlagStart(signatureType, haveTarget), // 1 byte for anchor flag
+  anchorStart: (
+    signatureType: number,
+    haveTarget: boolean,
+    haveAnchor: boolean
+  ) =>
+    haveAnchor
+      ? // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        DataItemOffsets.anchorFlagEnd(signatureType, haveTarget)! + 1
+      : undefined,
+  anchorEnd: (
+    signatureType: number,
+    haveTarget: boolean,
+    haveAnchor: boolean
+  ) =>
+    haveAnchor
+      ? // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        DataItemOffsets.anchorStart(signatureType, haveTarget, haveAnchor)! + 31 // 32 bytes for anchor
+      : undefined,
+  numTagsStart: (
+    signatureType: number,
+    haveTarget: boolean,
+    haveAnchor: boolean
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+  ) => DataItemOffsets.anchorEnd(signatureType, haveTarget, haveAnchor)! + 1,
+  numTagsEnd: (
+    signatureType: number,
+    haveTarget: boolean,
+    haveAnchor: boolean
+  ) => DataItemOffsets.numTagsStart(signatureType, haveTarget, haveAnchor) + 7, // 8 bytes for number of tags
+  numTagsBytesStart: (
+    signatureType: number,
+    haveTarget: boolean,
+    haveAnchor: boolean
+  ) => DataItemOffsets.numTagsEnd(signatureType, haveTarget, haveAnchor) + 1,
+  numTagsBytesEnd: (
+    signatureType: number,
+    haveTarget: boolean,
+    haveAnchor: boolean
+  ) =>
+    DataItemOffsets.numTagsBytesStart(signatureType, haveTarget, haveAnchor) +
+    7, // 8 bytes for number of tag bytes
+  tagsStart: (
+    signatureType: number,
+    haveTarget: boolean,
+    haveAnchor: boolean,
+    numTagsBytes: number
+  ) =>
+    numTagsBytes > 0
+      ? DataItemOffsets.numTagsBytesEnd(signatureType, haveTarget, haveAnchor) +
+        1
+      : undefined,
+  tagsEnd: (
+    signatureType: number,
+    haveTarget: boolean,
+    haveAnchor: boolean,
+    numTagsBytes: number
+  ) =>
+    numTagsBytes > 0
+      ? // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        DataItemOffsets.tagsStart(
+          signatureType,
+          haveTarget,
+          haveAnchor,
+          numTagsBytes
+        )! + numTagsBytes
+      : undefined,
+  payloadStart: (
+    signatureType: number,
+    haveTarget: boolean,
+    haveAnchor: boolean,
+    numTagsBytes: number,
+    payloadSize: number
+  ) =>
+    payloadSize > 0
+      ? numTagsBytes > 0
+        ? // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+          DataItemOffsets.tagsEnd(
+            signatureType,
+            haveTarget,
+            haveAnchor,
+            numTagsBytes
+          )! + 1
+        : DataItemOffsets.numTagsBytesEnd(
+            signatureType,
+            haveTarget,
+            haveAnchor
+          ) + 1
+      : undefined,
+  payloadEnd: (
+    signatureType: number,
+    haveTarget: boolean,
+    haveAnchor: boolean,
+    numTagsBytes: number,
+    payloadSize: number
+  ) =>
+    payloadSize > 0
+      ? // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        DataItemOffsets.payloadStart(
+          signatureType,
+          haveTarget,
+          haveAnchor,
+          numTagsBytes,
+          payloadSize
+        )! +
+        payloadSize -
+        1
+      : undefined,
+} as const;

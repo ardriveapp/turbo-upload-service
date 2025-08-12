@@ -16,11 +16,14 @@ services:
       AWS_ENDPOINT: ${AWS_ENDPOINT:-}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      ELASTICACHE_HOST: ${ELASTICACHE_HOST:-redis}
+      ELASTICACHE_NO_CLUSTERING: ${ELASTICACHE_NO_CLUSTERING:-true}
       SQS_PREPARE_BUNDLE_URL: ${SQS_PREPARE_BUNDLE_URL:-}
       SQS_FINALIZE_UPLOAD_URL: ${SQS_FINALIZE_UPLOAD_URL:-}
       SQS_OPTICAL_URL: ${SQS_OPTICAL_URL:-}
       SQS_NEW_DATA_ITEM_URL: ${SQS_NEW_DATA_ITEM_URL:-}
       SQS_UNBUNDLE_BDI_URL: ${SQS_UNBUNDLE_BDI_URL:-}
+      SQS_PUT_OFFSETS_URL: ${SQS_PUT_OFFSETS_URL:-}
       OPTICAL_BRIDGING_ENABLED: ${OPTICAL_BRIDGING_ENABLED:-false}
       SKIP_BALANCE_CHECKS: ${SKIP_BALANCE_CHECKS:-true}
       DATA_ITEM_BUCKET: ${DATA_ITEM_BUCKET:-raw-data-items}
@@ -35,6 +38,22 @@ services:
     depends_on:
       - upload-service-pg
       - fulfillment-service
+      - redis
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: ["redis-server"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
 
   fulfillment-service:
     build:
@@ -59,6 +78,7 @@ services:
       SQS_OPTICAL_URL: ${SQS_OPTICAL_URL:-}
       SQS_NEW_DATA_ITEM_URL: ${SQS_NEW_DATA_ITEM_URL:-}
       SQS_UNBUNDLE_BDI_URL: ${SQS_UNBUNDLE_BDI_URL:-}
+      SQS_PUT_OFFSETS_URL: ${SQS_PUT_OFFSETS_URL:-}
       PLAN_BUNDLE_ENABLED: ${PLAN_BUNDLE_ENABLED:-true}
       VERIFY_BUNDLE_ENABLED: ${VERIFY_BUNDLE_ENABLED:-true}
       OPTICAL_BRIDGING_ENABLED: ${OPTICAL_BRIDGING_ENABLED:-false}
@@ -68,6 +88,8 @@ services:
       S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-}
       AWS_REGION: ${AWS_REGION:-us-east-1}
       OVERDUE_DATA_ITEM_THRESHOLD_MS: ${OVERDUE_DATA_ITEM_THRESHOLD_MS:-0} # plan data items immediately into bundles when plan-bundle runs
+      ELASTICACHE_HOST: ${ELASTICACHE_HOST:-redis}
+      ELASTICACHE_NO_CLUSTERING: ${ELASTICACHE_NO_CLUSTERING:-true}
     ports:
       - "${FULFILLMENT_PORT:-4000}:${FULFILLMENT_PORT:-4000}"
 
@@ -104,7 +126,8 @@ services:
       - upload-service-data:/var/lib/postgresql/data
 
   localstack:
-    container_name: "${LOCALSTACK_DOCKER_NAME:-localstack}"
+    #image: ghcr.io/ardriveapp/turbo-upload-service-localstack:latest
+    # Uncomment the following lines to build from local Dockerfile
     build:
       context: .
       dockerfile: Dockerfile.localstack
@@ -113,7 +136,7 @@ services:
       #- "127.0.0.1:4510-4559:4510-4559" # external services port range
     environment:
       # LocalStack configuration: https://docs.localstack.cloud/references/configuration/
-      - SERVICES=${SERVICES:-s3,sqs,secretsmanager}
+      - SERVICES=${SERVICES:-s3,sqs,secretsmanager,dynamodb}
       - DEBUG=${DEBUG:-0} # set to 1 to enable debug mode
       - NODE_ENV=${NODE_ENV:-local}
       - ARWEAVE_WALLET=${ARWEAVE_WALLET:-}
@@ -155,6 +178,8 @@ services:
       AWS_ENDPOINT: ${AWS_ENDPOINT:-}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      ELASTICACHE_HOST: ${ELASTICACHE_HOST:-redis}
+      ELASTICACHE_NO_CLUSTERING: ${ELASTICACHE_NO_CLUSTERING:-true}
       SQS_PREPARE_BUNDLE_URL: ${SQS_PREPARE_BUNDLE_URL:-}
       SQS_POST_BUNDLE_URL: ${SQS_POST_BUNDLE_URL:-}
       SQS_SEED_BUNDLE_URL: ${SQS_SEED_BUNDLE_URL:-}
@@ -162,6 +187,7 @@ services:
       SQS_OPTICAL_URL: ${SQS_OPTICAL_URL:-}
       SQS_NEW_DATA_ITEM_URL: ${SQS_NEW_DATA_ITEM_URL:-}
       SQS_UNBUNDLE_BDI_URL: ${SQS_UNBUNDLE_BDI_URL:-}
+      SQS_PUT_OFFSETS_URL: ${SQS_PUT_OFFSETS_URL:-}
       DATA_ITEM_BUCKET: ${DATA_ITEM_BUCKET:-raw-data-items}
       DATA_ITEM_BUCKET_REGION: ${DATA_ITEM_BUCKET_REGION:-us-east-1}
       S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-}
@@ -172,7 +198,10 @@ services:
         condition: service_started
       arlocal:
         condition: service_started
+      redis:
+        condition: service_healthy
 
 volumes:
   upload-service-data:
   upload-service-data-items:
+  redis-data:

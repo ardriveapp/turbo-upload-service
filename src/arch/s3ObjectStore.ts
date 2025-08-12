@@ -18,6 +18,7 @@ import {
   CompleteMultipartUploadCommand,
   CompleteMultipartUploadCommandOutput,
   CopyObjectCommand,
+  CopyObjectCommandInput,
   CreateMultipartUploadCommand,
   DeleteObjectCommand,
   GetObjectCommand,
@@ -30,30 +31,33 @@ import {
   UploadPartCopyCommand,
 } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
-import { NodeHttpHandler } from "@aws-sdk/node-http-handler";
 import { ConfiguredRetryStrategy } from "@aws-sdk/util-retry";
-import { AbortController } from "@smithy/abort-controller";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
 import * as https from "https";
 import { Readable } from "multistream";
 import pLimit from "p-limit";
 import winston from "winston";
 
 import {
+  BundleHeaderInfo,
+  bundleHeaderInfoFromBuffer,
+} from "../bundles/assembleBundleHeader";
+import {
   payloadContentTypeS3MetaDataTag,
   payloadDataStartS3MetaDataTag,
 } from "../constants";
 import globalLogger from "../logger";
-import { UploadId } from "../types/types";
+import { PayloadInfo, UploadId } from "../types/types";
 import {
   InvalidChunk,
   InvalidChunkSize,
   MultiPartUploadNotFound,
 } from "../utils/errors";
+import { streamToBuffer } from "../utils/streamToBuffer";
 import {
   MoveObjectParams,
   ObjectStore,
   ObjectStoreOptions,
-  PayloadInfo,
 } from "./objectStore";
 
 const awsAccountId = process.env.AWS_ACCOUNT_ID;
@@ -511,33 +515,6 @@ export class S3ObjectStore implements ObjectStore {
     return getHeadResponse.ContentLength ?? 0;
   }
 
-  public async removeObject(Key: string): Promise<void> {
-    const attemptDeleteObject = async (bucketName: string) => {
-      this.logger.info(`Deleting S3 object...`, {
-        Key,
-        Bucket: bucketName,
-      });
-
-      await s3ClientForBucket(bucketName).send(
-        new DeleteObjectCommand({
-          Bucket: bucketName,
-          Key,
-        })
-      );
-    };
-
-    await attemptDeleteObject(this.bucketName).catch(async (error) => {
-      if (
-        error instanceof Error &&
-        error.name === "NotFound" &&
-        this.backupBucketName
-      ) {
-        return await attemptDeleteObject(this.backupBucketName);
-      }
-      throw error;
-    });
-  }
-
   private s3CommandParamsFromOptions(
     Options: ObjectStoreOptions,
     bucket: string
@@ -587,7 +564,7 @@ export class S3ObjectStore implements ObjectStore {
 
     const attemptMoveObject = async (sourceBucketName: string) => {
       fnLogger = fnLogger.child({ sourceBucketName });
-      const params = {
+      const params: CopyObjectCommandInput = {
         ...this.s3CommandParamsFromOptions(Options, destinationBucketName),
         CopySource: `${sourceBucketName}/${encodeURIComponent(sourceKey)}`,
         Key: destinationKey,
@@ -860,5 +837,16 @@ export class S3ObjectStore implements ObjectStore {
       }
       throw error;
     });
+  }
+
+  public async getBundleHeaderInfo(
+    Key: string,
+    range: string
+  ): Promise<BundleHeaderInfo> {
+    const stream = await this.getObject(Key, range).then(
+      ({ readable }) => readable
+    );
+    const buffer = await streamToBuffer(stream);
+    return bundleHeaderInfoFromBuffer(buffer);
   }
 }

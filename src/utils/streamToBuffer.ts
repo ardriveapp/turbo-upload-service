@@ -27,6 +27,11 @@ export const streamToBuffer = async (
   logger.debug(
     `Converting stream of expected data size ${data_size} to Buffer...`
   );
+
+  if (stream.isPaused()) {
+    stream.resume();
+  }
+
   let buffer: Buffer = Buffer.alloc(data_size, undefined, encoding);
   return new Promise((resolve, reject) => {
     stream.on("data", (chunk: Buffer) => {

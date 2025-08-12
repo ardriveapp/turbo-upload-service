@@ -43,7 +43,7 @@ export interface Database {
   /** Stores a batch of new data items that have been enqueued for insert */
   insertNewDataItemBatch(dataItemBatch: PostedNewDataItem[]): Promise<void>;
 
-  /**  Get all new data items in the database sorted by uploadedDate */
+  /**  Gets MAX_DATA_ITEM_LIMIT * 5 (75,000 as of this commit) new data items in the database sorted by uploadedDate */
   getNewDataItems(): Promise<NewDataItem[]>;
 
   /**
