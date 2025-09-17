@@ -72,7 +72,6 @@ import {
 import { isValidArweaveBase64URL } from "../../utils/base64";
 import { generateArrayChunks } from "../../utils/common";
 import {
-  BundleAlreadySeededWarning,
   BundlePlanExistsInAnotherStateWarning,
   DataItemExistsWarning,
   MultiPartUploadNotFound,
@@ -247,50 +246,53 @@ export class PostgresDatabase implements Database {
           dataItemInserts
         );
       } catch (error) {
-        const failedId = (error as PostgresError).detail.match(
-          /\(data_item_id\)=\(([^)]+)\)/
-        )?.[1];
+        if (isPostgresError(error)) {
+          const failedId = error.detail.match(
+            /\(data_item_id\)=\(([^)]+)\)/
+          )?.[1];
 
-        if (
-          (error as PostgresError).code ===
-            postgresInsertFailedPrimaryKeyNotUniqueCode &&
-          failedId &&
-          isValidArweaveBase64URL(failedId)
-        ) {
-          this.log.warn(
-            "Data Item Insert Failed on Duplicate Data Item Primary Key -- Removing item from batch and trying again",
-            {
-              error,
-              failedId,
-            }
-          );
-          MetricRegistry.primaryKeyErrorsEncounteredOnNewDataItemBatchInsert.inc();
-
-          // Remove failed data item from batch and recurse to try again
-          const batchExcludingFailedDataItem = dataItemInserts.filter(
-            (insert) => insert.data_item_id !== failedId
-          );
-
-          if (batchExcludingFailedDataItem.length === dataItemInserts.length) {
-            this.log.error(
-              "Data Item Batch Insert Failed on Duplicate Data Item Primary Key -- Failed data item not found in batch!",
+          if (
+            error.code === postgresInsertFailedPrimaryKeyNotUniqueCode &&
+            failedId &&
+            isValidArweaveBase64URL(failedId)
+          ) {
+            this.log.warn(
+              "Data Item Insert Failed on Duplicate Data Item Primary Key -- Removing item from batch and trying again",
               {
                 error,
                 failedId,
-                dataItemIds: dataItemBatch.map((d) => d.dataItemId),
               }
             );
-            throw error;
-          }
+            MetricRegistry.primaryKeyErrorsEncounteredOnNewDataItemBatchInsert.inc();
 
-          if (batchExcludingFailedDataItem.length === 0) {
-            this.log.warn(
-              "Data Item Batch is empty! No more work left to do in this job -- exiting..."
+            // Remove failed data item from batch and recurse to try again
+            const batchExcludingFailedDataItem = dataItemInserts.filter(
+              (insert) => insert.data_item_id !== failedId
             );
-            return;
-          }
 
-          return performInsert(batchExcludingFailedDataItem);
+            if (
+              batchExcludingFailedDataItem.length === dataItemInserts.length
+            ) {
+              this.log.error(
+                "Data Item Batch Insert Failed on Duplicate Data Item Primary Key -- Failed data item not found in batch!",
+                {
+                  error,
+                  failedId,
+                  dataItemIds: dataItemBatch.map((d) => d.dataItemId),
+                }
+              );
+              throw error;
+            }
+
+            if (batchExcludingFailedDataItem.length === 0) {
+              this.log.warn(
+                "Data Item Batch is empty! No more work left to do in this job -- exiting..."
+              );
+              return;
+            }
+
+            return performInsert(batchExcludingFailedDataItem);
+          }
         }
 
         this.log.error("Data Item Batch Insert Failed: ", {
@@ -476,9 +478,30 @@ export class PostgresDatabase implements Database {
     ).where({ plan_id: planId });
     if (bundlePlanDbResult.length === 0) {
       logger.warn(
-        `[DUPLICATE-MESSAGE] No bundle plan still exists for plan id!`
+        "No bundle plan found! Checking other tables for plan id...",
+        { planId }
       );
-      return [];
+      const bundlePlanResults = await Promise.all([
+        this.reader<NewBundleDBResult>(tableNames.newBundle).where({
+          plan_id: planId,
+        }),
+        this.reader<PostedBundleDBResult>(tableNames.postedBundle).where({
+          plan_id: planId,
+        }),
+        this.reader<SeededBundleDBResult>(tableNames.seededBundle).where({
+          plan_id: planId,
+        }),
+        this.reader<PermanentBundleDBResult>(tableNames.permanentBundle).where({
+          plan_id: planId,
+        }),
+      ]);
+      if (
+        bundlePlanResults.some((bundlePlanResult) => bundlePlanResult.length)
+      ) {
+        throw new BundlePlanExistsInAnotherStateWarning(planId);
+      } else {
+        throw Error(`No bundle plan found for plan id ${planId}!`);
+      }
     }
 
     return this.getPlannedDataItemsByPlanId(planId);
@@ -533,7 +556,6 @@ export class PostgresDatabase implements Database {
         .returning("*");
 
       if (bundlePlanDbResults.length === 0) {
-        // If no bundle plan is found, check if plan id exists in another table
         logger.warn(
           "No bundle plan found! Checking other tables for plan id...",
           { planId, bundleId }
@@ -585,7 +607,24 @@ export class PostgresDatabase implements Database {
     ).where(columnNames.planId, planId);
 
     if (newBundleDbResult.length === 0) {
-      throw Error(`No new_bundle found for plan id ${planId}!`);
+      const bundlePlanResults = await Promise.all([
+        this.reader<PostedBundleDBResult>(tableNames.postedBundle).where({
+          plan_id: planId,
+        }),
+        this.reader<SeededBundleDBResult>(tableNames.seededBundle).where({
+          plan_id: planId,
+        }),
+        this.reader<PermanentBundleDBResult>(tableNames.permanentBundle).where({
+          plan_id: planId,
+        }),
+      ]);
+      if (
+        bundlePlanResults.some((bundlePlanResult) => bundlePlanResult.length)
+      ) {
+        throw new BundlePlanExistsInAnotherStateWarning(planId);
+      } else {
+        throw Error(`No new_bundle exists for plan id ${planId}!`);
+      }
     }
 
     return newBundleDbResultToNewBundleMap(newBundleDbResult[0]);
@@ -637,7 +676,21 @@ export class PostgresDatabase implements Database {
         tableNames.seededBundle
       ).where({ plan_id: planId });
       if (seededBundleDbResult.length > 0) {
-        throw new BundleAlreadySeededWarning(seededBundleDbResult[0].bundle_id);
+        throw new BundlePlanExistsInAnotherStateWarning(
+          planId,
+          seededBundleDbResult[0].bundle_id
+        );
+      }
+      // check if its already permanent
+      const permanentBundleDbResult =
+        await this.writer<PermanentBundleDBResult>(
+          tableNames.permanentBundle
+        ).where({ plan_id: planId });
+      if (permanentBundleDbResult.length > 0) {
+        throw new BundlePlanExistsInAnotherStateWarning(
+          planId,
+          permanentBundleDbResult[0].bundle_id
+        );
       }
 
       throw Error(`No posted_bundle found for plan id ${planId}!`);
@@ -903,6 +956,7 @@ export class PostgresDatabase implements Database {
         uploadedTimestamp: number;
         deadlineHeight?: number;
         failedReason?: DataItemFailedReason;
+        owner: string;
       }
     | undefined
   > {
@@ -925,6 +979,7 @@ export class PostgresDatabase implements Database {
         deadlineHeight: newDataItemDbResult[0].deadline_height
           ? +newDataItemDbResult[0].deadline_height
           : undefined,
+        owner: newDataItemDbResult[0].owner_public_address,
       };
     }
 
@@ -962,6 +1017,7 @@ export class PostgresDatabase implements Database {
         deadlineHeight: plannedDataItemDbResult[0].deadline_height
           ? +plannedDataItemDbResult[0].deadline_height
           : undefined,
+        owner: plannedDataItemDbResult[0].owner_public_address,
       };
     }
 
@@ -983,6 +1039,7 @@ export class PostgresDatabase implements Database {
         deadlineHeight: permanentDataItemDbResult[0].deadline_height
           ? +permanentDataItemDbResult[0].deadline_height
           : undefined,
+        owner: permanentDataItemDbResult[0].owner_public_address,
       };
     }
 
@@ -1003,6 +1060,7 @@ export class PostgresDatabase implements Database {
           ? +failedDataItemDbResult[0].deadline_height
           : undefined,
         failedReason: failedDataItemDbResult[0].failed_reason,
+        owner: failedDataItemDbResult[0].owner_public_address,
       };
     }
 
@@ -1032,6 +1090,7 @@ export class PostgresDatabase implements Database {
   public async insertInFlightMultiPartUpload({
     uploadId,
     uploadKey,
+    chunkSize,
   }: InFlightMultiPartUploadParams): Promise<InFlightMultiPartUpload> {
     this.log.debug("Inserting in flight multipart upload...", {
       uploadId,
@@ -1046,6 +1105,8 @@ export class PostgresDatabase implements Database {
           .insert({
             upload_id: uploadId,
             upload_key: uploadKey,
+            chunk_size:
+              chunkSize === undefined ? undefined : chunkSize.toString(),
           })
           .returning("*"); // Returning the inserted row
 
@@ -1355,4 +1416,15 @@ function entityToInFlightMultiPartUpload(
       ? entity.failed_reason
       : undefined,
   };
+}
+
+function isPostgresError(error: unknown): error is PostgresError {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof (error as PostgresError).code === "string" &&
+    "detail" in error &&
+    typeof (error as PostgresError).detail === "string"
+  );
 }

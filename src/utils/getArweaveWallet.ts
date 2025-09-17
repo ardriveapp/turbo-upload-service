@@ -22,11 +22,12 @@ import {
   GetSecretValueCommand,
   SecretsManagerClient,
 } from "@aws-sdk/client-secrets-manager";
-import { GetParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
-import { ArweaveSigner } from "arbundles";
+import { GetParameterCommand } from "@aws-sdk/client-ssm";
+import { ArweaveSigner } from "@dha-team/arbundles";
 import { Base64UrlString } from "arweave/node/lib/utils";
 import winston from "winston";
 
+import { ssmClient as svcsSystemsMgrClient } from "../arch/ssmClient";
 import { msPerMinute, turboLocalJwk } from "../constants";
 import logger from "../logger";
 import { JWKInterface } from "../types/jwkTypes";
@@ -35,12 +36,12 @@ const sixtyMinutes = msPerMinute * 60;
 
 const opticalWalletCache = new PromiseCache<string, JWKInterface>({
   cacheCapacity: 1,
-  cacheTTL: sixtyMinutes,
+  cacheTTLMillis: sixtyMinutes,
 });
 
 const opticalPubKeyCache = new PromiseCache<string, string>({
   cacheCapacity: 1,
-  cacheTTL: sixtyMinutes,
+  cacheTTLMillis: sixtyMinutes,
 });
 
 const awsRegion = process.env.AWS_REGION ?? "us-east-1";
@@ -60,20 +61,6 @@ const awsCredentials =
 
 const endpoint = process.env.AWS_ENDPOINT;
 const secretsMgrClient = new SecretsManagerClient({
-  region: awsRegion,
-  ...(endpoint
-    ? {
-        endpoint,
-      }
-    : {}),
-  ...(awsCredentials
-    ? {
-        credentials: awsCredentials,
-      }
-    : {}),
-});
-
-const svcsSystemsMgrClient = new SSMClient({
   region: awsRegion,
   ...(endpoint
     ? {
@@ -120,7 +107,7 @@ const arweaveWalletSecretName = "arweave-wallet";
 const signingWalletCache = new ReadThroughPromiseCache<string, JWKInterface>({
   cacheParams: {
     cacheCapacity: 1,
-    cacheTTL: sixtyMinutes,
+    cacheTTLMillis: sixtyMinutes,
   },
   readThroughFunction: async () => {
     return getSecretValue(arweaveWalletSecretName).then((walletString) =>
@@ -200,7 +187,7 @@ export async function getOpticalPubKey(): Promise<Base64UrlString> {
 const ssmParamCache = new ReadThroughPromiseCache<string, string>({
   cacheParams: {
     cacheCapacity: 100,
-    cacheTTL: sixtyMinutes,
+    cacheTTLMillis: sixtyMinutes,
   },
   readThroughFunction: async (parameterName) => {
     const command = new GetParameterCommand({

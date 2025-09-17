@@ -24,9 +24,10 @@ import { createQueueHandler, enqueue } from "../arch/queues";
 import { gatewayUrl, jobLabels } from "../constants";
 import defaultLogger from "../logger";
 import { MetricRegistry } from "../metricRegistry";
-import { PlanId } from "../types/dbTypes";
+import { NewBundle, PlanId } from "../types/dbTypes";
 import { Winston } from "../types/winston";
 import { ownerToNormalizedB64Address } from "../utils/base64";
+import { BundlePlanExistsInAnotherStateWarning } from "../utils/errors";
 import { getBundleTx, getS3ObjectStore } from "../utils/objectStoreUtils";
 
 interface PostBundleJobInjectableArch {
@@ -48,7 +49,17 @@ export async function postBundleHandler(
   }: PostBundleJobInjectableArch,
   logger = defaultLogger.child({ job: "post-bundle-job", planId })
 ) {
-  const dbNextBundle = await database.getNextBundleToPostByPlanId(planId);
+  let dbNextBundle: NewBundle;
+  try {
+    dbNextBundle = await database.getNextBundleToPostByPlanId(planId);
+  } catch (error) {
+    if (error instanceof BundlePlanExistsInAnotherStateWarning) {
+      logger.warn(error.message);
+      return;
+    }
+    logger.error("Failed to get next bundle to post.", { error });
+    throw error;
+  }
   const { bundleId, transactionByteCount } = dbNextBundle;
 
   logger.info(`Posting bundle.`, {

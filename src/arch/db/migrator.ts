@@ -40,12 +40,12 @@ export abstract class Migrator {
     name: string;
     operation: () => Promise<void>;
   }) {
-    globalLogger.info(`Starting ${name}...`);
+    globalLogger.debug(`Starting ${name}...`);
     const startTime = Date.now();
 
     await operation();
 
-    globalLogger.info(`Finished ${name}!`, {
+    globalLogger.debug(`Finished ${name}!`, {
       durationMs: Date.now() - startTime,
     });
   }

@@ -24,7 +24,7 @@ import { jobLabels } from "../constants";
 import defaultLogger from "../logger";
 import { PlanId, PlannedDataItem, PostedBundle } from "../types/dbTypes";
 import { filterKeysFromObject } from "../utils/common";
-import { BundleAlreadySeededWarning } from "../utils/errors";
+import { BundlePlanExistsInAnotherStateWarning } from "../utils/errors";
 import {
   getBundlePayload,
   getBundleTx,
@@ -54,7 +54,7 @@ export async function seedBundleHandler(
   try {
     dbResult = await database.getNextBundleAndDataItemsToSeedByPlanId(planId);
   } catch (error) {
-    if (error instanceof BundleAlreadySeededWarning) {
+    if (error instanceof BundlePlanExistsInAnotherStateWarning) {
       logger.warn(error.message);
       return;
     }

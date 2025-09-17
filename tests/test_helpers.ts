@@ -34,7 +34,7 @@ import { TransactionId } from "../src/types/types";
 export const localTestUrl = `http://localhost:${port}`;
 
 // stubbed arweave against local arweave gateway
-export const arweave = Arweave.init({
+export const testArweave = Arweave.init({
   host: gatewayUrl.hostname,
   port: gatewayUrl.port,
   protocol: gatewayUrl.protocol.replace(":", ""),

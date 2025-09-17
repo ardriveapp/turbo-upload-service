@@ -14,7 +14,7 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-import { ArweaveSigner, Tag, deepHash } from "arbundles";
+import { ArweaveSigner, Tag, deepHash } from "@dha-team/arbundles";
 import { stringToBuffer } from "arweave/node/lib/utils";
 
 import { fromB64Url, toB64Url } from "./base64";

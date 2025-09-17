@@ -20,7 +20,7 @@ import axios, { AxiosInstance, AxiosResponse } from "axios";
 
 import { gatewayUrl, msPerMinute } from "../constants";
 import logger from "../logger";
-import GQLResultInterface, { GQLEdgeInterface } from "../types/gqlTypes";
+import { MetricRegistry } from "../metricRegistry";
 import {
   ConfirmedTransactionStatus,
   TransactionStatus,
@@ -39,8 +39,6 @@ interface GatewayAPIConstParams {
   retryStrategy?: RetryStrategy<AxiosResponse>;
   axiosInstance?: AxiosInstance;
 }
-
-const currentBlockInfoCacheKey = "currentBlockInfo";
 
 export interface Gateway {
   getWinstonPriceForByteCount(
@@ -63,15 +61,29 @@ export interface Gateway {
   getBlockHeightForTxAnchor(txAnchor: string): Promise<number>;
   getCurrentBlockHeight(): Promise<number>;
   getBalanceForWallet(wallet: PublicArweaveAddress): Promise<Winston>;
-  getDataItemsFromGQL(dataItemIds: TransactionId[]): Promise<
-    {
-      id: TransactionId;
-      blockHeight?: number;
-      bundledIn?: TransactionId;
-    }[]
-  >;
   postBundleTxToAdminQueue(bundleTxId: TransactionId): Promise<void>;
 }
+
+export const currentBlockInfoCache = new ReadThroughPromiseCache<
+  string, // cache key is the gateway endpoint URL
+  { blockHeight: number; timestamp: number },
+  { axiosInstance: AxiosInstance; endpointHref: string }
+>({
+  cacheParams: {
+    cacheCapacity: 1,
+    cacheTTLMillis: msPerMinute,
+  },
+  readThroughFunction: async (_, { axiosInstance, endpointHref }) => {
+    return getCurrentBlockInfoInternal({ axiosInstance, endpointHref });
+  },
+  metricsConfig: {
+    cacheName: "curr_block_cache",
+    registry: MetricRegistry.getInstance().getRegistry(),
+    labels: {
+      env: process.env.NODE_ENV ?? "local",
+    },
+  },
+});
 
 export class ArweaveGateway implements Gateway {
   private endpoint: URL;
@@ -178,68 +190,6 @@ export class ArweaveGateway implements Gateway {
     ).data;
   }
 
-  private gqlPageSize = 100;
-  public async getDataItemsFromGQL(dataItemIds: TransactionId[]): Promise<
-    {
-      id: TransactionId;
-      blockHeight?: number;
-      bundledIn?: TransactionId;
-    }[]
-  > {
-    if (dataItemIds.length > this.gqlPageSize) {
-      // TODO: Can support pagination from if needed here, but for now we are batching for breaking up db inserts
-      throw Error(
-        `Cannot query more than ${this.gqlPageSize} data items at a time. This method expects pre-batching of data item ids`
-      );
-    }
-
-    try {
-      logger.debug("Checking if data items can be found on GQL...", {
-        dataItemIds,
-      });
-
-      const gqlResponse = await this.retryStrategy.sendRequest(() =>
-        this.axiosInstance.post<GQLResultInterface>(
-          this.endpoint.href + "graphql",
-          {
-            query: `
-          query {
-            transactions(ids: [${dataItemIds.map((id) => `"${id}"`)}] first: ${
-              this.gqlPageSize
-            }) {
-              edges {
-                node {
-                  id
-                  block {
-                    height
-                  }
-                  bundledIn {
-                    id
-                  }
-                }
-              }
-            }
-          }`,
-          }
-        )
-      );
-
-      return gqlResponse?.data.data.transactions.edges.map(
-        (edge: GQLEdgeInterface) => ({
-          id: edge.node.id,
-          blockHeight: edge.node.block?.height,
-          bundledIn: edge.node.bundledIn?.id,
-        })
-      );
-    } catch (error) {
-      logger.error("Error querying transaction on GQL", {
-        dataItemIds,
-        error: error instanceof Error ? error.message : "Unknown error",
-      });
-      throw error;
-    }
-  }
-
   public async getBlockHeightForTxAnchor(txAnchor: string): Promise<number> {
     try {
       const statusResponse = await this.retryStrategy.sendRequest(() =>
@@ -280,110 +230,22 @@ export class ArweaveGateway implements Gateway {
     }
   }
 
-  private currentBlockInfoCache = new ReadThroughPromiseCache<
-    string,
-    { blockHeight: number; timestamp: number }
-  >({
-    cacheParams: {
-      cacheCapacity: 1,
-      cacheTTL: msPerMinute,
-    },
-    readThroughFunction: async () => {
-      return this.getCurrentBlockInfoInternal();
-    },
-  });
-
   public async getCurrentBlockHeight(): Promise<number> {
-    return (await this.currentBlockInfoCache.get(currentBlockInfoCacheKey))
-      .blockHeight;
+    return (
+      await currentBlockInfoCache.get(this.endpoint.href, {
+        axiosInstance: this.axiosInstance,
+        endpointHref: this.endpoint.href,
+      })
+    ).blockHeight;
   }
 
   public async getCurrentBlockTimestamp(): Promise<number> {
-    return (await this.currentBlockInfoCache.get(currentBlockInfoCacheKey))
-      .timestamp;
-  }
-
-  private async getCurrentBlockInfoInternal(): Promise<{
-    blockHeight: number;
-    timestamp: number;
-  }> {
-    try {
-      let blockHeight, timestamp;
-      const retryStrategy = new ExponentialBackoffRetryStrategy<AxiosResponse>({
-        validStatusCodes: [200, 202], // only success on these codes
-      });
-      const statusResponse = await retryStrategy
-        .sendRequest(() =>
-          this.axiosInstance.post(this.endpoint.href + "graphql", {
-            query: `
-          query {
-            blocks(first: 1) {
-              edges {
-                node {
-                  id
-                  height
-                  timestamp
-                }
-              }
-            }
-          }
-          `,
-          })
-        )
-        // catch errors thrown by retry logic - which would be anything not a 200 or 202 - swallow them so we can fallback below
-        .catch((error) => {
-          logger.debug(error);
-          return undefined;
-        });
-
-      // success from gql - use the response to get block info
-      if (statusResponse) {
-        const edge = statusResponse.data?.data?.blocks?.edges[0];
-        blockHeight = edge?.node?.height;
-        timestamp = edge?.node?.timestamp;
-        logger.debug("Successfully fetched current block info from GQL", {
-          blockHeight,
-          timestamp,
-        });
-      } else {
-        // retry against height endpoint if failed - TODO: handle any other cached response codes from arweave.net
-        logger.debug(
-          "Failed to fetch current block height and timestamp from GQL. Falling back to /block/current endpoint."
-        );
-        // try and fetch from /block/current - if we don't get a 200/202 after 5 retries, ExponentialBackoffRetry will throw an error - do not catch it
-        const fallbackResponse = await retryStrategy.sendRequest(() =>
-          this.axiosInstance.get(this.endpoint.href + "block/current")
-        );
-
-        blockHeight = fallbackResponse?.data.height;
-        timestamp = fallbackResponse?.data.timestamp;
-        logger.debug(
-          "Successfully fetched block height and timestamp from fallback endpoint",
-          {
-            blockHeight,
-            timestamp,
-          }
-        );
-      }
-
-      if (!blockHeight || !timestamp) {
-        throw Error("Failed to fetch block info");
-      }
-
-      logger.debug("Successfully fetched current block info", {
-        blockHeight,
-        timestamp,
-      });
-      return {
-        blockHeight,
-        timestamp,
-      };
-    } catch (error) {
-      logger.error("Error getting current block info", {
-        error: error instanceof Error ? error.message : "Unknown error",
-      });
-      throw error;
-    }
+    return (
+      await currentBlockInfoCache.get(this.endpoint.href, {
+        axiosInstance: this.axiosInstance,
+        endpointHref: this.endpoint.href,
+      })
+    ).timestamp;
   }
 
   public async getBalanceForWallet(
@@ -423,4 +285,130 @@ export class ArweaveGateway implements Gateway {
       }
     }
   }
+}
+
+async function getCurrentBlockInfoInternal({
+  axiosInstance,
+  endpointHref,
+}: {
+  axiosInstance: AxiosInstance;
+  endpointHref: string;
+}): Promise<{
+  blockHeight: number;
+  timestamp: number;
+}> {
+  try {
+    const result = await Promise.any([
+      getCurrentBlockInfoViaGraphQL({ axiosInstance, endpointHref }),
+      getCurrentBlockInfoViaNodeProxy({ axiosInstance, endpointHref }),
+    ]);
+    return result;
+  } catch (_) {
+    const errMsg = "Error getting current block info from all sources!";
+    logger.error(errMsg);
+    throw new Error(errMsg);
+  }
+}
+
+async function getCurrentBlockInfoViaGraphQL({
+  axiosInstance,
+  endpointHref,
+}: {
+  axiosInstance: AxiosInstance;
+  endpointHref: string;
+}): Promise<{
+  blockHeight: number;
+  timestamp: number;
+}> {
+  const retryStrategy = new ExponentialBackoffRetryStrategy<AxiosResponse>({
+    validStatusCodes: [200, 202], // only success on these codes
+  });
+  let blockHeight, timestamp;
+  try {
+    const statusResponse = await retryStrategy
+      .sendRequest(() =>
+        axiosInstance.post(endpointHref + "graphql", {
+          query: `
+          query {
+            blocks(first: 1) {
+              edges {
+                node {
+                  id
+                  height
+                  timestamp
+                }
+              }
+            }
+          }
+          `,
+        })
+      )
+      // catch errors thrown by retry logic - which would be anything not a 200 or 202 - swallow them so we can fallback below
+      .catch((error) => {
+        logger.debug(error);
+        return undefined;
+      });
+
+    // success from gql - use the response to get block info
+    if (statusResponse) {
+      const edge = statusResponse.data?.data?.blocks?.edges[0];
+      blockHeight = edge?.node?.height;
+      timestamp = edge?.node?.timestamp;
+      logger.debug("Successfully fetched current block info from GQL", {
+        blockHeight,
+        timestamp,
+      });
+      return {
+        blockHeight,
+        timestamp,
+      };
+    }
+  } catch (error) {
+    logger.error("Error getting current block info via gql", {
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+    throw error;
+  }
+
+  throw Error("Failed to fetch block info via gql");
+}
+
+async function getCurrentBlockInfoViaNodeProxy({
+  axiosInstance,
+  endpointHref,
+}: {
+  axiosInstance: AxiosInstance;
+  endpointHref: string;
+}): Promise<{
+  blockHeight: number;
+  timestamp: number;
+}> {
+  const retryStrategy = new ExponentialBackoffRetryStrategy<AxiosResponse>({
+    validStatusCodes: [200, 202], // only success on these codes
+  });
+
+  // try and fetch from /block/current - if we don't get a 200/202 after 5 retries, ExponentialBackoffRetry will throw an error - do not catch it
+  const response = await retryStrategy.sendRequest(() =>
+    axiosInstance.get(endpointHref + "block/current")
+  );
+
+  const blockHeight = response?.data.height;
+  const timestamp = response?.data.timestamp;
+
+  if (!blockHeight || !timestamp) {
+    throw Error("Failed to fetch block info via node proxy");
+  }
+
+  logger.debug(
+    "Successfully fetched block height and timestamp via node proxy",
+    {
+      blockHeight,
+      timestamp,
+    }
+  );
+
+  return {
+    blockHeight,
+    timestamp,
+  };
 }

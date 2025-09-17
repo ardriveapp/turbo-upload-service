@@ -42,7 +42,7 @@ export async function newDataItemBatchInsertHandler({
   });
   await uploadDatabase.insertNewDataItemBatch(batchWithSignatureBuffered);
 
-  logger.info(`Inserted new data items!`, {
+  logger.debug(`Inserted new data items!`, {
     dataItemBatchLength: dataItemBatch.length,
   });
   logger.debug(`Batch Ids`, {

@@ -9,6 +9,7 @@ const lambdas = [
   "verify",
   "optical-post",
   "unbundle-bdi",
+  "cleanup-fs",
 ];
 
 lambdas.forEach((lambda) => {

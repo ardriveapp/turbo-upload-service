@@ -14,7 +14,7 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-import { byteArrayToLong, longTo32ByteArray } from "arbundles";
+import { byteArrayToLong, longTo32ByteArray } from "@dha-team/arbundles";
 import { Readable } from "stream";
 
 import { ByteCount } from "../types/types";

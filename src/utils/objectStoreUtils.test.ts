@@ -19,6 +19,7 @@ import { writeFileSync } from "fs";
 import { Readable } from "multistream";
 import pLimit from "p-limit";
 
+import { stubCacheService } from "../arch/cacheServiceTypes";
 import { FileSystemObjectStore } from "../arch/fileSystemObjectStore";
 import { ObjectStore } from "../arch/objectStore";
 import {
@@ -30,11 +31,12 @@ import { bufferIdFromReadableSignature } from "../bundles/idFromSignature";
 import logger from "../logger";
 import { PlanId } from "../types/dbTypes";
 import { TransactionId } from "../types/types";
+import { assembleBundlePayload } from "./dataItemUtils";
 import {
-  assembleBundlePayload,
   byteCountRangeOfRawSignature,
-  getRawSignatureOfDataItem,
-  getSignatureTypeOfDataItem,
+  getRawSignatureOfDataItemFromObjStore,
+  getSignatureTypeOfDataItemFromObjStore,
+  sanitizePayloadContentType,
 } from "./objectStoreUtils";
 import { streamIntoBufferAtOffset, streamToBuffer } from "./streamToBuffer";
 
@@ -48,10 +50,13 @@ describe("Bundle buffer functions", () => {
       await assembleBundleHeader([
         {
           dataItemRawId: await bufferIdFromReadableSignature(
-            await getRawSignatureOfDataItem(
+            await getRawSignatureOfDataItemFromObjStore(
               objectStore,
               dataItemId,
-              await getSignatureTypeOfDataItem(objectStore, dataItemId)
+              await getSignatureTypeOfDataItemFromObjStore(
+                objectStore,
+                dataItemId
+              )
             )
           ),
           byteCount: 1464,
@@ -59,8 +64,13 @@ describe("Bundle buffer functions", () => {
       ])
     );
 
-    const stream = assembleBundlePayload(objectStore, headerBuffer);
-    const bufferFromStream = await streamToBuffer(stream);
+    const { payloadReadable } = assembleBundlePayload(
+      objectStore,
+      stubCacheService,
+      headerBuffer,
+      logger
+    );
+    const bufferFromStream = await streamToBuffer(payloadReadable);
     const headerSize = totalBundleSizeFromHeaderInfo(
       bundleHeaderInfoFromBuffer(headerBuffer)
     );
@@ -197,3 +207,34 @@ async function getBundleBufferAlloc(
 
   return bundleBuffer;
 }
+
+describe("sanitizePayloadContentType", () => {
+  it("returns default octet-stream for empty input", () => {
+    const result = sanitizePayloadContentType("");
+    expect(result).to.equal("application/octet-stream");
+  });
+
+  it("returns default octet-stream for input with only control characters", () => {
+    const result = sanitizePayloadContentType("\x00\x01\x02\x03");
+    expect(result).to.equal("application/octet-stream");
+  });
+
+  it("returns sanitized content type for valid input with new line characters", () => {
+    const result = sanitizePayloadContentType("text/plain\r\napplication/json");
+    expect(result).to.equal("text/plain application/json");
+  });
+
+  it("returns sanitized content type for valid input with multiple spaces", () => {
+    const result = sanitizePayloadContentType("text/plain   application/json");
+    expect(result).to.equal("text/plain application/json");
+  });
+
+  it("returns sanitized content type for valid input with cli command as a content type", () => {
+    const result = sanitizePayloadContentType(
+      'text/html\n/root/.nvm/versions/node/v24.4.0/bin/ardrive upload-file --wallet-file /root/vi.json --parent-folder-id "a2cb1c21-6925-4541-8752-a2c4a8eeedae" --local-path /data/2025-07-17/1752711669_573ce228cb/1752711669_573ce228cb --dest-file-name "1752711669_573ce228cb.html" --turbo --content-type text/html'
+    );
+    expect(result).to.equal(
+      'text/html /root/.nvm/versions/node/v24.4.0/bin/ardrive upload-file --wallet-file /root/vi.json --parent-folder-id "a2cb1c21-6925-4541-8752-a2c4a8eeedae" --local-path /data/2025-07-17/1752711669_573ce228cb/1752711669_573ce228cb --dest-file-name "1752711669_573ce228cb.html" --turbo --content-type text/html'
+    );
+  });
+});

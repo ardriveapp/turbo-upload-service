@@ -17,20 +17,20 @@
 import { Secp256k1HdWallet, makeCosmoshubPath } from "@cosmjs/amino";
 import { Slip10, Slip10Curve } from "@cosmjs/crypto";
 import { toHex } from "@cosmjs/encoding";
-import KyveSDK from "@kyvejs/sdk";
 import {
   ArweaveSigner,
   EthereumSigner,
+  KyveSigner,
   SolanaSigner,
   createData,
-} from "arbundles";
+} from "@dha-team/arbundles";
+import KyveSDK from "@kyvejs/sdk";
 import base58 from "bs58";
 import { expect } from "chai";
 import { Wallet } from "ethers";
 import { readFileSync } from "node:fs";
 
 import { testArweaveJWK } from "../../tests/test_helpers";
-import { SignatureConfig } from "../bundles/verifyDataItem";
 import { ownerToNativeAddress } from "./ownerToNativeAddress";
 
 describe("ownerToNativeAddress", () => {
@@ -103,16 +103,13 @@ describe("ownerToNativeAddress", () => {
         makeCosmoshubPath(0)
       ).privkey
     );
-    const signer = new EthereumSigner(privateKey);
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-ignore
-    // signer.signatureType = SignatureConfig.KYVE;
+    const signer = new KyveSigner(privateKey);
 
     const dataItem = createData("data", signer);
     await dataItem.sign(signer);
 
-    const { owner } = dataItem;
-    const result = ownerToNativeAddress(owner, SignatureConfig.KYVE);
+    const { owner, signatureType } = dataItem;
+    const result = ownerToNativeAddress(owner, signatureType);
 
     expect(result).to.equal(kyveAddress);
   });

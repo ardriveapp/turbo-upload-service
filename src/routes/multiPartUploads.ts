@@ -16,28 +16,38 @@
  */
 import { ReadThroughPromiseCache } from "@ardrive/ardrive-promise-cache";
 import { Message } from "@aws-sdk/client-sqs";
-import { JWKInterface, Tag } from "arbundles";
+import { JWKInterface, SignatureConfig, Tag } from "@dha-team/arbundles";
 import { Base64UrlString } from "arweave/node/lib/utils";
 import crypto from "node:crypto";
 import winston from "winston";
 
 import { ArweaveGateway } from "../arch/arweaveGateway";
 import { Database } from "../arch/db/database";
+import { getElasticacheService } from "../arch/elasticacheService";
 import { ObjectStore } from "../arch/objectStore";
 import { PaymentService, ReserveBalanceResponse } from "../arch/payment";
-import { enqueue } from "../arch/queues";
+import { EnqueueFinalizeUpload, enqueue } from "../arch/queues";
 import { StreamingDataItem } from "../bundles/streamingDataItem";
 import {
+  approvalAmountTagName,
+  approvalExpiresBySecondsTagName,
   blocklistedAddresses,
+  createDelegatedPaymentApprovalTagName,
+  dataCaches,
   deadlineHeightIncrement,
+  fastFinalityIndexes,
   jobLabels,
+  multipartChunkMaxSize,
+  multipartChunkMinSize,
+  multipartDefaultChunkSize,
   receiptVersion,
+  revokeDelegatePaymentApprovalTagName,
   skipOpticalPostAddresses,
 } from "../constants";
 import { MetricRegistry } from "../metricRegistry";
 import { KoaContext } from "../server";
 import { InFlightMultiPartUpload, PostedNewDataItem } from "../types/dbTypes";
-import { UploadId } from "../types/types";
+import { NativeAddress, UploadId } from "../types/types";
 import { W } from "../types/winston";
 import { fromB64Url, toB64Url } from "../utils/base64";
 import {
@@ -46,6 +56,7 @@ import {
   payloadContentTypeFromDecodedTags,
   sleep,
 } from "../utils/common";
+import { quarantineDataItem } from "../utils/dataItemUtils";
 import {
   BlocklistedAddressError,
   DataItemExistsWarning,
@@ -55,6 +66,7 @@ import {
   InvalidChunkSize,
   InvalidDataItem,
   MultiPartUploadNotFound,
+  PaymentServiceReturnedError,
 } from "../utils/errors";
 import {
   completeMultipartUpload,
@@ -65,8 +77,7 @@ import {
   getRawDataItem,
   getRawDataItemByteCount,
   moveFinalizedMultipartObject,
-  rawDataItemExists,
-  removeDataItem,
+  rawDataItemObjectExists,
   uploadPart,
 } from "../utils/objectStoreUtils";
 import {
@@ -78,16 +89,14 @@ import { ownerToNativeAddress } from "../utils/ownerToNativeAddress";
 import {
   IrysSignedReceipt,
   IrysUnsignedReceipt,
+  SignedReceipt,
   signIrysReceipt,
+  signReceipt,
 } from "../utils/signReceipt";
 
 const shouldSkipBalanceCheck = process.env.SKIP_BALANCE_CHECKS === "true";
 const opticalBridgingEnabled = process.env.OPTICAL_BRIDGING_ENABLED !== "false";
 const maxAllowablePartNumber = 10_000; // AWS S3 MultiPartUpload part number limitation
-
-export const chunkMinSize = 1024 * 1024 * 5; // 5MiB - AWS minimum
-export const chunkMaxSize = 1024 * 1024 * 500; // 500MiB // NOTE: AWS supports upto 5GiB
-export const defaultChunkSize = 25_000_000; // 25MB
 
 const inFlightUploadCache = new ReadThroughPromiseCache<
   UploadId,
@@ -96,15 +105,39 @@ const inFlightUploadCache = new ReadThroughPromiseCache<
 >({
   cacheParams: {
     cacheCapacity: 1000,
-    cacheTTL: 60_000,
+    cacheTTLMillis: 60_000,
   },
   readThroughFunction: async (uploadId, database) => {
     return database.getInflightMultiPartUpload(uploadId);
+  },
+  metricsConfig: {
+    cacheName: "mpu_in_flight_cache",
+    registry: MetricRegistry.getInstance().getRegistry(),
+    labels: {
+      env: process.env.NODE_ENV ?? "local",
+    },
   },
 });
 
 export async function createMultiPartUpload(ctx: KoaContext) {
   const { database, objectStore, logger } = ctx.state;
+
+  const chunkSizeRaw = ctx.query.chunkSize;
+  const chunkSize =
+    typeof chunkSizeRaw === "string" ? parseInt(chunkSizeRaw, 10) : undefined;
+  if (
+    chunkSize !== undefined &&
+    (chunkSize < multipartChunkMinSize || chunkSize > multipartChunkMaxSize)
+  ) {
+    ctx.status = 400;
+    ctx.body = {
+      error: "Invalid chunk size",
+      min: multipartChunkMinSize,
+      max: multipartChunkMaxSize,
+    };
+    return;
+  }
+
   logger.debug("Creating new multipart upload");
   const uploadKey = crypto.randomUUID();
   const newUploadId = await createMultipartUpload(objectStore, uploadKey);
@@ -116,20 +149,22 @@ export async function createMultiPartUpload(ctx: KoaContext) {
     database.insertInFlightMultiPartUpload({
       uploadId: newUploadId,
       uploadKey,
+      chunkSize,
     })
   );
 
   // In order to combat RDS replication-lag-related issues with posting chunks (parts)
   // for this uploadId immediately after receiving the fresh uploadId, impose an
-  // arbitrary 50ms delay here.
-  await sleep(50);
+  // arbitrary 250ms delay here.
+  await sleep(250); // TODO: Lower this after Service Level Cache is implemented for multi-part uploads
 
   logger.info("Inserted new multipart upload into database", { newUploadId });
 
   ctx.body = {
     id: newUploadId,
-    max: chunkMaxSize,
-    min: chunkMinSize,
+    max: multipartChunkMaxSize,
+    min: multipartChunkMinSize,
+    chunkSize: chunkSize,
   };
 
   return; // do not return next()
@@ -150,12 +185,12 @@ export async function getMultipartUpload(ctx: KoaContext) {
       uploadId
     );
 
-    const chunkSize = upload.chunkSize || defaultChunkSize;
+    const chunkSize = upload.chunkSize || multipartDefaultChunkSize;
     // TODO: Could add finalization status here without having to add a new endpoint
     ctx.body = {
       id: upload.uploadId,
-      max: chunkMaxSize,
-      min: chunkMinSize,
+      max: multipartChunkMaxSize,
+      min: multipartChunkMinSize,
       size: chunkSize,
       chunks: chunks
         // sort chunks in ascending order
@@ -186,7 +221,7 @@ export async function getMultipartUpload(ctx: KoaContext) {
 
 export async function getMultipartUploadStatus(ctx: KoaContext) {
   const { uploadId } = ctx.params;
-  const { database, logger, objectStore } = ctx.state;
+  const { database, logger, objectStore, getArweaveWallet } = ctx.state;
   logger.info("Getting multipart upload status...", { uploadId });
   try {
     // If this succeeds, then we're either still assembling the data item
@@ -228,7 +263,7 @@ export async function getMultipartUploadStatus(ctx: KoaContext) {
         uploadId,
         error: error instanceof Error ? error.message : error,
       });
-      ctx.status = 500;
+      ctx.status = 503;
       ctx.message = "Internal Server Error";
       return;
     }
@@ -246,6 +281,42 @@ export async function getMultipartUploadStatus(ctx: KoaContext) {
       validatedUpload.dataItemId
     );
 
+    let signedReceipt: SignedReceipt | undefined;
+    if (fulfillmentInfo !== undefined) {
+      if (!fulfillmentInfo.deadlineHeight) {
+        logger.warn(
+          "Data item info is missing deadlineHeight! Cannot re-calculate receipt signature",
+          {
+            info: fulfillmentInfo,
+          }
+        );
+      } else {
+        try {
+          signedReceipt = await signReceipt(
+            {
+              dataCaches,
+              fastFinalityIndexes,
+              id: validatedUpload.dataItemId,
+              winc: fulfillmentInfo.assessedWinstonPrice.toString(),
+              timestamp: fulfillmentInfo.uploadedTimestamp,
+              deadlineHeight: fulfillmentInfo.deadlineHeight,
+              version: receiptVersion,
+            },
+            await getArweaveWallet()
+          );
+          logger.debug("Finalized receipt successfully re-signed", {
+            uploadId,
+          });
+        } catch (error) {
+          logger.error("Error signing receipt", {
+            uploadId,
+            error: error instanceof Error ? error.message : error,
+          });
+          // If signing fails, we proceed without the signed receipt
+        }
+      }
+    }
+
     // TODO: Sign this in the future
     ctx.body = {
       status: validatedUpload.failedReason
@@ -254,6 +325,11 @@ export async function getMultipartUploadStatus(ctx: KoaContext) {
         ? "FINALIZED"
         : "FINALIZING",
       timestamp: Date.now(),
+      receipt:
+        signedReceipt === undefined
+          ? undefined
+          : // Append owner to match data item post (/tx) return type
+            { ...signedReceipt, owner: fulfillmentInfo?.owner },
     };
     return;
   } catch (error) {
@@ -269,7 +345,7 @@ export async function getMultipartUploadStatus(ctx: KoaContext) {
         uploadId,
         error: error instanceof Error ? error.message : error,
       });
-      ctx.status = 500;
+      ctx.status = 503;
       ctx.message = "Internal Server Error";
     }
     return;
@@ -443,12 +519,15 @@ export async function finalizeMultipartUploadWithQueueMessage({
   getArweaveWallet: () => Promise<JWKInterface>;
   logger: winston.Logger;
 }) {
-  const uploadId = JSON.parse(message.Body ?? "").uploadId as UploadId;
+  const body: EnqueueFinalizeUpload = JSON.parse(message.Body ?? "");
+  const uploadId = body.uploadId;
   if (!uploadId) {
     throw new Error(
       "Malformed message! Expected string key 'uploadId' in message body."
     );
   }
+
+  const token = body.token ?? "arweave";
 
   await finalizeMultipartUpload({
     uploadId,
@@ -459,11 +538,30 @@ export async function finalizeMultipartUploadWithQueueMessage({
     getArweaveWallet,
     logger,
     asyncValidation: false,
+    token,
+    paidBy: body.paidBy,
   });
 }
 
 export async function finalizeMultipartUploadWithHttpRequest(ctx: KoaContext) {
-  const { uploadId } = ctx.params;
+  const { uploadId, token } = ctx.params;
+
+  const paidBys: string[] = [];
+  ctx.request.req.rawHeaders.forEach((header, index) => {
+    if (header === "x-paid-by") {
+      // get x-paid-by values from raw headers
+      const rawPaidBy = ctx.request.req.rawHeaders[index + 1];
+      if (rawPaidBy) {
+        // split by comma and trim whitespace
+        const paidByAddresses = rawPaidBy
+          .split(",")
+          .map((address) => address.trim());
+        paidBys.push(...paidByAddresses);
+      }
+    }
+  });
+  const paidBy = paidBys.length > 0 ? paidBys : undefined;
+
   const asyncValidation = ctx.state.asyncValidation ? true : false;
   const {
     paymentService,
@@ -473,6 +571,14 @@ export async function finalizeMultipartUploadWithHttpRequest(ctx: KoaContext) {
     getArweaveWallet,
     arweaveGateway,
   } = ctx.state;
+
+  logger.debug("Finalizing via HTTP request", {
+    paidBy,
+    uploadId,
+    token,
+    asyncValidation,
+    rawHeaders: ctx.request.req.rawHeaders,
+  });
   try {
     const result = await finalizeMultipartUpload({
       uploadId,
@@ -483,6 +589,8 @@ export async function finalizeMultipartUploadWithHttpRequest(ctx: KoaContext) {
       getArweaveWallet,
       logger,
       asyncValidation,
+      token: token ?? "arweave",
+      paidBy,
     });
     ctx.status = result.newDataItemAdded && asyncValidation ? 201 : 200;
     ctx.body = result.receipt;
@@ -523,6 +631,14 @@ export async function finalizeMultipartUploadWithHttpRequest(ctx: KoaContext) {
   }
 }
 
+type RemainingUploadResponse = {
+  dataCaches: string[];
+  fastFinalityIndexes: string[];
+  owner: string;
+  winc: string;
+};
+type MultiPartUploadResponse = IrysSignedReceipt & RemainingUploadResponse;
+
 export async function finalizeMultipartUpload({
   uploadId,
   paymentService,
@@ -532,6 +648,8 @@ export async function finalizeMultipartUpload({
   getArweaveWallet,
   logger,
   asyncValidation,
+  token,
+  paidBy,
 }: {
   uploadId: UploadId;
   paymentService: PaymentService;
@@ -541,11 +659,13 @@ export async function finalizeMultipartUpload({
   getArweaveWallet: () => Promise<JWKInterface>;
   logger: winston.Logger;
   asyncValidation: boolean;
+  token: string;
+  paidBy?: NativeAddress[];
 }): Promise<{
-  receipt: IrysSignedReceipt;
+  receipt: MultiPartUploadResponse;
   newDataItemAdded: boolean;
 }> {
-  const fnLogger = logger.child({ uploadId });
+  const fnLogger = logger.child({ uploadId, paidBy, token });
 
   const finishedMPUEntity = await database
     .getFinalizedMultiPartUpload(uploadId)
@@ -569,9 +689,7 @@ export async function finalizeMultipartUpload({
     }
 
     // If the data item is already in/through fulfillment, we're done here
-    const info = finishedMPUEntity
-      ? await database.getDataItemInfo(finishedMPUEntity.dataItemId)
-      : undefined;
+    const info = await database.getDataItemInfo(finishedMPUEntity.dataItemId);
     if (info) {
       const deadlineHeight =
         info.deadlineHeight ?? // TODO: Remove this fallback after all data items have a deadline height
@@ -593,7 +711,13 @@ export async function finalizeMultipartUpload({
       logger.debug("Receipt signed!", signedReceipt);
 
       return {
-        receipt: signedReceipt,
+        receipt: {
+          ...signedReceipt,
+          dataCaches,
+          fastFinalityIndexes,
+          owner: info.owner,
+          winc: info.assessedWinstonPrice.toString(),
+        },
         newDataItemAdded: false,
       };
     }
@@ -619,6 +743,8 @@ export async function finalizeMultipartUpload({
         etag: finishedMPUEntity.etag,
       },
       logger: fnLogger,
+      token,
+      paidBy,
     });
     return {
       receipt: signedReceipt,
@@ -637,6 +763,8 @@ export async function finalizeMultipartUpload({
     inFlightMPUEntity,
     logger: fnLogger,
     asyncValidation,
+    token,
+    paidBy,
   });
 
   return {
@@ -655,6 +783,8 @@ export async function finalizeMPUWithInFlightEntity({
   inFlightMPUEntity,
   logger,
   asyncValidation,
+  token,
+  paidBy,
 }: {
   uploadId: UploadId;
   paymentService: PaymentService;
@@ -665,11 +795,17 @@ export async function finalizeMPUWithInFlightEntity({
   inFlightMPUEntity: InFlightMultiPartUpload;
   logger: winston.Logger;
   asyncValidation: boolean;
-}): Promise<IrysSignedReceipt> {
+  token: string;
+  paidBy?: NativeAddress[];
+}): Promise<MultiPartUploadResponse> {
   if (inFlightMPUEntity.failedReason) {
     throw new InvalidDataItem();
   }
 
+  let signatureTypeOverride: number | undefined;
+  if (token === "kyve") {
+    signatureTypeOverride = SignatureConfig.KYVE;
+  }
   // At this point we know that the data item has not yet reached fulfillment
   // and has not yet been validated. We'll stream out the headers of the data
   // item for accounting as well as the payload for validation and then move on
@@ -720,11 +856,17 @@ export async function finalizeMPUWithInFlightEntity({
     fnLogger = fnLogger.child({ finalizedEtag });
     fnLogger.debug(`Finalized upload in object store `, {
       durationMs: Date.now() - completeMultipartStartTime,
+      paidBy,
+      token,
+      finalizedEtag,
+      asyncValidation,
     });
 
     if (asyncValidation) {
       await enqueue(jobLabels.finalizeUpload, {
         uploadId,
+        token,
+        paidBy,
       });
 
       // Use a thrown custom error to shift control flow
@@ -749,11 +891,16 @@ export async function finalizeMPUWithInFlightEntity({
     tags,
     signature,
   } = dataItemHeaders;
-  const signatureType = await dataItemStream
-    .getSignatureType()
-    .catch(cleanUpDataItemStreamAndThrow);
+  const signatureType =
+    signatureTypeOverride ??
+    (await dataItemStream
+      .getSignatureType()
+      .catch(cleanUpDataItemStreamAndThrow));
   const ownerPublicAddress = await dataItemStream
     .getOwnerAddress()
+    .catch(cleanUpDataItemStreamAndThrow);
+  const targetPublicAddress = await dataItemStream
+    .getTarget()
     .catch(cleanUpDataItemStreamAndThrow);
 
   // Perform blocklist checking before consuming the (potentially large) remainder of the stream
@@ -796,7 +943,9 @@ export async function finalizeMPUWithInFlightEntity({
   const premiumFeatureType = getPremiumFeatureType(
     ownerPublicAddress,
     tags,
-    signatureType
+    signatureType,
+    [], // TODO: get nested data item headers on multi-part uploads
+    targetPublicAddress
   );
 
   // Prepare the data needed for optical posting and new_data_item insert
@@ -843,6 +992,8 @@ export async function finalizeMPUWithInFlightEntity({
       dataItemId: dataItemHeaders.id,
     },
     logger,
+    token,
+    paidBy,
   });
 }
 
@@ -855,6 +1006,8 @@ export async function finalizeMPUWithValidatedInfo({
   getArweaveWallet,
   validatedUploadInfo,
   logger,
+  token,
+  paidBy,
 }: {
   uploadId: UploadId;
   objectStore: ObjectStore;
@@ -868,7 +1021,9 @@ export async function finalizeMPUWithValidatedInfo({
     dataItemId: string;
   };
   logger: winston.Logger;
-}): Promise<IrysSignedReceipt> {
+  token: string;
+  paidBy?: NativeAddress[];
+}): Promise<MultiPartUploadResponse> {
   // If we're here, then we know we've previously completed the multipart upload and
   // validated the data item, but the data item isn't yet in the fulfillment pipeline.
   // We'll have to determine whether we still have to move the data item into the raw data
@@ -876,9 +1031,16 @@ export async function finalizeMPUWithValidatedInfo({
   // for optical posting, and/or returned the signed receipt to the client.
   let fnLogger = logger;
 
+  let signatureTypeOverride: number | undefined;
+  if (token === "kyve") {
+    signatureTypeOverride = SignatureConfig.KYVE;
+  }
+
   const { uploadKey, dataItemId } = validatedUploadInfo;
 
-  if (await rawDataItemExists(objectStore, validatedUploadInfo.dataItemId)) {
+  if (
+    await rawDataItemObjectExists(objectStore, validatedUploadInfo.dataItemId)
+  ) {
     return await finalizeMPUWithRawDataItem({
       uploadId,
       paymentService,
@@ -888,6 +1050,8 @@ export async function finalizeMPUWithValidatedInfo({
       getArweaveWallet,
       dataItemId,
       logger: fnLogger,
+      token,
+      paidBy,
     });
   }
 
@@ -903,9 +1067,11 @@ export async function finalizeMPUWithValidatedInfo({
   const dataItemHeaders = await dataItemStream
     .getHeaders()
     .catch(cleanUpDataItemStreamAndThrow);
-  const signatureType = await dataItemStream
-    .getSignatureType()
-    .catch(cleanUpDataItemStreamAndThrow);
+  const signatureType =
+    signatureTypeOverride ??
+    (await dataItemStream
+      .getSignatureType()
+      .catch(cleanUpDataItemStreamAndThrow));
   const ownerPublicAddress = await dataItemStream
     .getOwnerAddress()
     .catch(cleanUpDataItemStreamAndThrow);
@@ -952,7 +1118,8 @@ export async function finalizeMPUWithValidatedInfo({
       premiumFeatureType: getPremiumFeatureType(
         ownerPublicAddress,
         dataItemHeaders.tags,
-        signatureType
+        signatureType,
+        [] // TODO: get nested data item headers on multi-part uploads
       ),
       signatureType,
       assessedWinstonPrice: W("0"), // Stubbed until new_data_item insert
@@ -963,6 +1130,7 @@ export async function finalizeMPUWithValidatedInfo({
       owner: dataItemHeaders.owner,
     },
     logger: fnLogger,
+    paidBy,
   });
 }
 
@@ -975,6 +1143,8 @@ export async function finalizeMPUWithRawDataItem({
   getArweaveWallet,
   dataItemId,
   logger,
+  token,
+  paidBy,
 }: {
   uploadId: UploadId;
   paymentService: PaymentService;
@@ -984,10 +1154,17 @@ export async function finalizeMPUWithRawDataItem({
   getArweaveWallet: () => Promise<JWKInterface>;
   dataItemId: string;
   logger: winston.Logger;
+  token: string;
+  paidBy?: NativeAddress[];
 }) {
   logger.info(
     "Resuming finalization of multipart upload with existing raw data item"
   );
+
+  let signatureTypeOverride: number | undefined;
+  if (token === "kyve") {
+    signatureTypeOverride = SignatureConfig.KYVE;
+  }
 
   // A previous attempt to finalize made it through to moving the data item
   // in place for bundling and serving, but a database entry was not made.
@@ -1005,9 +1182,14 @@ export async function finalizeMPUWithRawDataItem({
   const ownerPublicAddress = await dataItemStream
     .getOwnerAddress()
     .catch(cleanUpDataItemStreamAndThrow);
-  const signatureType = await dataItemStream
-    .getSignatureType()
+  const targetPublicAddress = await dataItemStream
+    .getTarget()
     .catch(cleanUpDataItemStreamAndThrow);
+  const signatureType =
+    signatureTypeOverride ??
+    (await dataItemStream
+      .getSignatureType()
+      .catch(cleanUpDataItemStreamAndThrow));
   const rawDataItemByteCount = await getRawDataItemByteCount(
     objectStore,
     dataItemId
@@ -1027,7 +1209,9 @@ export async function finalizeMPUWithRawDataItem({
     premiumFeatureType: getPremiumFeatureType(
       ownerPublicAddress,
       dataItemHeaders.tags,
-      signatureType
+      signatureType,
+      [], // TODO: get nested data item headers on multi-part uploads
+      targetPublicAddress
     ),
     signatureType,
     assessedWinstonPrice: W("0"), // Stubbed until new_data_item insert
@@ -1049,6 +1233,7 @@ export async function finalizeMPUWithRawDataItem({
       owner: dataItemHeaders.owner,
     },
     logger,
+    paidBy,
   });
 }
 
@@ -1061,6 +1246,7 @@ export async function finalizeMPUWithDataItemInfo({
   getArweaveWallet,
   dataItemInfo,
   logger,
+  paidBy,
 }: {
   uploadId: UploadId;
   objectStore: ObjectStore;
@@ -1069,16 +1255,18 @@ export async function finalizeMPUWithDataItemInfo({
     target: string | undefined;
     tags: Tag[];
   };
+  paidBy?: NativeAddress[];
   paymentService: PaymentService;
   database: Database;
   arweaveGateway: ArweaveGateway;
   getArweaveWallet: () => Promise<JWKInterface>;
   logger: winston.Logger;
-}): Promise<IrysSignedReceipt> {
+}): Promise<MultiPartUploadResponse> {
   // At the point, the DB has finalized the in flight upload, the validated data item is in
   // the raw data item bucket, and we now need to reserve balance at payment svc, optical post,
   // construct the receipt, insert the data item into the database, and return the receipt.
-  let fnLogger = logger;
+  let fnLogger = logger.child({ paidBy });
+
   const uploadTimestamp = Date.now();
   const currentBlockHeight = await arweaveGateway.getCurrentBlockHeight();
   const deadlineHeight = currentBlockHeight + deadlineHeightIncrement;
@@ -1094,17 +1282,20 @@ export async function finalizeMPUWithDataItemInfo({
   const signedReceipt = await signIrysReceipt(receipt, jwk);
   fnLogger.info("Receipt signed!", signedReceipt);
 
+  const nativeAddress = ownerToNativeAddress(
+    dataItemInfo.owner,
+    dataItemInfo.signatureType
+  );
+
   fnLogger.debug("Reserving balance for upload...");
   const paymentResponse: ReserveBalanceResponse = shouldSkipBalanceCheck
     ? { isReserved: true, costOfDataItem: W("0"), walletExists: true }
     : await paymentService.reserveBalanceForData({
-        nativeAddress: ownerToNativeAddress(
-          dataItemInfo.owner,
-          dataItemInfo.signatureType
-        ),
+        nativeAddress,
         size: dataItemInfo.byteCount,
         dataItemId: dataItemInfo.dataItemId,
         signatureType: dataItemInfo.signatureType,
+        paidBy,
       });
   fnLogger = fnLogger.child({
     paymentResponse,
@@ -1113,6 +1304,22 @@ export async function finalizeMPUWithDataItemInfo({
   });
   fnLogger.debug("Finished reserving balance for upload.");
 
+  const performQuarantine = () => {
+    // don't need to await this - just invoke and move on
+    void quarantineDataItem({
+      objectStore,
+      cacheService: getElasticacheService(), // TODO: Actually integrate with Elasticache effectively in this file
+      dataItemId: dataItemInfo.dataItemId,
+      database,
+      logger: fnLogger,
+      contentLength: dataItemInfo.byteCount,
+      payloadInfo: {
+        payloadContentType: dataItemInfo.payloadContentType,
+        payloadDataStart: dataItemInfo.payloadDataStart,
+      },
+    });
+  };
+
   if (paymentResponse.isReserved) {
     dataItemInfo.assessedWinstonPrice = paymentResponse.costOfDataItem;
     fnLogger.debug("Balance successfully reserved", {
@@ -1120,7 +1327,7 @@ export async function finalizeMPUWithDataItemInfo({
     });
   } else {
     fnLogger.error(`Failing multipart upload due to insufficient balance.`);
-    void removeDataItem(objectStore, dataItemInfo.dataItemId, database); // don't need to await this - just invoke and move on
+    performQuarantine();
     await database.failFinishedMultiPartUpload({
       uploadId,
       failedReason: "UNDERFUNDED",
@@ -1129,10 +1336,86 @@ export async function finalizeMPUWithDataItemInfo({
     throw new InsufficientBalance();
   }
 
-  if (
-    opticalBridgingEnabled &&
-    !skipOpticalPostAddresses.includes(dataItemInfo.ownerPublicAddress)
-  ) {
+  // admin action tags
+  const approvedAddress = dataItemInfo.tags.find(
+    (tag) => tag.name === createDelegatedPaymentApprovalTagName
+  )?.value;
+  const winc = dataItemInfo.tags.find(
+    (tag) => tag.name === approvalAmountTagName
+  )?.value;
+  if (approvedAddress && winc) {
+    const expiresInSeconds = dataItemInfo.tags.find(
+      (tag) => tag.name === approvalExpiresBySecondsTagName
+    )?.value;
+
+    try {
+      await paymentService.createDelegatedPaymentApproval({
+        approvedAddress,
+        payingAddress: nativeAddress,
+        dataItemId: dataItemInfo.dataItemId,
+        winc,
+        expiresInSeconds,
+      });
+    } catch (error) {
+      const message = `Unable to create delegated payment approval ${
+        error instanceof PaymentServiceReturnedError
+          ? `: ${error.message}`
+          : "!"
+      }`;
+      if (paymentResponse.costOfDataItem.isGreaterThan(W(0))) {
+        await paymentService.refundBalanceForData({
+          dataItemId: dataItemInfo.dataItemId,
+          nativeAddress,
+          signatureType: dataItemInfo.signatureType,
+          winston: paymentResponse.costOfDataItem,
+        });
+      }
+      await database.failFinishedMultiPartUpload({
+        uploadId,
+        failedReason: "APPROVAL_FAILED",
+      });
+
+      throw new Error(message);
+    }
+  }
+  const revokedAddress = dataItemInfo.tags.find(
+    (tag) => tag.name === revokeDelegatePaymentApprovalTagName
+  )?.value;
+  if (revokedAddress) {
+    try {
+      await paymentService.revokeDelegatedPaymentApprovals({
+        revokedAddress,
+        payingAddress: nativeAddress,
+        dataItemId: dataItemInfo.dataItemId,
+      });
+    } catch (error) {
+      const message = `Unable to revoke delegated payment approvals ${
+        error instanceof PaymentServiceReturnedError
+          ? `: ${error.message}`
+          : "!"
+      }`;
+      if (paymentResponse.costOfDataItem.isGreaterThan(W(0))) {
+        await paymentService.refundBalanceForData({
+          dataItemId: dataItemInfo.dataItemId,
+          nativeAddress,
+          signatureType: dataItemInfo.signatureType,
+          winston: paymentResponse.costOfDataItem,
+        });
+      }
+
+      await database.failFinishedMultiPartUpload({
+        uploadId,
+        failedReason: "REVOKE_FAILED",
+      });
+
+      throw new Error(message);
+    }
+  }
+
+  const shouldSkipOpticalPost = skipOpticalPostAddresses.includes(
+    dataItemInfo.ownerPublicAddress
+  );
+  if (opticalBridgingEnabled && !shouldSkipOpticalPost) {
     fnLogger.debug("Asynchronously optical posting...");
     try {
       const signedDataItemHeader = await signDataItemHeader(
@@ -1217,12 +1500,18 @@ export async function finalizeMPUWithDataItemInfo({
       });
     }
     if (!dataItemExists) {
-      void removeDataItem(objectStore, dataItemInfo.dataItemId, database); // don't need to await this - just invoke and move on
+      performQuarantine();
     }
     throw error;
   }
 
-  return signedReceipt;
+  return {
+    ...signedReceipt,
+    dataCaches,
+    fastFinalityIndexes: shouldSkipBalanceCheck ? [] : fastFinalityIndexes,
+    owner: dataItemInfo.ownerPublicAddress,
+    winc: paymentResponse.costOfDataItem.toString(),
+  };
 }
 
 // TODO: GET RID OF THIS ONCE WE START SAVING DEADLINE HEIGHTS TO THE DB

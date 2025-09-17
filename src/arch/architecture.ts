@@ -14,8 +14,8 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+import { JWKInterface } from "@dha-team/arbundles";
 import { Tracer } from "@opentelemetry/api";
-import { JWKInterface } from "arbundles";
 import knex from "knex";
 import winston from "winston";
 
@@ -24,15 +24,18 @@ import globalLogger from "../logger";
 import { getArweaveWallet } from "../utils/getArweaveWallet";
 import { getS3ObjectStore } from "../utils/objectStoreUtils";
 import { ArweaveGateway } from "./arweaveGateway";
+import { CacheService } from "./cacheServiceTypes";
 import { Database } from "./db/database";
 import { getReaderConfig, getWriterConfig } from "./db/knexConfig";
 import { PostgresDatabase } from "./db/postgres";
+import { getElasticacheService } from "./elasticacheService";
 import { ObjectStore } from "./objectStore";
 import { PaymentService, TurboPaymentService } from "./payment";
 
 export interface Architecture {
   objectStore: ObjectStore;
   database: Database;
+  cacheService: CacheService;
   paymentService: PaymentService;
   logger: winston.Logger;
   arweaveGateway: ArweaveGateway;
@@ -47,6 +50,7 @@ export const defaultArchitecture: Architecture = {
     reader: knex(getReaderConfig()),
   }),
   objectStore: getS3ObjectStore(),
+  cacheService: getElasticacheService(),
   paymentService: new TurboPaymentService(),
   logger: globalLogger,
   getArweaveWallet: () => getArweaveWallet(),
