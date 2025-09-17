@@ -47,10 +47,10 @@ import {
   validBundleIdOnFileSystem,
 } from "./stubs";
 import {
-  arweave,
   expectAsyncErrorThrow,
   fundArLocalWalletAddress,
   mineArLocalBlock,
+  testArweave,
 } from "./test_helpers";
 
 const db = new PostgresDatabase();
@@ -176,7 +176,7 @@ describe("Post bundle job handler function integrated with PostgresDatabase clas
       dataItemIds,
     });
 
-    await fundArLocalWalletAddress(arweave, bundleTxStubOwnerAddress);
+    await fundArLocalWalletAddress(testArweave, bundleTxStubOwnerAddress);
   });
 
   afterEach(async () => {
@@ -213,7 +213,7 @@ describe("Post bundle job handler function integrated with PostgresDatabase clas
     expect(postedBundleDbResult[0].usd_to_ar_rate).to.exist;
     expect(+postedBundleDbResult[0].usd_to_ar_rate!).to.equal(stubUsdToArRate); // eslint-disable-line
 
-    await mineArLocalBlock(arweave);
+    await mineArLocalBlock(testArweave);
 
     const bundleTxFromArLocal = (
       await axios.get(`${gatewayUrl.origin}/tx/${bundleId}`)
@@ -251,7 +251,7 @@ describe("Post bundle job handler function integrated with PostgresDatabase clas
     expect(postedBundleDbResult[0].planned_date).to.exist;
     expect(postedBundleDbResult[0].usd_to_ar_rate).to.not.exist;
 
-    await mineArLocalBlock(arweave);
+    await mineArLocalBlock(testArweave);
 
     const bundleTxFromArLocal = (
       await axios.get(`${gatewayUrl.origin}/tx/${bundleId}`)

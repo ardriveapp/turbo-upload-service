@@ -20,7 +20,7 @@ import {
   SQSClient,
   SendMessageCommand,
 } from "@aws-sdk/client-sqs";
-import { NodeHttpHandler } from "@aws-sdk/node-http-handler";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { SQSEvent, SQSHandler, SQSRecord } from "aws-lambda";
 import * as https from "https";
 
@@ -28,7 +28,7 @@ import { jobLabels } from "../constants";
 import { UnbundleBDIMessageBody } from "../jobs/unbundle-bdi";
 import logger from "../logger";
 import { PlanId, PostedNewDataItem } from "../types/dbTypes";
-import { UploadId } from "../types/types";
+import { DataItemOffsetsInfo, UploadId } from "../types/types";
 import { DatedSignedDataItemHeader } from "../utils/opticalUtils";
 
 type SQSQueueUrl = string;
@@ -38,14 +38,23 @@ type PlanMessage = { planId: PlanId };
 export type EnqueuedNewDataItem = Omit<PostedNewDataItem, "signature"> & {
   signature: string;
 };
+export type EnqueueFinalizeUpload = {
+  uploadId: UploadId;
+  token: string;
+  paidBy?: string[];
+};
+export type EnqueuedOffsetsBatch = {
+  offsets: DataItemOffsetsInfo[];
+};
 type QueueTypeToMessageType = {
   [jobLabels.prepareBundle]: PlanMessage;
   [jobLabels.postBundle]: PlanMessage;
   [jobLabels.seedBundle]: PlanMessage;
   [jobLabels.opticalPost]: DatedSignedDataItemHeader;
   [jobLabels.unbundleBdi]: UnbundleBDIMessageBody;
-  [jobLabels.finalizeUpload]: { uploadId: UploadId };
+  [jobLabels.finalizeUpload]: EnqueueFinalizeUpload;
   [jobLabels.newDataItem]: EnqueuedNewDataItem;
+  [jobLabels.putOffsets]: EnqueuedOffsetsBatch;
 };
 
 export type QueueType = keyof QueueTypeToMessageType;
@@ -95,6 +104,7 @@ export const getQueueUrl = (type: QueueType): SQSQueueUrl => {
       [jobLabels.unbundleBdi]: process.env.SQS_UNBUNDLE_BDI_URL,
       [jobLabels.finalizeUpload]: process.env.SQS_FINALIZE_UPLOAD_URL,
       [jobLabels.newDataItem]: process.env.SQS_NEW_DATA_ITEM_URL,
+      [jobLabels.putOffsets]: process.env.SQS_PUT_OFFSETS_URL,
     };
   const queueUrl = queueUrlFromEnvVarMap[type];
   if (!queueUrl) {

@@ -14,7 +14,7 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-import { ArweaveSigner, createData } from "arbundles";
+import { ArweaveSigner, createData } from "@dha-team/arbundles";
 import Arweave from "arweave";
 import axios from "axios";
 import { expect } from "chai";
@@ -26,21 +26,20 @@ import { ArweaveGateway } from "../src/arch/arweaveGateway";
 import { PostgresDatabase } from "../src/arch/db/postgres";
 import { FileSystemObjectStore } from "../src/arch/fileSystemObjectStore";
 import { TurboPaymentService } from "../src/arch/payment";
-import {
-  gatewayUrl,
-  octetStreamContentType,
-  receiptVersion,
-} from "../src/constants";
+import { octetStreamContentType, receiptVersion } from "../src/constants";
 import logger from "../src/logger";
 import { createServer } from "../src/server";
 import { JWKInterface } from "../src/types/jwkTypes";
 import { W } from "../src/types/winston";
+import {
+  deleteDynamoDataItemOffsets,
+  putDynamoOffsetsInfo,
+} from "../src/utils/dynamoDbUtils";
 import { MultiPartUploadNotFound } from "../src/utils/errors";
 import { getS3ObjectStore } from "../src/utils/objectStoreUtils";
 import { verifyReceipt } from "../src/utils/verifyReceipt";
 import { generateJunkDataItem, signDataItem } from "./helpers/dataItemHelpers";
 import { assertExpectedHeadersWithContentLength } from "./helpers/expectations";
-import { stubTxId1 } from "./stubs";
 import {
   ethereumDataItem,
   invalidDataItem,
@@ -94,21 +93,35 @@ describe("Router tests", function () {
           arweave: "8wgRDgvYOrtSaWEIV21g0lTuWDUnTu4_iYj4hmA7PI0", //cspell:enable
         },
         freeUploadLimitBytes: 517120,
-        gateway: gatewayUrl.hostname,
+        gateway: "https://arweave.net",
       });
     });
   });
 
   describe("Data Item Status GET `/v1/tx/:id/status` Route", () => {
+    const testTxId = "G-i10-8jE1Kg1fDuEYGM-MWddAO9sJEKvfZNQuD3AP0";
     const database = new PostgresDatabase({});
     before(async function () {
       server = await createServer({
         database,
       });
+
+      await putDynamoOffsetsInfo({
+        dataItemId: testTxId,
+        parentDataItemId: "uMguurlEh9a7MKYiauKGlbxG6OjP2xaGmWa1-vrHVh8",
+        startOffsetInParentDataItemPayload: 321,
+        rawContentLength: 12345,
+        payloadDataStart: 1234,
+        payloadContentType: "application/json",
+        logger: logger,
+      });
     });
 
     after(() => {
       closeServer();
+      deleteDynamoDataItemOffsets(testTxId, logger).catch(() => {
+        logger.warn("Failed to delete stub data item offsets from DynamoDB");
+      });
     });
 
     it("returns the expected data item status result for new data item", async () => {
@@ -116,10 +129,11 @@ describe("Router tests", function () {
         assessedWinstonPrice: W("500"),
         status: "new",
         uploadedTimestamp: Date.now(),
+        owner: "stubOwner",
       });
 
       const { status, data } = await axios.get(
-        `${localTestUrl}/v1/tx/${stubTxId1}/status`
+        `${localTestUrl}/v1/tx/${testTxId}/status`
       );
 
       expect(status).to.equal(200);
@@ -127,6 +141,12 @@ describe("Router tests", function () {
         status: "CONFIRMED",
         info: "new",
         winc: "500",
+        parentDataItemId: "uMguurlEh9a7MKYiauKGlbxG6OjP2xaGmWa1-vrHVh8",
+        payloadContentLength: 11111,
+        payloadContentType: "application/json",
+        payloadDataStart: 1234,
+        rawContentLength: 12345,
+        startOffsetInParentDataItemPayload: 321,
       });
     });
 
@@ -136,10 +156,11 @@ describe("Router tests", function () {
         status: "pending",
         bundleId: "bundleId",
         uploadedTimestamp: Date.now(),
+        owner: "stubOwner",
       });
 
       const { status, data } = await axios.get(
-        `${localTestUrl}/v1/tx/${stubTxId1}/status`
+        `${localTestUrl}/v1/tx/${testTxId}/status`
       );
 
       expect(status).to.equal(200);
@@ -148,6 +169,12 @@ describe("Router tests", function () {
         info: "pending",
         bundleId: "bundleId",
         winc: "500",
+        parentDataItemId: "uMguurlEh9a7MKYiauKGlbxG6OjP2xaGmWa1-vrHVh8",
+        payloadContentLength: 11111,
+        payloadContentType: "application/json",
+        payloadDataStart: 1234,
+        rawContentLength: 12345,
+        startOffsetInParentDataItemPayload: 321,
       });
     });
 
@@ -157,10 +184,11 @@ describe("Router tests", function () {
         status: "permanent",
         bundleId: "bundleId",
         uploadedTimestamp: Date.now(),
+        owner: "stubOwner",
       });
 
       const { status, data } = await axios.get(
-        `${localTestUrl}/v1/tx/${stubTxId1}/status`
+        `${localTestUrl}/v1/tx/${testTxId}/status`
       );
 
       expect(status).to.equal(200);
@@ -169,6 +197,106 @@ describe("Router tests", function () {
         bundleId: "bundleId",
         info: "permanent",
         winc: "500",
+        parentDataItemId: "uMguurlEh9a7MKYiauKGlbxG6OjP2xaGmWa1-vrHVh8",
+        payloadContentLength: 11111,
+        payloadContentType: "application/json",
+        payloadDataStart: 1234,
+        rawContentLength: 12345,
+        startOffsetInParentDataItemPayload: 321,
+      });
+    });
+
+    it("returns the expected response when data item is not found", async () => {
+      const { data, status } = await axios.get(
+        `${localTestUrl}/v1/tx/UNIQUEtransactionID43Characters123456789012/status`,
+        {
+          validateStatus: (status) => {
+            return (status >= 200 && status < 300) || status === 404;
+          },
+        }
+      );
+
+      expect(status).to.equal(404);
+      expect(data).to.deep.equal("TX doesn't exist");
+    });
+  });
+
+  describe("Data Item Offsets GET `/v1/tx/:id/offsets` Route", () => {
+    const database = new PostgresDatabase({});
+    const testTxId = "G-i10-8jE1Kg1fDuEYGM-MWddAO9sJEKvfZNQuD3AP0";
+    const testTxId2 = "zXNZ9WDw6YEdK80hVrh0cR_bMeWyRbK5I2wUBvr7r1o";
+    before(async function () {
+      server = await createServer({
+        database,
+      });
+
+      await putDynamoOffsetsInfo({
+        dataItemId: testTxId,
+        parentDataItemId: "uMguurlEh9a7MKYiauKGlbxG6OjP2xaGmWa1-vrHVh8",
+        startOffsetInParentDataItemPayload: 123,
+        rawContentLength: 54321,
+        payloadDataStart: 2345,
+        payloadContentType: "text/html",
+        logger: logger,
+      });
+
+      await putDynamoOffsetsInfo({
+        dataItemId: testTxId2,
+        rootBundleId: "uMguurlEh9a7MKYiauKGlbxG6OjP2xaGmWa1-vrHVh8",
+        startOffsetInRootBundle: 123,
+        rawContentLength: 43210,
+        payloadDataStart: 3456,
+        payloadContentType: "application/json",
+        logger: logger,
+      });
+
+      stub(database, "getDataItemInfo").resolves({
+        assessedWinstonPrice: W("500"),
+        status: "new",
+        uploadedTimestamp: Date.now(),
+        owner: "stubOwner",
+      });
+    });
+
+    after(() => {
+      closeServer();
+      deleteDynamoDataItemOffsets(testTxId, logger).catch(() => {
+        logger.warn("Failed to delete stub data item offsets from DynamoDB");
+      });
+      deleteDynamoDataItemOffsets(testTxId2, logger).catch(() => {
+        logger.warn("Failed to delete stub data item offsets from DynamoDB");
+      });
+    });
+
+    it("returns offsets into parent when present", async () => {
+      const { status, data } = await axios.get(
+        `${localTestUrl}/v1/tx/${testTxId}/offsets`
+      );
+
+      expect(status).to.equal(200);
+      expect(data).to.deep.equal({
+        parentDataItemId: "uMguurlEh9a7MKYiauKGlbxG6OjP2xaGmWa1-vrHVh8",
+        payloadContentLength: 51976,
+        payloadContentType: "text/html",
+        payloadDataStart: 2345,
+        rawContentLength: 54321,
+        startOffsetInParentDataItemPayload: 123,
+      });
+    });
+
+    it("returns offsets into root tx when present", async () => {
+      const { status, data } = await axios.get(
+        `${localTestUrl}/v1/tx/${testTxId2}/offsets`
+      );
+
+      expect(status).to.equal(200);
+      expect(data).to.deep.equal({
+        rootBundleId: "uMguurlEh9a7MKYiauKGlbxG6OjP2xaGmWa1-vrHVh8",
+        startOffsetInRootBundle: 123,
+        payloadContentLength: 39754,
+        payloadContentType: "application/json",
+        payloadDataStart: 3456,
+        rawContentLength: 43210,
       });
     });
 
@@ -648,6 +776,7 @@ describe("Router tests", function () {
         status: "new",
         assessedWinstonPrice: W("0"),
         uploadedTimestamp: 123,
+        owner: "stubOwner",
       });
 
       const response = await axios.get(

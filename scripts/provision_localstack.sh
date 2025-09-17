@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 
+# LocalStack provisioning script for the upload service
+# This script sets up the necessary AWS resources for integration testing:
+# - S3 buckets for data item storage
+# - SQS queues for job processing
+# - DynamoDB tables for caching and offset tracking
+# - Secrets Manager for sensitive configuration
+
 # Provide for running locally, if desired
 if [[ "$ENSURE_DOCKER" == "true" ]]; then
     if ! command -v docker &>/dev/null; then
@@ -29,6 +36,17 @@ echo "Provisioning LocalStack resources..."
 # AWS CLI profile for LocalStack
 profile="${AWS_PROFILE:-localstack}"
 endpoint_url="${ENDPOINT_URL:-http://localstack:4566}"
+
+# Check if DynamoDB service is available
+check_dynamodb_available() {
+    if aws --endpoint-url=$endpoint_url --profile=$profile dynamodb list-tables &>/dev/null; then
+        echo "DynamoDB service is available."
+        return 0
+    else
+        echo "DynamoDB service is not available in LocalStack."
+        return 1
+    fi
+}
 
 check_s3_bucket_exists() {
     bucket_name=$1
@@ -142,7 +160,49 @@ create_secret() {
     fi
 }
 
+check_dynamodb_table_exists() {
+    table_name=$1
+
+    if aws --endpoint-url=$endpoint_url --profile=$profile dynamodb describe-table --table-name "$table_name" &>/dev/null; then
+        return 0 # Table exists
+    else
+        return 1 # Table does not exist
+    fi
+}
+
+create_dynamodb_table() {
+    table_name=$1
+    ttl_attribute_name="${2:-X}"
+
+    if check_dynamodb_table_exists "$table_name"; then
+        echo "DynamoDB table '$table_name' already exists."
+    else
+        echo "Creating DynamoDB table '$table_name'."
+
+        # Create table with binary primary key
+        aws --endpoint-url=$endpoint_url --profile=$profile dynamodb create-table \
+            --table-name "$table_name" \
+            --attribute-definitions AttributeName=Id,AttributeType=B \
+            --key-schema AttributeName=Id,KeyType=HASH \
+            --provisioned-throughput ReadCapacityUnits=5,WriteCapacityUnits=5 || exit 1
+
+        echo "Waiting for table '$table_name' to be active..."
+        aws --endpoint-url=$endpoint_url --profile=$profile dynamodb wait table-exists --table-name "$table_name"
+
+        echo "Enabling TTL for table '$table_name' on attribute '$ttl_attribute_name'."
+        aws --endpoint-url=$endpoint_url --profile=$profile dynamodb update-time-to-live \
+            --table-name "$table_name" \
+            --time-to-live-specification "Enabled=true,AttributeName=$ttl_attribute_name"
+
+        echo "DynamoDB table '$table_name' created with TTL enabled."
+    fi
+}
+
 bucket_name="${DATA_ITEM_BUCKET:-raw-data-items}"
+
+# DynamoDB table names (matching the patterns used in the application)
+cache_table_name="${DDB_DATA_ITEM_TABLE:-upload-service-cache-${NODE_ENV:-local}}"
+offsets_table_name="${DDB_OFFSETS_TABLE:-upload-service-offsets-${NODE_ENV:-local}}"
 
 # Create resources
 create_s3_bucket $bucket_name
@@ -154,6 +214,19 @@ create_sqs_queue "prepare-bundle-queue" 4 315 3 ""
 create_sqs_queue "post-bundle-queue" 4 315 3 ""
 create_sqs_queue "seed-bundle-queue" 4 315 3 ""
 create_sqs_queue "optical-post-queue" 1 45 0 600
+create_sqs_queue "put-offsets-queue" 4 300 0 ""
+
+# Create DynamoDB tables if service is available
+if check_dynamodb_available; then
+    echo "Creating DynamoDB tables for upload service..."
+    create_dynamodb_table "$cache_table_name" "X"
+    create_dynamodb_table "$offsets_table_name" "X"
+    echo "DynamoDB tables created:"
+    echo "  - Cache table: $cache_table_name"
+    echo "  - Offsets table: $offsets_table_name"
+else
+    echo "Skipping DynamoDB table creation - service not available."
+fi
 
 create_secret "arweave-wallet" "${ARWEAVE_WALLET}" "Arweave wallet for Turbo uploads, receipts, and optical bridging"
 create_secret "turbo-optical-key-${NODE_ENV}" "${TURBO_OPTICAL_KEY}" "Turbo Optical Key for ${NODE_ENV} environment"

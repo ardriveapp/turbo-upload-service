@@ -16,12 +16,8 @@
  */
 import { Readable } from "stream";
 
-import { UploadId } from "../types/types";
-
-export interface PayloadInfo {
-  payloadDataStart: number;
-  payloadContentType: string;
-}
+import { BundleHeaderInfo } from "../bundles/assembleBundleHeader";
+import { PayloadInfo, UploadId } from "../types/types";
 
 export interface ObjectStoreOptions {
   contentType?: string;
@@ -51,7 +47,6 @@ export interface ObjectStore {
     ContentType: string | undefined;
   }>;
   getObjectByteCount(Key: string): Promise<number>;
-  removeObject(Key: string): Promise<void>;
   moveObject(params: {
     sourceKey: string;
     destinationKey: string;
@@ -79,4 +74,6 @@ export interface ObjectStore {
       partNumber: number;
     }[]
   >;
+
+  getBundleHeaderInfo(Key: string, range: string): Promise<BundleHeaderInfo>;
 }

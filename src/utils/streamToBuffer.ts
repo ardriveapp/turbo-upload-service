@@ -27,6 +27,11 @@ export const streamToBuffer = async (
   logger.debug(
     `Converting stream of expected data size ${data_size} to Buffer...`
   );
+
+  if (stream.isPaused()) {
+    stream.resume();
+  }
+
   let buffer: Buffer = Buffer.alloc(data_size, undefined, encoding);
   return new Promise((resolve, reject) => {
     stream.on("data", (chunk: Buffer) => {
@@ -66,7 +71,11 @@ export const streamIntoBufferAtOffset = async (
 
     stream.on("error", (err) => {
       logger.error(
-        `[encoding] streamToBuffer error: ${JSON.stringify(err, null, 2)}`
+        `[encoding] streamIntoBufferAtOffset error: ${JSON.stringify(
+          err,
+          null,
+          2
+        )}`
       );
       reject(err);
     });

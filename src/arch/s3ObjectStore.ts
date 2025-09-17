@@ -18,42 +18,47 @@ import {
   CompleteMultipartUploadCommand,
   CompleteMultipartUploadCommandOutput,
   CopyObjectCommand,
+  CopyObjectCommandInput,
   CreateMultipartUploadCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   GetObjectOutput,
   HeadObjectCommand,
   ListPartsCommand,
+  Part,
   PutObjectCommandInput,
   S3Client,
   UploadPartCommand,
   UploadPartCopyCommand,
 } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
-import { NodeHttpHandler } from "@aws-sdk/node-http-handler";
 import { ConfiguredRetryStrategy } from "@aws-sdk/util-retry";
-import { AbortController } from "@smithy/abort-controller";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
 import * as https from "https";
 import { Readable } from "multistream";
 import pLimit from "p-limit";
 import winston from "winston";
 
 import {
+  BundleHeaderInfo,
+  bundleHeaderInfoFromBuffer,
+} from "../bundles/assembleBundleHeader";
+import {
   payloadContentTypeS3MetaDataTag,
   payloadDataStartS3MetaDataTag,
 } from "../constants";
 import globalLogger from "../logger";
-import { UploadId } from "../types/types";
+import { PayloadInfo, UploadId } from "../types/types";
 import {
   InvalidChunk,
   InvalidChunkSize,
   MultiPartUploadNotFound,
 } from "../utils/errors";
+import { streamToBuffer } from "../utils/streamToBuffer";
 import {
   MoveObjectParams,
   ObjectStore,
   ObjectStoreOptions,
-  PayloadInfo,
 } from "./objectStore";
 
 const awsAccountId = process.env.AWS_ACCOUNT_ID;
@@ -395,12 +400,40 @@ export class S3ObjectStore implements ObjectStore {
     this.logger.debug("Completing multipart upload", { Key, uploadId });
 
     const attemptCompleteMultipartUpload = async (bucketName: string) => {
-      const partsCom = new ListPartsCommand({
-        Bucket: bucketName,
-        Key,
-        UploadId: uploadId,
-      });
-      const partsS3 = await s3ClientForBucket(bucketName).send(partsCom);
+      let parts: Part[] = [];
+      let partNumberMarker: string | undefined = undefined;
+
+      // Bounded upper limit of loops. AWS only allows 10,000 Parts, 1000 per List Command
+      const maxLoops = 10;
+
+      for (let i = 0; i < maxLoops; i++) {
+        const partsCommand = new ListPartsCommand({
+          Bucket: bucketName,
+          Key,
+          UploadId: uploadId,
+          PartNumberMarker: partNumberMarker,
+          MaxParts: 1000,
+        }) as ListPartsCommand;
+
+        const res = await s3ClientForBucket(bucketName).send(partsCommand);
+
+        if (res.Parts?.length) {
+          parts = [...parts, ...res.Parts];
+        }
+
+        if (!res.IsTruncated) {
+          break; // no more pages
+        }
+
+        if (i === maxLoops - 1 && res.IsTruncated) {
+          // Edge case: too many parts. Throw an error that explains the situation
+          throw new Error(
+            "ListParts pagination exceeded safety cap (possible >10,000 parts or bad pagination)."
+          );
+        }
+
+        partNumberMarker = res.NextPartNumberMarker;
+      }
 
       const completeMultipartUploadCommand = new CompleteMultipartUploadCommand(
         {
@@ -408,7 +441,7 @@ export class S3ObjectStore implements ObjectStore {
           Key,
           UploadId: uploadId,
           MultipartUpload: {
-            Parts: partsS3.Parts,
+            Parts: parts,
           },
         }
       );
@@ -511,33 +544,6 @@ export class S3ObjectStore implements ObjectStore {
     return getHeadResponse.ContentLength ?? 0;
   }
 
-  public async removeObject(Key: string): Promise<void> {
-    const attemptDeleteObject = async (bucketName: string) => {
-      this.logger.info(`Deleting S3 object...`, {
-        Key,
-        Bucket: bucketName,
-      });
-
-      await s3ClientForBucket(bucketName).send(
-        new DeleteObjectCommand({
-          Bucket: bucketName,
-          Key,
-        })
-      );
-    };
-
-    await attemptDeleteObject(this.bucketName).catch(async (error) => {
-      if (
-        error instanceof Error &&
-        error.name === "NotFound" &&
-        this.backupBucketName
-      ) {
-        return await attemptDeleteObject(this.backupBucketName);
-      }
-      throw error;
-    });
-  }
-
   private s3CommandParamsFromOptions(
     Options: ObjectStoreOptions,
     bucket: string
@@ -587,7 +593,7 @@ export class S3ObjectStore implements ObjectStore {
 
     const attemptMoveObject = async (sourceBucketName: string) => {
       fnLogger = fnLogger.child({ sourceBucketName });
-      const params = {
+      const params: CopyObjectCommandInput = {
         ...this.s3CommandParamsFromOptions(Options, destinationBucketName),
         CopySource: `${sourceBucketName}/${encodeURIComponent(sourceKey)}`,
         Key: destinationKey,
@@ -860,5 +866,16 @@ export class S3ObjectStore implements ObjectStore {
       }
       throw error;
     });
+  }
+
+  public async getBundleHeaderInfo(
+    Key: string,
+    range: string
+  ): Promise<BundleHeaderInfo> {
+    const stream = await this.getObject(Key, range).then(
+      ({ readable }) => readable
+    );
+    const buffer = await streamToBuffer(stream);
+    return bundleHeaderInfoFromBuffer(buffer);
   }
 }
