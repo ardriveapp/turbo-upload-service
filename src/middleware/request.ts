@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -17,6 +17,7 @@
 import { Next } from "koa";
 
 import { KoaContext } from "../server";
+import { InsufficientBalance } from "../utils/errors";
 
 export async function requestMiddleware(ctx: KoaContext, next: Next) {
   const { logger } = ctx.state;
@@ -27,9 +28,12 @@ export async function requestMiddleware(ctx: KoaContext, next: Next) {
     logger.debug("Request ended");
   });
   ctx.req.on("error", (error) => {
-    logger.error("Request errored", {
-      error,
-    });
+    const msg = `Request error: ${error.message}`;
+    if (error instanceof InsufficientBalance) {
+      logger.warn(msg);
+    } else {
+      logger.error(msg, error);
+    }
   });
 
   // response ending

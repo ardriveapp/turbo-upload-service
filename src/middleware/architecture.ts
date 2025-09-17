@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -26,6 +26,7 @@ export async function architectureMiddleware(
 ) {
   ctx.state.database = arch.database;
   ctx.state.objectStore = arch.objectStore;
+  ctx.state.cacheService = arch.cacheService;
   ctx.state.paymentService = arch.paymentService;
   ctx.state.getArweaveWallet = arch.getArweaveWallet;
   ctx.state.arweaveGateway = arch.arweaveGateway;

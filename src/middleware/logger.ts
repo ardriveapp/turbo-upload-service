@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -22,20 +22,33 @@ import { KoaContext } from "../server";
 
 export async function loggerMiddleware(ctx: KoaContext, next: Next) {
   const trace = randomUUID().substring(0, 6);
-  const log = logger.child({
+
+  let log = logger.child({
     trace,
     path: ctx.path,
     method: ctx.method,
     params: ctx.params,
+  });
 
-    // Put headers we are interested on the logger child
+  log.debug("Request headers", { headers: ctx.headers });
+
+  const headersToAddToLoggedMessages = {
     xForwardedFor: ctx.get("x-forwarded-for"),
     referer: ctx.get("referer"),
     userAgent: ctx.get("user-agent"),
     origin: ctx.get("origin"),
     xAmznTraceId: ctx.get("x-amzn-trace-id"),
     xAmzCloudfrontId: ctx.get("x-amz-cf-id"),
-  });
+    xTurboSourceIdentifier: ctx.get("x-turbo-source-identifier"),
+    xTurboSourceVersion: ctx.get("x-turbo-source-version"),
+    contentLength: ctx.get("content-length"),
+  };
+  for (const [key, value] of Object.entries(headersToAddToLoggedMessages)) {
+    if (value !== undefined && value !== "") {
+      // Add the header to the log context if it exists
+      log = log.child({ [key]: value });
+    }
+  }
 
   ctx.state.logger = log;
   ctx.state.trace = trace;
@@ -45,8 +58,6 @@ export async function loggerMiddleware(ctx: KoaContext, next: Next) {
     return next();
   }
 
-  // TODO: replace with open telemetry middleware, log the request headers once to track SDK usage.
-  log.debug("Request headers", { headers: ctx.headers });
   const startTime = Date.now();
   log.debug("Received request.");
   await next();

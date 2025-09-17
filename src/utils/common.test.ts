@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -16,11 +16,18 @@
  */
 import { expect } from "chai";
 
-import { rePostDataItemThresholdNumberOfBlocks } from "../constants";
+import {
+  arioProcesses,
+  dedicatedBundleTypes,
+  rePostDataItemThresholdNumberOfBlocks,
+} from "../constants";
+import { ParsedDataItemHeader } from "../types/types";
 import {
   filterKeysFromObject,
   generateArrayChunks,
   getByteCountBasedRePackThresholdBlockCount,
+  getErrorCodeFromErrorObject,
+  getPremiumFeatureType,
 } from "./common";
 
 describe("filterKeysFromObject function", () => {
@@ -126,5 +133,193 @@ describe("getByteCountBasedRePackThresholdBlockCount", () => {
     expect(
       getByteCountBasedRePackThresholdBlockCount(30 * 1024 * 1024 * 1024)
     ).to.equal(rePostDataItemThresholdNumberOfBlocks * 5);
+  });
+});
+
+describe("getPremiumFeatureType function", () => {
+  const signatureType = 1;
+  const ownerPublicAddress = "0x1234567890abcdef";
+  it("returns the correct premium feature type for an ArDrive upload", async () => {
+    const tags = [{ name: "App-Name", value: "ArDrive-CLI" }];
+
+    const result = getPremiumFeatureType(
+      ownerPublicAddress,
+      tags,
+      signatureType,
+      []
+    );
+
+    expect(result).to.equal("ardrive_dedicated_bundles");
+  });
+
+  it("returns the default premium feature type for an unknown upload", async () => {
+    expect(
+      getPremiumFeatureType(
+        ownerPublicAddress,
+        [{ name: "App-Name", value: "UnknownApp" }],
+        signatureType,
+        []
+      )
+    ).to.equal("default");
+  });
+
+  it("returns the correct premium feature type for a Warp upload", async () => {
+    const warpWalletAddress =
+      dedicatedBundleTypes["warp_dedicated_bundles"].allowedWallets[0];
+    const tags = [{ name: "Sequencer", value: "Warp" }];
+
+    const result = getPremiumFeatureType(
+      warpWalletAddress,
+      tags,
+      signatureType,
+      []
+    );
+
+    expect(result).to.equal("warp_dedicated_bundles");
+  });
+
+  it("returns the correct premium feature type for a Redstone upload", async () => {
+    const redstoneWalletAddress =
+      dedicatedBundleTypes["redstone_oracle_dedicated_bundles"]
+        .allowedWallets[0];
+    const tags = [{ name: "Sequencer", value: "Redstone" }];
+
+    const result = getPremiumFeatureType(
+      redstoneWalletAddress,
+      tags,
+      signatureType,
+      []
+    );
+
+    expect(result).to.equal("redstone_oracle_dedicated_bundles");
+  });
+
+  const aoAuthoritySignerAddress =
+    dedicatedBundleTypes["ao_dedicated_bundles"].allowedWallets[0];
+
+  it("returns the correct premium feature type for an AO upload", async () => {
+    expect(
+      getPremiumFeatureType(aoAuthoritySignerAddress, [], signatureType, [])
+    ).to.equal("ao_dedicated_bundles");
+  });
+
+  it("returns the correct premium feature type for an AO upload containing an AR.IO Process tag", async () => {
+    expect(
+      getPremiumFeatureType(
+        aoAuthoritySignerAddress,
+        [{ name: "Process", value: arioProcesses[0] }],
+        signatureType,
+        []
+      )
+    ).to.equal("ario_dedicated_bundles");
+  });
+
+  it("returns the AR.IO Network premium feature type for an Action: Eval upload where the target is an AR.IO Network Process", async () => {
+    expect(
+      getPremiumFeatureType(
+        aoAuthoritySignerAddress,
+        [{ name: "Action", value: "Eval" }],
+        signatureType,
+        [],
+        arioProcesses[0]
+      )
+    ).to.equal("ario_dedicated_bundles");
+  });
+
+  it("returns the AR.IO Network premium feature type when an AO upload has nested headers that contain an AR.IO Network Process tag", async () => {
+    expect(
+      getPremiumFeatureType(
+        aoAuthoritySignerAddress,
+        [],
+        signatureType,
+        [
+          { tags: [{ name: "Process", value: arioProcesses[0] }] },
+        ] as ParsedDataItemHeader[] // Mocking nested headers
+      )
+    ).to.equal("ario_dedicated_bundles");
+  });
+
+  it("returns the AR.IO Network premium feature type when an AO upload has nested headers that contain an AR.IO Network Process as target", async () => {
+    expect(
+      getPremiumFeatureType(
+        aoAuthoritySignerAddress,
+        [],
+        signatureType,
+        [{ target: arioProcesses[0] }] as ParsedDataItemHeader[] // Mocking nested headers
+      )
+    ).to.equal("ario_dedicated_bundles");
+  });
+
+  describe("getErrorCodeFromErrorObject function", () => {
+    it("returns the error code when error is an object with a string code property", () => {
+      const error = { code: "ENOENT", message: "File not found" };
+      expect(getErrorCodeFromErrorObject(error)).to.equal("ENOENT");
+    });
+
+    it("returns 'unknown' when error is null", () => {
+      expect(getErrorCodeFromErrorObject(null)).to.equal("unknown");
+    });
+
+    it("returns 'unknown' when error is undefined", () => {
+      expect(getErrorCodeFromErrorObject(undefined)).to.equal("unknown");
+    });
+
+    it("returns 'unknown' when error is not an object", () => {
+      expect(getErrorCodeFromErrorObject("string error")).to.equal("unknown");
+      expect(getErrorCodeFromErrorObject(123)).to.equal("unknown");
+      expect(getErrorCodeFromErrorObject(true)).to.equal("unknown");
+    });
+
+    it("returns 'unknown' when error object does not have a code property", () => {
+      const error = { message: "Some error", stack: "stack trace" };
+      expect(getErrorCodeFromErrorObject(error)).to.equal("unknown");
+    });
+
+    it("returns 'unknown' when error object has a code property that is not a string", () => {
+      const errorWithNumberCode = { code: 404, message: "Not found" };
+      expect(getErrorCodeFromErrorObject(errorWithNumberCode)).to.equal(
+        "unknown"
+      );
+
+      const errorWithBooleanCode = { code: true, message: "Some error" };
+      expect(getErrorCodeFromErrorObject(errorWithBooleanCode)).to.equal(
+        "unknown"
+      );
+
+      const errorWithObjectCode = {
+        code: { nested: "value" },
+        message: "Some error",
+      };
+      expect(getErrorCodeFromErrorObject(errorWithObjectCode)).to.equal(
+        "unknown"
+      );
+    });
+
+    it("returns the error code when error is an Error instance with a string code property", () => {
+      const error = new Error("File system error");
+      (error as any).code = "EACCES";
+      expect(getErrorCodeFromErrorObject(error)).to.equal("EACCES");
+    });
+
+    it("returns 'unknown' when error is an Error instance without a code property", () => {
+      const error = new Error("Generic error");
+      expect(getErrorCodeFromErrorObject(error)).to.equal("unknown");
+    });
+
+    it("handles edge cases with empty string code", () => {
+      const error = { code: "", message: "Empty code error" };
+      expect(getErrorCodeFromErrorObject(error)).to.equal("");
+    });
+
+    it("handles complex error objects with additional properties", () => {
+      const error = {
+        code: "CUSTOM_ERROR",
+        message: "Custom error message",
+        stack: "Error stack trace",
+        details: { nested: "information" },
+        timestamp: new Date(),
+      };
+      expect(getErrorCodeFromErrorObject(error)).to.equal("CUSTOM_ERROR");
+    });
   });
 });

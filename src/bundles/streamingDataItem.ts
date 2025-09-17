@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -14,7 +14,12 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-import { Tag, byteArrayToLong, deserializeTags } from "arbundles";
+import {
+  DataItem,
+  Tag,
+  byteArrayToLong,
+  deserializeTags,
+} from "@dha-team/arbundles";
 import { Readable } from "stream";
 import winston from "winston";
 
@@ -22,18 +27,125 @@ import {
   anchorLength,
   emptyAnchorLength,
   emptyTargetLength,
+  signatureTypeInfo,
   signatureTypeLength,
   targetLength,
 } from "../constants";
 import { ParsedDataItemHeader } from "../types/types";
-import { ownerToAddress, sha256B64Url, toB64Url } from "../utils/base64";
 import {
-  createVerifiedDataItemStream,
-  signatureTypeInfo,
-} from "./verifyDataItem";
+  fromB64Url,
+  ownerToNormalizedB64Address,
+  sha256B64Url,
+  toB64Url,
+} from "../utils/base64";
+import { drainStream } from "../utils/streamUtils";
+import { createVerifiedDataItemStream } from "./verifyDataItem";
+
+export interface DataItemInterface {
+  // This interface is used to provide a common interface for both StreamingDataItem and InMemoryDataItem
+  getSignatureType(): Promise<number>;
+  getSignature(): Promise<string>;
+  getDataItemId(): Promise<string>;
+  getOwner(): Promise<string>;
+  getOwnerAddress(): Promise<string>;
+  getTarget(): Promise<string | undefined>;
+  getAnchor(): Promise<string | undefined>;
+  getNumTags(): Promise<number>;
+  getNumTagsBytes(): Promise<number>;
+  getTags(): Promise<Tag[]>;
+  getPayloadStream(): Promise<Readable>;
+  getPayloadSize(): Promise<number>;
+  isValid(): Promise<boolean>;
+  getHeaders(): Promise<Omit<ParsedDataItemHeader, "dataSize">>;
+}
+
+export class InMemoryDataItem implements DataItemInterface {
+  private dataItem: DataItem;
+
+  constructor(dataItemBuffer: Buffer) {
+    this.dataItem = new DataItem(dataItemBuffer);
+  }
+
+  getSignatureType(): Promise<number> {
+    return Promise.resolve(this.dataItem.signatureType);
+  }
+  getSignature(): Promise<string> {
+    return Promise.resolve(this.dataItem.signature);
+  }
+  getDataItemId(): Promise<string> {
+    return Promise.resolve(this.dataItem.id);
+  }
+  getOwner(): Promise<string> {
+    return Promise.resolve(this.dataItem.owner);
+  }
+  getOwnerAddress(): Promise<string> {
+    return Promise.resolve(ownerToNormalizedB64Address(this.dataItem.owner));
+  }
+  getTarget(): Promise<string | undefined> {
+    return Promise.resolve(
+      this.dataItem.target ? this.dataItem.target : undefined
+    );
+  }
+  getAnchor(): Promise<string | undefined> {
+    return Promise.resolve(
+      this.dataItem.anchor
+        ? // To match StreamingDataItem implementation, we decode the anchor from base64url
+          fromB64Url(this.dataItem.anchor).toString("utf-8")
+        : undefined
+    );
+  }
+  getNumTags(): Promise<number> {
+    return Promise.resolve(this.dataItem.tags.length);
+  }
+  getNumTagsBytes(): Promise<number> {
+    return Promise.resolve(this.dataItem.rawTags.byteLength);
+  }
+  getTags(): Promise<Tag[]> {
+    return Promise.resolve(this.dataItem.tags);
+  }
+  getPayloadStream(): Promise<Readable> {
+    const payloadStream = Readable.from(this.dataItem.rawData);
+    return Promise.resolve(payloadStream);
+  }
+  getPayloadSize(): Promise<number> {
+    return Promise.resolve(this.dataItem.rawData.byteLength);
+  }
+  isValid(): Promise<boolean> {
+    return this.dataItem.isValid();
+  }
+
+  async getHeaders(): Promise<Omit<ParsedDataItemHeader, "dataSize">> {
+    const dataItemId = await this.getDataItemId();
+    const signatureType = await this.getSignatureType();
+    const signature = await this.getSignature();
+    const owner = await this.getOwner();
+    const anchor = await this.getAnchor();
+    const target = await this.getTarget();
+    const tags = await this.getTags();
+    const numTagsBytes = await this.getNumTagsBytes();
+    const tagsStart =
+      signatureTypeLength +
+      signatureTypeInfo[signatureType].signatureLength +
+      signatureTypeInfo[signatureType].pubkeyLength +
+      (target === undefined ? emptyTargetLength : targetLength) +
+      (anchor === undefined ? emptyAnchorLength : anchorLength);
+    const payloadDataStart = tagsStart + 16 + numTagsBytes;
+
+    return {
+      id: dataItemId,
+      sigName: signatureTypeInfo[signatureType].name,
+      signature,
+      target: target ?? "",
+      anchor: anchor ?? "",
+      owner,
+      tags,
+      dataOffset: payloadDataStart,
+    };
+  }
+}
 
 // Takes a Readable stream of data item bytes and provides Promise interfaces for its member data
-export class StreamingDataItem {
+export class StreamingDataItem implements DataItemInterface {
   private signatureTypePromise: Promise<number>;
   private signatureTypeResolver?: (signatureType: number) => void;
   private signaturePromise: Promise<Buffer>;
@@ -119,7 +231,7 @@ export class StreamingDataItem {
 
     // Cache any errors arising from the emitter for later use by promise handlers
     emitter.on("error", (error: Error) => {
-      log?.error(`RECEIVED AN EMITTER ERROR!`, error);
+      log?.debug(`RECEIVED AN EMITTER ERROR!`, error);
       this.lastError = error;
     });
 
@@ -230,7 +342,7 @@ export class StreamingDataItem {
    * a normalized representation and is the address used by gateway GQL
    */
   getOwnerAddress(): Promise<string> {
-    return this.getOwner().then(ownerToAddress);
+    return this.getOwner().then(ownerToNormalizedB64Address);
   }
 
   /**
@@ -366,30 +478,31 @@ export class StreamingDataItem {
   }
 
   getPayloadStream(): Promise<Readable> {
-    return this.payloadStreamPromise
-      .then((payloadStream) =>
+    return this.payloadStreamPromise.then((payloadStream) => {
+      if (!this.lastError) {
         // Necessary because the payloadStream is in a paused state when emitted
-        payloadStream.resume()
-      )
-      .then((payloadStream) => {
-        if (!this.lastError) {
-          return payloadStream;
-        }
-        throw this.lastError;
-      });
+        payloadStream.resume();
+        return payloadStream;
+      }
+      throw this.lastError;
+    });
   }
 
   // NOTE: Will only resolve if the payloadStream has been fully consumed or an error is thrown
-  getPayloadSize(): Promise<number> {
+  getPayloadSize(drainToCompute = false): Promise<number> {
     return this.payloadStreamPromise.then((payloadStream) => {
-      // Necessary because the payloadStream is in a paused state when emitted
-      payloadStream.resume();
-      return this.payloadSizePromise.then((payloadSize) => {
-        if (!this.lastError) {
-          return payloadSize;
-        }
-        throw this.lastError;
-      });
+      // Necessary because the payloadStream is in a paused state when initially emitted.
+      // But we shouldn't need to resume here once reading has started.
+      if (!payloadStream.readableDidRead) {
+        payloadStream.resume();
+      }
+      if (drainToCompute) {
+        // Drain the stream async
+        void drainStream(payloadStream);
+      }
+      return this.payloadSizePromise.then((payloadSize) =>
+        this.lastError ? Promise.reject(this.lastError) : payloadSize
+      );
     });
   }
 
@@ -433,5 +546,17 @@ export class StreamingDataItem {
       tags,
       dataOffset: payloadDataStart,
     };
+  }
+
+  async getRawDataItemSize(drainToCompute = false): Promise<number> {
+    // Must call this first in the event that we're draining or data
+    // for headers might not flow
+    const payloadSize = await this.getPayloadSize(drainToCompute);
+    const headers = await this.getHeaders();
+    const headerByteCount = headers.dataOffset;
+    if (this.lastError) {
+      throw this.lastError;
+    }
+    return headerByteCount + payloadSize;
   }
 }

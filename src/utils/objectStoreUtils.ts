@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -14,37 +14,70 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-import { byteArrayToLong } from "arbundles";
+import { byteArrayToLong } from "@dha-team/arbundles";
 import Transaction from "arweave/node/lib/transaction";
 import MultiStream from "multistream";
-import { EventEmitter, PassThrough, Readable, once, pipeline } from "stream";
+import { PassThrough, Readable, pipeline } from "stream";
 
 import { ObjectStore } from "../arch/objectStore";
 import { S3ObjectStore } from "../arch/s3ObjectStore";
 import "../bundles/assembleBundleHeader";
-import { bundleHeaderInfoFromBuffer } from "../bundles/assembleBundleHeader";
-import { signatureTypeInfo } from "../bundles/verifyDataItem";
+import {
+  BundleHeaderInfo,
+  bundleHeaderInfoFromBuffer,
+} from "../bundles/assembleBundleHeader";
+import { DataItemOffsets } from "../constants";
 import { octetStreamContentType } from "../constants";
 import logger from "../logger";
 import { PlanId } from "../types/dbTypes";
-import { ByteCount, TransactionId, UploadId } from "../types/types";
+import {
+  ByteCount,
+  PayloadInfo,
+  TransactionId,
+  UploadId,
+} from "../types/types";
 import { streamToBuffer } from "./streamToBuffer";
 
-const dataItemPrefix = "raw-data-item";
-const multiPartPrefix = "multipart-uploads";
-const bundlePayloadPrefix = "bundle-payload";
-const bundleTxPrefix = "bundle";
+export const dataItemPrefix =
+  process.env.DATA_ITEM_S3_PREFIX ?? "raw-data-item";
+const multiPartPrefix = process.env.MULTIPART_S3_PREFIX ?? "multipart-uploads";
+const bundlePayloadPrefix =
+  process.env.BUNDLE_PAYLOAD_S3_PREFIX ?? "bundle-payload";
+const bundleTxPrefix = process.env.BUNDLE_TX_S3_PREFIX ?? "bundle";
+
+let s3ObjectStore: S3ObjectStore | undefined;
 
 export function getS3ObjectStore(): ObjectStore {
   const useMultiRegionAccessPoint =
     process.env.NODE_ENV === "dev" &&
     !!process.env.DATA_ITEM_MULTI_REGION_ENDPOINT;
-  return new S3ObjectStore({
-    bucketName: useMultiRegionAccessPoint
-      ? `${process.env.DATA_ITEM_MULTI_REGION_ENDPOINT}`
-      : // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-        process.env.DATA_ITEM_BUCKET!, // Blow up if we can't fall back to this
-  });
+  if (!s3ObjectStore) {
+    s3ObjectStore = new S3ObjectStore({
+      bucketName: useMultiRegionAccessPoint
+        ? `${process.env.DATA_ITEM_MULTI_REGION_ENDPOINT}`
+        : // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+          process.env.DATA_ITEM_BUCKET!, // Blow up if we can't fall back to this
+      backupBucketName: process.env.BACKUP_DATA_ITEM_BUCKET,
+    });
+  }
+  return s3ObjectStore;
+}
+
+/** strip CR/LF and the rest of the C0 control block (plus DEL 0x7F) */
+// eslint-disable-next-line no-control-regex
+const controlRegexp = new RegExp("[\\x00-\\x1F\\x7F]", "g"); // not a regex *literal*
+
+export function sanitizePayloadContentType(raw: string): string {
+  const defaultOctetStream = "application/octet-stream";
+  if (raw.length === 0) return defaultOctetStream;
+
+  const out = raw
+    .replace(/[\r\n]+/g, " ") // step 1 – flatten line breaks
+    .replace(controlRegexp, "") // step 2 – remove other controls
+    .replace(/\s{2,}/g, " ") // step 3 – collapse whitespace
+    .trim();
+
+  return out.length === 0 ? defaultOctetStream : out;
 }
 
 export function putDataItemRaw(
@@ -55,31 +88,60 @@ export function putDataItemRaw(
   payloadDataStart: number
 ): Promise<void> {
   return objectStore.putObject(`${dataItemPrefix}/${dataItemId}`, dataItem, {
-    payloadInfo: { payloadDataStart, payloadContentType },
+    payloadInfo: {
+      payloadDataStart,
+      payloadContentType: sanitizePayloadContentType(payloadContentType), // Ensure we don't throw an error on user provided content types
+    },
   });
 }
 
-export async function getDataItemData(
+export async function getDataItemPayloadInfo(
   objectStore: ObjectStore,
-  dataItemId: TransactionId,
-  Range?: string
-): Promise<Readable> {
+  dataItemId: TransactionId
+): Promise<PayloadInfo> {
   const key = `${dataItemPrefix}/${dataItemId}`;
-  const { payloadDataStart } = await objectStore.getObjectPayloadInfo(key);
+  return objectStore.getObjectPayloadInfo(key);
+}
 
-  if (Range) {
-    const range = Range.split("=")[1].split("-");
-    const rangeStart = range[0];
-    const rangeEnd = range[1];
-
-    Range = `bytes=${+rangeStart + payloadDataStart}-${
-      rangeEnd ? +rangeEnd + payloadDataStart : ""
-    }`;
-  } else {
-    Range = `bytes=${payloadDataStart}-`;
+export async function getDataItemObjectReadableRange({
+  objectStore,
+  dataItemId,
+  startOffset,
+  endOffsetInclusive,
+}: {
+  objectStore: ObjectStore;
+  dataItemId: TransactionId;
+  startOffset?: number;
+  endOffsetInclusive?: number;
+}): Promise<Readable> {
+  let Range = `bytes=${startOffset || 0}-`;
+  if (endOffsetInclusive !== undefined) {
+    Range += endOffsetInclusive;
   }
 
-  return objectStore.getObject(key, Range).then(({ readable }) => readable);
+  return objectStore
+    .getObject(`${dataItemPrefix}/${dataItemId}`, Range)
+    .then(({ readable }) => readable);
+}
+
+export async function getDataItemRangeReadable({
+  objectStore,
+  dataItemId,
+  startOffset,
+  endOffsetInclusive,
+}: {
+  objectStore: ObjectStore;
+  dataItemId: TransactionId;
+  startOffset?: number;
+  endOffsetInclusive?: number;
+}): Promise<Readable> {
+  let Range = `bytes=${startOffset || 0}-`;
+  if (endOffsetInclusive !== undefined) {
+    Range += endOffsetInclusive;
+  }
+  return objectStore
+    .getObject(`${dataItemPrefix}/${dataItemId}`, Range)
+    .then(({ readable }) => readable);
 }
 
 export async function getRawDataItem(
@@ -97,7 +159,7 @@ export async function getRawDataItemByteCount(
   return objectStore.getObjectByteCount(`${dataItemPrefix}/${dataItemId}`);
 }
 
-export async function rawDataItemExists(
+export async function rawDataItemObjectExists(
   objectStore: ObjectStore,
   dataItemId: TransactionId
 ): Promise<boolean> {
@@ -133,10 +195,11 @@ export function putBundleTx(
   return objectStore.putObject(`${bundleTxPrefix}/${bundleTxId}`, bundleTx);
 }
 
-export const byteCountRangeOfRawSignature = (sigType = 1) => {
+export const byteCountRangeOfRawSignature = (sigType: number) => {
   try {
-    const sigLength = +signatureTypeInfo[sigType].signatureLength;
-    return `bytes=2-${sigLength + 1}`;
+    return `bytes=${
+      DataItemOffsets.signatureStart
+    }-${DataItemOffsets.signatureEnd(sigType)}`;
   } catch (err) {
     const errMsg = `Unable to determine signature length for signature type ${sigType}`;
     logger.error(errMsg);
@@ -144,19 +207,27 @@ export const byteCountRangeOfRawSignature = (sigType = 1) => {
   }
 };
 
-export function getSignatureTypeOfDataItem(
+export function getSignatureTypeOfDataItemFromObjStore(
   objectStore: ObjectStore,
   dataItemId: TransactionId
 ): Promise<number> {
   return objectStore
-    .getObject(`${dataItemPrefix}/${dataItemId}`, `bytes=0-1`)
+    .getObject(
+      `${dataItemPrefix}/${dataItemId}`,
+      `bytes=${DataItemOffsets.signatureTypeStart}-${DataItemOffsets.signatureTypeEnd}`
+    )
     .then(({ readable: signatureTypeReadable }) => {
-      return streamToBuffer(signatureTypeReadable, 2);
+      return streamToBuffer(
+        signatureTypeReadable,
+        DataItemOffsets.signatureTypeEnd -
+          DataItemOffsets.signatureTypeStart +
+          1
+      );
     })
     .then(byteArrayToLong);
 }
 
-export function getRawSignatureOfDataItem(
+export function getRawSignatureOfDataItemFromObjStore(
   objectStore: ObjectStore,
   dataItemId: TransactionId,
   signatureType: number
@@ -167,173 +238,6 @@ export function getRawSignatureOfDataItem(
       byteCountRangeOfRawSignature(signatureType)
     )
     .then(({ readable: rawSignatureReadable }) => rawSignatureReadable);
-}
-
-export function assembleBundlePayload(
-  objectStore: ObjectStore,
-  bundleHeaderBuffer: Buffer
-): Readable {
-  const bundleHeaderInfo = bundleHeaderInfoFromBuffer(bundleHeaderBuffer);
-
-  const outputStream = new PassThrough();
-
-  // Start piping unawaited so we can return the output stream immediately
-  void (async () => {
-    // Start by piping the header...
-    logger.debug(`Piping header buffer for bundle...`);
-    const headerStream = Readable.from(bundleHeaderBuffer);
-
-    try {
-      headerStream.pipe(outputStream, { end: false });
-      await once(headerStream, "end");
-    } catch (error) {
-      logger.error(`Error streaming bundle header`, { error });
-      headerStream.destroy();
-      outputStream.emit("error", error);
-      outputStream.destroy();
-      return;
-    }
-
-    // Then pipe each of the data items, enqueuing a handful of streams at a time for output piping
-    const inflightDataItemsSizeLimit = 100 * Math.pow(2, 20); // Limit to 100MiB of inflight streams
-    const maxInflightRequests = 100; // Limit to 100 total inflight streams
-    let inflightDataSize = 0; // Increments when fetching starts; decrements when piping ends
-    let inflightRequestCount = 0; // Increments when fetching starts; decrements when piping ends
-    let nextDataItemIndexToFetch = 0;
-    let nextDataItemIndexToPipe = 0;
-    const activeStreamsMap = new Map<string, Readable>();
-
-    // Events emitted by this algorithm and handled by the coordinator:
-    // - canFetch: when we have capacity to prefetch more data items
-    // - canPipe: when we potentially have capacity to pipe more data items to the output stream
-    const coordinator = new EventEmitter();
-
-    let piping = false;
-    // eslint-disable-next-line @typescript-eslint/no-misused-promises
-    coordinator.on("canPipe", async () => {
-      if (piping) {
-        // Only have one active piping loop at a time
-        return;
-      }
-
-      let dataItemToPipe = bundleHeaderInfo.dataItems[nextDataItemIndexToPipe];
-      let nextDataItemStream = activeStreamsMap.get(
-        `${nextDataItemIndexToPipe}`
-      );
-      while (nextDataItemStream) {
-        piping = true;
-        activeStreamsMap.delete(`${nextDataItemIndexToPipe}`);
-
-        try {
-          nextDataItemStream.pipe(outputStream, { end: false });
-          await once(nextDataItemStream, "end");
-          logger.debug(
-            `Finished piping data item ${nextDataItemIndexToPipe + 1}/${
-              bundleHeaderInfo.dataItems.length
-            } for bundle!`,
-            { inflightDataSize, inflightRequestCount }
-          );
-
-          // Release capacity for more prefetching
-          inflightDataSize -= dataItemToPipe.size;
-          inflightRequestCount--;
-        } catch (error) {
-          logger.error(
-            `Error streaming data item ${nextDataItemIndexToPipe + 1}/${
-              bundleHeaderInfo.dataItems.length
-            }!`,
-            { error }
-          );
-          nextDataItemStream.destroy();
-          outputStream.emit("error", error);
-          outputStream.destroy();
-          return; // TODO: OVERALL FLOW CONTROL?
-        }
-        piping = false;
-        nextDataItemIndexToPipe++;
-        nextDataItemStream = activeStreamsMap.get(`${nextDataItemIndexToPipe}`);
-        dataItemToPipe = bundleHeaderInfo.dataItems[nextDataItemIndexToPipe];
-
-        // Finished piping something so we may now have capacity to fetch more
-        if (
-          inflightRequestCount === 0 ||
-          (nextDataItemIndexToFetch < bundleHeaderInfo.dataItems.length &&
-            bundleHeaderInfo.dataItems[nextDataItemIndexToFetch].size +
-              inflightDataSize <=
-              inflightDataItemsSizeLimit &&
-            inflightRequestCount < maxInflightRequests)
-        ) {
-          coordinator.emit("canFetch");
-        }
-        if (nextDataItemIndexToPipe >= bundleHeaderInfo.dataItems.length) {
-          logger.debug(`Finished piping all data items for bundle!`);
-          coordinator.removeAllListeners("canPipe");
-          outputStream.end();
-          return;
-        }
-      }
-      logger.debug(`Done piping available streams.`, {
-        inflightDataSize,
-        inflightRequestCount,
-      });
-    });
-
-    // eslint-disable-next-line @typescript-eslint/no-misused-promises
-    coordinator.on("canFetch", async () => {
-      if (nextDataItemIndexToFetch >= bundleHeaderInfo.dataItems.length) {
-        logger.debug(`No more data items to fetch.`);
-        coordinator.removeAllListeners("canFetch");
-        return;
-      }
-
-      const dataItemIndex = nextDataItemIndexToFetch;
-      const dataItem = bundleHeaderInfo.dataItems[dataItemIndex];
-
-      // Reserve capacity for prefetching
-      inflightRequestCount++;
-      inflightDataSize += dataItem.size;
-
-      // Prepare for the subsequent fetch
-      nextDataItemIndexToFetch++;
-
-      // If we're not at the limit of inflight requests, fetch another
-      if (
-        inflightDataSize < inflightDataItemsSizeLimit &&
-        inflightRequestCount < maxInflightRequests
-      ) {
-        coordinator.emit("canFetch");
-      }
-
-      // Start fetching
-      const fetchedObject = await objectStore
-        .getObject(`${dataItemPrefix}/${dataItem.id}`)
-        .catch((err) => {
-          logger.error(`Error fetching data item ${dataItemIndex + 1}`, {
-            err: err instanceof Error ? err.message : err,
-          });
-          activeStreamsMap.delete(`${dataItemIndex}`);
-          outputStream.emit("error", err);
-          return undefined;
-        });
-
-      const dataItemStream = fetchedObject?.readable;
-      if (!dataItemStream) {
-        return;
-      }
-
-      activeStreamsMap.set(`${dataItemIndex}`, dataItemStream);
-
-      // We have data we can attempt to pipe now
-      coordinator.emit("canPipe");
-    });
-
-    // Kick off the first fetch
-    logger.debug(`Piping data items for bundle...`);
-    coordinator.emit("canFetch");
-  })();
-
-  // At this point there's data flowing into the stream...
-  return outputStream;
 }
 
 // TODO: Currently un-used. Test this is a new branch and ticket
@@ -370,35 +274,35 @@ export async function assembleBundlePayloadWithMultiStream(
     logger.debug(
       `Piping data item ${currentStreamIndex + 1}/${dataItemCount} for bundle!`
     );
-    objectStore
-      .getObject(
-        `${dataItemPrefix}/${bundleHeaderInfo.dataItems[currentStreamIndex].id}`
-      )
-      .then(
-        // onfulfilled
-        ({ readable: dataItemStream }) => {
-          dataItemStream.on("end", () => {
-            logger.debug(
-              `Finished piping data item ${
-                currentStreamIndex + 1
-              }/${dataItemCount} for bundle!`
-            );
-          });
-          dataItemStream.on("error", (err) => {
-            logger.error(
-              `Error streaming data item ${
-                currentStreamIndex + 1
-              }/${dataItemCount}!`,
-              { err }
-            );
-          });
-          cb(null, dataItemStream);
-        },
-        // onrejected
-        (err) => {
-          cb(err, null);
-        }
-      );
+    const dataItemKey = `${dataItemPrefix}/${bundleHeaderInfo.dataItems[currentStreamIndex].id}`;
+    objectStore.getObject(dataItemKey).then(
+      // onfulfilled
+      ({ readable: dataItemStream }) => {
+        dataItemStream.on("end", () => {
+          logger.debug(
+            `Finished piping data item ${
+              currentStreamIndex + 1
+            }/${dataItemCount} for bundle!`
+          );
+        });
+        dataItemStream.on("error", (err) => {
+          logger.error(
+            `Error streaming data item ${
+              currentStreamIndex + 1
+            }/${dataItemCount}!`,
+            {
+              err,
+              dataItemKey,
+            }
+          );
+        });
+        cb(null, dataItemStream);
+      },
+      // onrejected
+      (err) => {
+        cb(err, null);
+      }
+    );
   };
 
   // Get piping!
@@ -444,19 +348,6 @@ export async function getBundlePayload(
   return objectStore.getObject(storeKey).then(({ readable }) => readable);
 }
 
-export async function removeDataItem(
-  objectStore: ObjectStore,
-  dataItemTxId: string
-): Promise<void> {
-  return objectStore.removeObject(`${dataItemPrefix}/${dataItemTxId}`);
-}
-
-export function removeBundleTx(
-  objectStore: ObjectStore,
-  bundleTxId: string
-): Promise<void> {
-  return objectStore.removeObject(`${bundleTxPrefix}/${bundleTxId}`);
-}
 export function createMultipartUpload(
   objectStore: ObjectStore,
   uploadKey: string
@@ -517,15 +408,13 @@ export function moveFinalizedMultipartObject(
   return objectStore.moveObject({
     sourceKey: `${multiPartPrefix}/${uploadKey}`,
     destinationKey: `${dataItemPrefix}/${dataItemId}`,
-    Options: { payloadInfo: { payloadContentType, payloadDataStart } },
+    Options: {
+      payloadInfo: {
+        payloadContentType: sanitizePayloadContentType(payloadContentType), // Ensure we don't throw an error on user provided content types
+        payloadDataStart,
+      },
+    },
   });
-}
-
-export async function removeMultiPartObject(
-  objectStore: ObjectStore,
-  uploadKey: string
-): Promise<void> {
-  return objectStore.removeObject(`${multiPartPrefix}/${uploadKey}`);
 }
 
 export async function completeMultipartUpload(
@@ -552,5 +441,20 @@ export async function getMultipartUploadParts(
   return objectStore.getMultipartUploadParts(
     `${multiPartPrefix}/${uploadKey}`,
     uploadId
+  );
+}
+
+export async function getBundleHeaderInfo({
+  headerSize,
+  objectStore,
+  planId,
+}: {
+  objectStore: ObjectStore;
+  planId: PlanId;
+  headerSize: ByteCount;
+}): Promise<BundleHeaderInfo> {
+  return objectStore.getBundleHeaderInfo(
+    `${bundlePayloadPrefix}/${planId}`,
+    `bytes=0-${headerSize - 1}`
   );
 }

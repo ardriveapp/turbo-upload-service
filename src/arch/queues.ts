@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -20,37 +20,60 @@ import {
   SQSClient,
   SendMessageCommand,
 } from "@aws-sdk/client-sqs";
-import { NodeHttpHandler } from "@aws-sdk/node-http-handler";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { SQSEvent, SQSHandler, SQSRecord } from "aws-lambda";
 import * as https from "https";
 
+import { jobLabels } from "../constants";
+import { UnbundleBDIMessageBody } from "../jobs/unbundle-bdi";
 import logger from "../logger";
-import { PlanId } from "../types/dbTypes";
-import { DataItemId, UploadId } from "../types/types";
-import { isTestEnv } from "../utils/common";
-import { SignedDataItemHeader } from "../utils/opticalUtils";
-
-type QueueType =
-  | "prepare-bundle"
-  | "post-bundle"
-  | "seed-bundle"
-  | "optical-post"
-  | "unbundle-bdi"
-  | "finalize-upload";
+import { PlanId, PostedNewDataItem } from "../types/dbTypes";
+import { DataItemOffsetsInfo, UploadId } from "../types/types";
+import { DatedSignedDataItemHeader } from "../utils/opticalUtils";
 
 type SQSQueueUrl = string;
 
 type PlanMessage = { planId: PlanId };
 
+export type EnqueuedNewDataItem = Omit<PostedNewDataItem, "signature"> & {
+  signature: string;
+};
+export type EnqueueFinalizeUpload = {
+  uploadId: UploadId;
+  token: string;
+  paidBy?: string[];
+};
+export type EnqueuedOffsetsBatch = {
+  offsets: DataItemOffsetsInfo[];
+};
 type QueueTypeToMessageType = {
-  "prepare-bundle": PlanMessage;
-  "post-bundle": PlanMessage;
-  "seed-bundle": PlanMessage;
-  "optical-post": SignedDataItemHeader;
-  "unbundle-bdi": DataItemId;
-  "finalize-upload": { uploadId: UploadId };
+  [jobLabels.prepareBundle]: PlanMessage;
+  [jobLabels.postBundle]: PlanMessage;
+  [jobLabels.seedBundle]: PlanMessage;
+  [jobLabels.opticalPost]: DatedSignedDataItemHeader;
+  [jobLabels.unbundleBdi]: UnbundleBDIMessageBody;
+  [jobLabels.finalizeUpload]: EnqueueFinalizeUpload;
+  [jobLabels.newDataItem]: EnqueuedNewDataItem;
+  [jobLabels.putOffsets]: EnqueuedOffsetsBatch;
 };
 
+export type QueueType = keyof QueueTypeToMessageType;
+
+const awsCredentials =
+  process.env.AWS_ACCESS_KEY_ID !== undefined &&
+  process.env.AWS_SECRET_ACCESS_KEY !== undefined
+    ? {
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+        ...(process.env.AWS_SESSION_TOKEN
+          ? {
+              sessionToken: process.env.AWS_SESSION_TOKEN,
+            }
+          : {}),
+      }
+    : undefined;
+
+const endpoint = process.env.AWS_ENDPOINT;
 const sqs = new SQSClient({
   maxAttempts: 3,
   requestHandler: new NodeHttpHandler({
@@ -58,24 +81,37 @@ const sqs = new SQSClient({
       keepAlive: true,
     }),
   }),
+  ...(endpoint
+    ? {
+        endpoint,
+      }
+    : {}),
+  ...(awsCredentials
+    ? {
+        credentials: awsCredentials,
+      }
+    : {}),
+  region: process.env.AWS_REGION ?? "us-east-1",
 });
 
 export const getQueueUrl = (type: QueueType): SQSQueueUrl => {
-  const queues: { [key in QueueType]: SQSQueueUrl } = {
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    "prepare-bundle": process.env.SQS_PREPARE_BUNDLE_URL!,
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    "post-bundle": process.env.SQS_POST_BUNDLE_URL!,
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    "seed-bundle": process.env.SQS_SEED_BUNDLE_URL!,
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    "optical-post": process.env.SQS_OPTICAL_URL!,
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    "unbundle-bdi": process.env.SQS_UNBUNDLE_BDI_URL!,
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    "finalize-upload": process.env.SQS_FINALIZE_UPLOAD_URL!,
-  };
-  return queues[type];
+  const queueUrlFromEnvVarMap: { [key in QueueType]: SQSQueueUrl | undefined } =
+    {
+      [jobLabels.prepareBundle]: process.env.SQS_PREPARE_BUNDLE_URL,
+      [jobLabels.postBundle]: process.env.SQS_POST_BUNDLE_URL,
+      [jobLabels.seedBundle]: process.env.SQS_SEED_BUNDLE_URL,
+      [jobLabels.opticalPost]: process.env.SQS_OPTICAL_URL,
+      [jobLabels.unbundleBdi]: process.env.SQS_UNBUNDLE_BDI_URL,
+      [jobLabels.finalizeUpload]: process.env.SQS_FINALIZE_UPLOAD_URL,
+      [jobLabels.newDataItem]: process.env.SQS_NEW_DATA_ITEM_URL,
+      [jobLabels.putOffsets]: process.env.SQS_PUT_OFFSETS_URL,
+    };
+  const queueUrl = queueUrlFromEnvVarMap[type];
+  if (!queueUrl) {
+    throw new Error(`Queue URL not found for type ${type}`);
+  }
+
+  return queueUrl;
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -89,12 +125,6 @@ export const enqueue = async <T extends QueueType>(
   queueType: T,
   message: QueueTypeToMessageType[T]
 ) => {
-  //TODO: Tech Debt - Handle this better
-  if (isTestEnv()) {
-    logger.error("Skipping SQS Enqueue since we are on test environment");
-    return;
-  }
-
   const sendMsgCmd = new SendMessageCommand({
     QueueUrl: getQueueUrl(queueType),
     MessageBody: JSON.stringify(message),

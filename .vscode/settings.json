@@ -16,13 +16,20 @@
     "bignumber",
     "blocklisted",
     "bundlr",
+    "cosmjs",
+    "Cosmoshub",
     "dataitem",
+    "ethersproject",
     "indep",
     "indexdef",
     "indexname",
     "INJECTEDAPTOS",
     "Irys",
     "knexfile",
+    "kyve",
+    "kyvejs",
+    "localstack",
+    "MAXVALUE",
     "MULTIAPTOS",
     "multistream",
     "NOWAIT",
@@ -34,12 +41,15 @@
     "otel",
     "otlp",
     "outdir",
+    "privkey",
     "Readables",
     "schemaname",
+    "Secp",
     "solana",
     "sslmode",
     "svcs",
     "tablename",
+    "tendermint",
     "terragrunt",
     "throughputs",
     "trivago",
@@ -70,5 +80,11 @@
   "typescript.enablePromptUseWorkspaceTsdk": true,
   "[dockerfile]": {
     "editor.defaultFormatter": "ms-azuretools.vscode-docker"
+  },
+  "[shellscript]": {
+    "editor.defaultFormatter": "foxundermoon.shell-format"
+  },
+  "[dotenv]": {
+    "editor.defaultFormatter": "foxundermoon.shell-format"
   }
 }

@@ -24,6 +24,8 @@ node_modules
 # Env
 **/.env
 
+!.env.localstack
+
 #Yarn
 #https://yarnpkg.com/getting-started/qa#which-files-should-be-gitignored
 .pnp.*
@@ -36,3 +38,6 @@ node_modules
 
 # 🕵️‍♂️
 .wallet
+
+# LocalStack default volume folder
+/volume

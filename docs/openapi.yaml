@@ -1,4 +1,4 @@
-openapi: 3.0.0
+openapi: 3.1.1
 info:
   title: Turbo Upload Service
   # TODO: inject as env var in CI to match package.json
@@ -6,8 +6,24 @@ info:
   description: The Turbo Upload Service supports posting signed data-items to Arweave.net using Turbo Credits.
 
 servers:
+  - url: https://upload.ardrive.io
+    description: Production server for Turbo Upload Service
   - url: /v1
+    description: v1 API base path for new implementations
   - url: /
+    description: Root path for backwards compatibility
+
+tags:
+  - name: Service Info
+    description: Service information and health endpoints
+  - name: Pricing
+    description: Pricing calculation endpoints
+  - name: Account
+    description: Account balance and wallet information
+  - name: Upload
+    description: Data item upload endpoints (single and multi-part)
+  - name: Transaction Data
+    description: Transaction status and metadata retrieval
 
 components:
   parameters:
@@ -19,8 +35,8 @@ components:
       schema:
         type: integer
         example: 1000
-    currency:
-      name: currency
+    token:
+      name: token
       in: path
       description: The token to use for validating the transaction.
       required: true
@@ -48,27 +64,30 @@ components:
         example: "QpmY8mZmFEC8RxNsgbxSV6e36OF6quIYaPRKzvUco0o"
     chunkOffset:
       name: chunkOffset
-      in: query
+      in: path
       description: The offset of the chunk in bytes. If -1, that will finalize an existing multi-part upload.
       required: true
       schema:
         type: integer
         example: 0
-  headers:
-    Content-Length:
+
+    content-length:
       name: content-length
+      in: header
+      required: false
       schema:
         type: integer
         format: int64
-        maximum: 10737418240 # 10GiB
-      required: false
-    Content-Type:
+        maximum: 2147483648 # 2GiB
+
+    content-type:
       name: content-type
+      in: header
+      required: false
       schema:
         type: string
         enum:
           - application/octet-stream
-      required: false
   schemas:
     DataItemStatus:
       type: object
@@ -84,6 +103,19 @@ components:
           type: string
           description: The bundle id of the data item.
           example: "QpmY8mZmFEC8RxNsgbxSV6e36OF6quIYaPRKzvUco0o"
+        startOffsetInRootBundle:
+          type: integer
+          description: The start offset in the root bundle tx of the raw data item.
+          example: 12345
+          required: false
+        payloadContentType:
+          type: string
+          description: The content type of the data item payload.
+          example: "application/json"
+        payloadDataStart:
+          type: integer
+          description: The start offset of the payload data in the raw data item.
+          example: 1024
         info:
           type: string
           description: The info of the data item.
@@ -201,6 +233,10 @@ components:
           type: string
           description: The version of the service
           example: "0.1.0"
+        gateway:
+          type: string
+          description: The gateway address of the service
+          example: https://arweave.net
         addresses:
           type: object
           description: The wallet addresses of the service
@@ -221,16 +257,49 @@ components:
               type: string
               description: The Matic wallet address of the service
               example: "0x8wgRDgvYOrtSaWEIV21g0lTuWDUnTu4_iYj4hmA7PI0"
-          gateway:
-            type: string
-            description: The gateway address of the service
-            example: arweave.net
+    OffsetsInfo:
+      type: object
+      properties:
+        rootBundleId:
+          type: string
+          description: The bundle id of the data item.
+          example: "J40R1BgFSI1_7p25QW49T7P46BePJJnlDrsFGY1YWbM"
+        startOffsetInRootBundle:
+          type: integer
+          description: The start offset in the root bundle tx of the raw data item.
+          example: 12345
+          required: false
+        parentDataItemId:
+          type: string
+          description: The parent data item id of the data item.
+          example: "QpmY8mZmFEC8RxNsgbxSV6e36OF6quIYaPRKzvUco0o"
+          required: false
+        startOffsetInParentDataItemPayload:
+          type: integer
+          description: The start offset in the parent data item payload of the raw data item.
+          example: 12345
+          required: false
+        rawContentLength:
+          type: integer
+          description: The length of the raw data item (i.e. headers and payload).
+          example: 123456
+        payloadContentType:
+          type: string
+          description: The content type of the data item payload.
+          example: "application/json"
+        payloadDataStart:
+          type: integer
+          description: The start offset of the payload data in the raw data item.
+          example: 1024
+
 paths:
   /:
     servers:
       - url: /
     get:
       summary: Gets the info of the service
+      tags:
+        - Service Info
       responses:
         "200":
           description: The info of the service
@@ -243,6 +312,8 @@ paths:
       - url: /
     get:
       summary: Gets the info of the service
+      tags:
+        - Service Info
       responses:
         "200":
           description: The info of the service
@@ -250,13 +321,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ServiceInfo"
-  /price/:currency/:byteCount:
+  /price/:token/:byteCount:
     servers:
       - url: /
     get:
       summary: Gets the price in winc to upload a data item
+      tags:
+        - Pricing
       parameters:
-        - $ref: "#/components/parameters/currency"
+        - $ref: "#/components/parameters/token"
         - name: byteCount
           in: path
           description: The byte count of the data item.
@@ -283,13 +356,15 @@ paths:
               examples:
                 InvalidByteCount:
                   value: Invalid byte count
-  /price/:currency:
+  /price/:token:
     servers:
       - url: /
     get:
       summary: Gets the price in winc to upload a data item
+      tags:
+        - Pricing
       parameters:
-        - $ref: "#/components/parameters/currency"
+        - $ref: "#/components/parameters/token"
       responses:
         "200":
           description: The price of the data item
@@ -314,6 +389,8 @@ paths:
       - url: /
     get:
       summary: Gets the balance of a wallet
+      tags:
+        - Account
       parameters:
         - $ref: "#/components/parameters/id"
       responses:
@@ -344,8 +421,14 @@ paths:
     servers:
       - url: /v1
       - url: /
+    parameters:
+      - $ref: "#/components/parameters/content-length"
+      - $ref: "#/components/parameters/content-type"
+
     post:
-      summary: Posts a signed data item to Arweave
+      summary: Posts a signed data item to arweave
+      tags:
+        - Upload
       requestBody:
         required: true
         description: A signed data item
@@ -354,9 +437,6 @@ paths:
             schema:
               type: string
               format: binary
-      headers:
-        - $ref: "#/components/headers/Content-Length"
-        - $ref: "#/components/headers/Content-Type"
 
       responses:
         "200":
@@ -398,14 +478,18 @@ paths:
                   value: Data item is too large, this service only accepts data items up to 2147483648 bytes!
                 InvalidDataItem:
                   value: Data item parsing error!
-  /tx/:currency:
+  /tx/:token:
     servers:
       - url: /v1
       - url: /
     post:
-      summary: Posts a signed data item to arewave for a specifc token
+      summary: Posts a signed data item to arweave for a specific token
+      tags:
+        - Upload
       parameters:
-        - $ref: "#/components/parameters/currency"
+        - $ref: "#/components/parameters/token"
+        - $ref: "#/components/parameters/content-length"
+        - $ref: "#/components/parameters/content-type"
       requestBody:
         required: true
         description: A signed data item
@@ -414,9 +498,6 @@ paths:
             schema:
               type: string
               format: binary
-      headers:
-        - $ref: "#/components/headers/Content-Length"
-        - $ref: "#/components/headers/Content-Type"
       responses:
         "200":
           description: The receipt of the uploaded data item.
@@ -446,28 +527,55 @@ paths:
       - url: /
     get:
       summary: Gets the status of a data item
+      tags:
+        - Transaction Data
       responses:
         "200":
           description: The status of the data item
           content:
             application/json:
               schema:
-                "$ref": "#/components/schemas/DataItemStatus"
+                $ref: "#/components/schemas/DataItemStatus"
         "404":
           description: Data item not found
           content:
             text/plain:
               schema:
                 type: string
-              examples:
-                DataItemNotFound:
-                  value: Data Item Not Found
+                example: "TX doesn't exist"
+  /tx/:id/offsets:
+    servers:
+      - url: /v1
+      - url: /
+    get:
+      summary: Gets the offsets of a data item
+      tags:
+        - Transaction Data
+      parameters:
+        - $ref: "#/components/parameters/id"
+      responses:
+        "200":
+          description: The offsets of the data item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OffsetsInfo"
+        "404":
+          description: Data item not found
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "TX doesn't exist"
+
   /chunks/-1/-1:
     servers:
       - url: /v1
       - url: /
     get:
-      summary: Creates a new multi-part upload. Chunks should be posted to /chunks/:uploadId/:chunkOffset using the returned uploadId. Irys compatible.
+      summary: Creates a new multi-part upload. Chunks should be posted to /chunks/:uploadId/:chunkOffset using the returned uploadId. ARx compatible.
+      tags:
+        - Upload
       parameters:
         - $ref: "#/components/parameters/uploadId"
         - $ref: "#/components/parameters/chunkOffset"
@@ -485,13 +593,17 @@ paths:
               schema:
                 type: string
                 example: "Internal server error"
-  /chunks/:uploadId/-1:
+
+  /chunks/:token/:uploadId/-1:
     servers:
       - url: /
+    parameters:
+      - $ref: "#/components/parameters/uploadId"
+      - $ref: "#/components/parameters/token"
     get:
-      summary: Gets an existing multi-part upload, including all existing chunks that have been uploaded. Irys compatible.
-      parameters:
-        - $ref: "#/components/parameters/uploadId"
+      summary: Gets an existing multi-part upload, including all existing chunks that have been uploaded. ARx compatible.
+      tags:
+        - Upload
       responses:
         "200":
           description: The existing multipart upload, including all existing chunks that have been uploaded.
@@ -516,9 +628,9 @@ paths:
                 type: string
                 example: "Internal server error"
     post:
-      summary: Finalizes a multi-part upload. Irys compatible.
-      parameters:
-        - $ref: "#/components/parameters/uploadId"
+      summary: Finalizes a multi-part upload. ARx compatible.
+      tags:
+        - Upload
       responses:
         "200":
           description: The multi-part upload was successfully finalized. The receipt includes a signature of the id, version, timestamp, public key, deadlineHeight and owner.
@@ -549,13 +661,107 @@ paths:
               schema:
                 type: string
                 example: "Internal server error"
-  /chunks/:uploadId/:chunkOffset:
+
+  /chunks/:token/:uploadId/finalize:
     servers:
       - url: /
     post:
-      summary: Posts a chunk of a multi-part upload. Irys compatible.
+      summary: Finalizes a multi-part upload asynchronously.
+      tags:
+        - Upload
       parameters:
         - $ref: "#/components/parameters/uploadId"
+        - $ref: "#/components/parameters/token"
+      responses:
+        "202":
+          description: The multi-part upload was successfully enqueued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CompleteMultipartUpload"
+        "402":
+          description: Insufficient balance
+          content:
+            text/plain:
+              schema:
+                type: string
+                default: "Insufficient balance"
+        "404":
+          description: Multi-part upload not found
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                MultipartUploadNotFound:
+                  value: Multi-part upload not found
+        "503":
+          description: Internal server error
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "Internal server error"
+
+  /chunks/:token/:uploadId/status:
+    servers:
+      - url: /
+    get:
+      summary: Gets the status of a multi-part upload.
+      tags:
+        - Upload
+      parameters:
+        - $ref: "#/components/parameters/uploadId"
+        - $ref: "#/components/parameters/token"
+        - $ref: "#/components/parameters/token"
+      responses:
+        "200":
+          description: The status of the multi-part upload
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    description: The status of the multi-part upload.
+                    example: "VALIDATING"
+                    enum:
+                      - "VALIDATING"
+                      - "ASSEMBLING"
+                      - "INVALID"
+                      - "UNDERFUNDED"
+                  timestamp:
+                    type: integer
+                    description: The timestamp in millisecond of when the multi-part status was retrieved.
+                    example: 1700590909589
+        "404":
+          description: Multi-part upload not found
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                MultipartUploadNotFound:
+                  value: Multi-part upload not found
+        "503":
+          description: Internal server error
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "Internal server error"
+
+  /chunks/:token/:uploadId/:chunkOffset:
+    servers:
+      - url: /
+    post:
+      summary: Posts a chunk of a multi-part upload. ARx compatible.
+      tags:
+        - Upload
+      parameters:
+        - $ref: "#/components/parameters/uploadId"
+        - $ref: "#/components/parameters/token"
         - $ref: "#/components/parameters/chunkOffset"
       requestBody:
         required: true

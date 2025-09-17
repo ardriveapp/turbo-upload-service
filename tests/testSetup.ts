@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -16,9 +16,15 @@
  */
 import { restore } from "sinon";
 
-// Restores the default sandbox after every test
+import { sleep } from "../src/utils/common";
+
 exports.mochaHooks = {
+  async beforeEach() {
+    // Wait before each test to prevent replication lag on DB clean-ups
+    await sleep(25);
+  },
   afterEach() {
+    // Restores the default sandbox after every test
     restore();
   },
 };

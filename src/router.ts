@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -28,6 +28,7 @@ import {
   getMultipartUploadStatus,
   postDataItemChunk,
 } from "./routes/multiPartUploads";
+import { offsetsHandler } from "./routes/offsets";
 import { statusHandler } from "./routes/status";
 import { swaggerDocs, swaggerDocsJSON } from "./routes/swagger";
 import { KoaContext } from "./server";
@@ -37,21 +38,17 @@ promClient.collectDefaultMetrics({ register: metricsRegistry });
 
 const router = new Router();
 
-// post routes
-router.post("/v1/tx", dataItemRoute);
-router.post("/tx", dataItemRoute);
-router.post("/v1/tx/:currency", dataItemRoute);
-router.post("/tx/:currency", dataItemRoute);
+// Publish to both root and v1 for convenience, but root might be deprecated or iterate in the future
+const serveRoutesAndV1 = (path: string[]) =>
+  path.flatMap((p) => [p, `/v1${p}`]);
+
+// Raw data post routes
+router.post(serveRoutesAndV1(["/tx", "/tx/:token"]), dataItemRoute);
 
 /**
  * START TEMPORARY PATCH TO SUPPORT up.arweave.net
  */
-router.get("/price/:foo/:bar", (ctx, next: Next) => {
-  ctx.body = "0.0000000000000";
-  return next();
-});
-
-router.get("/price/:bar", (ctx, next: Next) => {
+router.get(["/price/:foo/:bar", "/price/:bar"], (ctx, next: Next) => {
   ctx.body = "0.0000000000000";
   return next();
 });
@@ -64,28 +61,38 @@ router.get("/account/balance/:rest", (ctx: KoaContext, next: Next) => {
  * END TEMPORARY PATCH TO SUPPORT up.arweave.net
  */
 
-// publish at root for backwards compatibility (blunder)
-router.get("/tx/:id/status", statusHandler);
-// publish at v1 for forwards compatibility 🧠
-router.get("/v1/tx/:id/status", statusHandler);
+// Status routes
+router.get(serveRoutesAndV1(["/tx/:id/status"]), statusHandler);
+router.get(serveRoutesAndV1(["/tx/:id/offsets"]), offsetsHandler);
 
 // Multi-part upload routes
-router.get("/chunks/:token/-1/-1", createMultiPartUpload);
-router.get("/chunks/:token/:uploadId/-1", getMultipartUpload);
-router.get("/chunks/:token/:uploadId/status", getMultipartUploadStatus);
+router.get(serveRoutesAndV1(["/chunks/:token/-1/-1"]), createMultiPartUpload);
+router.get(
+  serveRoutesAndV1(["/chunks/:token/:uploadId/-1"]),
+  getMultipartUpload
+);
+router.get(
+  serveRoutesAndV1(["/chunks/:token/:uploadId/status"]),
+  getMultipartUploadStatus
+);
 router.post(
-  "/chunks/:token/:uploadId/-1",
+  serveRoutesAndV1(["/chunks/:token/:uploadId/-1"]),
   finalizeMultipartUploadWithHttpRequest
 );
-router.post("/chunks/:token/:uploadId/finalize", (ctx: KoaContext) => {
-  ctx.state.asyncValidation = true;
-  return finalizeMultipartUploadWithHttpRequest(ctx);
-});
-router.post("/chunks/:token/:uploadId/:chunkOffset", postDataItemChunk);
+router.post(
+  serveRoutesAndV1(["/chunks/:token/:uploadId/finalize"]),
+  (ctx: KoaContext) => {
+    ctx.state.asyncValidation = true;
+    return finalizeMultipartUploadWithHttpRequest(ctx);
+  }
+);
+router.post(
+  serveRoutesAndV1(["/chunks/:token/:uploadId/:chunkOffset"]),
+  postDataItemChunk
+);
 
 // info routes
-router.get("/", rootResponse);
-router.get("/info", rootResponse);
+router.get(serveRoutesAndV1(["/", "/info"]), rootResponse);
 
 // Prometheus
 router.get("/bundler_metrics", async (ctx: KoaContext, next: Next) => {

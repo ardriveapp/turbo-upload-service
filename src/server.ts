@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -28,6 +28,7 @@ import {
   requestMiddleware,
 } from "./middleware";
 import router from "./router";
+import { getErrorCodeFromErrorObject } from "./utils/common";
 import { loadConfig } from "./utils/config";
 
 type KoaState = DefaultState & Architecture;
@@ -39,7 +40,12 @@ globalLogger.info(
 
 // global error handler
 process.on("uncaughtException", (error) => {
-  MetricRegistry.uncaughtExceptionCounter.inc();
+  // Determine error code for metrics
+  const errorCode = getErrorCodeFromErrorObject(error);
+
+  // Always increment the counter with appropriate error_code label
+  MetricRegistry.uncaughtExceptionCounter.inc({ error_code: errorCode });
+
   globalLogger.error("Uncaught exception:", error);
 });
 
@@ -55,6 +61,7 @@ export async function createServer(
   const objectStore = arch.objectStore ?? defaultArchitecture.objectStore;
   const paymentService =
     arch.paymentService ?? defaultArchitecture.paymentService;
+  const cacheService = arch.cacheService ?? defaultArchitecture.cacheService;
 
   const getArweaveWallet =
     arch.getArweaveWallet ?? defaultArchitecture.getArweaveWallet;
@@ -76,6 +83,7 @@ export async function createServer(
     architectureMiddleware(ctx, next, {
       database: uploadDatabase,
       objectStore,
+      cacheService,
       paymentService,
       arweaveGateway,
       getArweaveWallet,

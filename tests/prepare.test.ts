@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -18,6 +18,7 @@ import Arweave from "arweave";
 import { expect } from "chai";
 import { stub } from "sinon";
 
+import { stubCacheService } from "../src/arch/cacheServiceTypes";
 import { columnNames, tableNames } from "../src/arch/db/dbConstants";
 import { PostgresDatabase } from "../src/arch/db/postgres";
 import { FileSystemObjectStore } from "../src/arch/fileSystemObjectStore";
@@ -68,7 +69,10 @@ describe("Prepare bundle job handler", () => {
   it("removes bundle_plan, inserts new_bundle, and writes the expected bundle tx, bundle payload, and bundle header to Object Store", async () => {
     const objectStore = new FileSystemObjectStore();
 
-    await prepareBundleHandler(planId, { objectStore, jwk });
+    await prepareBundleHandler(planId, {
+      objectStore,
+      jwk,
+    });
 
     const bundlePlanDbResult = await db["writer"]<BundlePlanDBResult>(
       tableNames.bundlePlan
@@ -97,11 +101,20 @@ describe("Prepare bundle job handler", () => {
   it("the job fails with error if no data item is found from object store when it is expected to be there", async () => {
     const objectStore = new FileSystemObjectStore();
 
-    stub(objectStore, "getObject").rejects(new Error("No Such Key Found"));
+    stub(objectStore, "getObject").rejects(
+      new Error(
+        "Any error message since it will get mapped to a store-agnostic one"
+      )
+    );
 
     await expectAsyncErrorThrow({
-      promiseToError: prepareBundleHandler(planId, { objectStore, jwk }),
-      errorMessage: "No Such Key Found",
+      promiseToError: prepareBundleHandler(planId, {
+        objectStore,
+        cacheService: stubCacheService,
+        jwk,
+      }),
+      errorMessage:
+        "Failed to fetch data item QpmY8mZmFEC8RxNsgbxSV6e36OF6quIYaPRKzvUco0o",
     });
   });
 });

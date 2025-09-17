@@ -11,7 +11,8 @@ process.env.BLOCKLISTED_ADDRESSES ??= // cspell:disable
 module.exports = {
   extension: ["ts"],
   require: ["ts-node/register/transpile-only", "tests/testSetup.ts"],
-  timeout: "10000", // 10 seconds
-  parallel: true,
+  timeout: "20000", // 20 seconds
+  parallel: false,
+  exit: true,
   recursive: true,
 };

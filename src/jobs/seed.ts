@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -20,9 +20,11 @@ import { PostgresDatabase } from "../arch/db/postgres";
 import { ObjectStore } from "../arch/objectStore";
 import { createQueueHandler } from "../arch/queues";
 import { ArweaveInterface } from "../arweaveJs";
+import { jobLabels } from "../constants";
 import defaultLogger from "../logger";
-import { PlanId } from "../types/dbTypes";
+import { PlanId, PlannedDataItem, PostedBundle } from "../types/dbTypes";
 import { filterKeysFromObject } from "../utils/common";
+import { BundlePlanExistsInAnotherStateWarning } from "../utils/errors";
 import {
   getBundlePayload,
   getBundleTx,
@@ -44,9 +46,21 @@ export async function seedBundleHandler(
   }: SeedBundleJobInjectableArch,
   logger = defaultLogger.child({ job: "seed-bundle-job", planId })
 ): Promise<void> {
-  const dbResult = await database.getNextBundleAndDataItemsToSeedByPlanId(
-    planId
-  );
+  let dbResult: {
+    bundleToSeed: PostedBundle;
+    dataItemsToSeed: PlannedDataItem[];
+  };
+
+  try {
+    dbResult = await database.getNextBundleAndDataItemsToSeedByPlanId(planId);
+  } catch (error) {
+    if (error instanceof BundlePlanExistsInAnotherStateWarning) {
+      logger.warn(error.message);
+      return;
+    }
+    throw error;
+  }
+
   const { bundleToSeed, dataItemsToSeed } = dbResult;
   const { bundleId, transactionByteCount } = bundleToSeed;
 
@@ -89,7 +103,7 @@ export async function seedBundleHandler(
 }
 
 export const handler = createQueueHandler(
-  "seed-bundle",
+  jobLabels.seedBundle,
   (message: { planId: PlanId }) =>
     seedBundleHandler(message.planId, defaultArchitecture),
   {

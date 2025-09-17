@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -15,6 +15,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 import {
+  DataItemFailedReason,
   FinishedMultiPartUpload,
   InFlightMultiPartUpload,
   InsertNewBundleParams,
@@ -27,13 +28,22 @@ import {
   PostedNewDataItem,
   SeededBundle,
 } from "../../types/dbTypes";
-import { TransactionId, UploadId, Winston } from "../../types/types";
+import {
+  DataItemId,
+  TransactionId,
+  UploadId,
+  Winston,
+} from "../../types/types";
 
 // TODO: this could be an interface since no functions have a default implementation
 export interface Database {
-  /** Store a new data item that has been posted to the data item route */
+  /** Store a new data item that has been posted to the service */
   insertNewDataItem(dataItem: PostedNewDataItem): Promise<void>;
-  /**  Get all new data items in the database sorted by uploadedDate */
+
+  /** Stores a batch of new data items that have been enqueued for insert */
+  insertNewDataItemBatch(dataItemBatch: PostedNewDataItem[]): Promise<void>;
+
+  /**  Gets MAX_DATA_ITEM_LIMIT * 5 (75,000 as of this commit) new data items in the database sorted by uploadedDate */
   getNewDataItems(): Promise<NewDataItem[]>;
 
   /**
@@ -121,10 +131,13 @@ export interface Database {
   /** Gets latest status of a data item from the database */
   getDataItemInfo(dataItemId: TransactionId): Promise<
     | {
-        status: "new" | "pending" | "permanent";
+        status: "new" | "pending" | "permanent" | "failed";
         assessedWinstonPrice: Winston;
         bundleId?: TransactionId;
         uploadedTimestamp: number;
+        deadlineHeight?: number;
+        failedReason?: DataItemFailedReason;
+        owner: string;
       }
     | undefined
   >;
@@ -137,10 +150,12 @@ export interface Database {
   insertInFlightMultiPartUpload({
     uploadId,
     uploadKey,
+    chunkSize,
   }: {
     uploadId: UploadId;
     uploadKey: string;
-  }): Promise<void>;
+    chunkSize?: number;
+  }): Promise<InFlightMultiPartUpload>;
   finalizeMultiPartUpload(params: {
     uploadId: UploadId;
     etag: string;
@@ -168,8 +183,13 @@ export interface Database {
   ): Promise<FinishedMultiPartUpload>;
   updateMultipartChunkSize(
     chunkSize: number,
-    uploadId: UploadId
-  ): Promise<void>;
+    upload: InFlightMultiPartUpload
+  ): Promise<number>;
+
+  updatePlannedDataItemAsFailed(params: {
+    dataItemId: DataItemId;
+    failedReason: DataItemFailedReason;
+  }): Promise<void>;
 }
 
 export type UpdateDataItemsToPermanentParams = {

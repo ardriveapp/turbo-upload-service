@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -16,6 +16,8 @@
  */
 import axios, { AxiosRequestConfig } from "axios";
 import axiosRetry from "axios-retry";
+import { Agent as HttpAgent } from "http";
+import { Agent as HttpsAgent } from "https";
 
 export interface CreateAxiosInstanceParams {
   config?: AxiosRequestConfig;
@@ -23,12 +25,30 @@ export interface CreateAxiosInstanceParams {
   retryDelay?: (retryNumber: number) => number;
 }
 
+const httpAgent = new HttpAgent({
+  timeout: 60000,
+  keepAlive: true,
+  keepAliveMsecs: 30_000,
+});
+const httpsAgent = new HttpsAgent({
+  timeout: 60000,
+  keepAlive: true,
+  keepAliveMsecs: 30_000,
+});
+export const getHttpAgents = () => {
+  return { httpAgent, httpsAgent };
+};
+
 export const createAxiosInstance = ({
   config = {},
   retries = 8,
   retryDelay = axiosRetry.exponentialDelay,
 }: CreateAxiosInstanceParams) => {
-  const axiosInstance = axios.create(config);
+  const axiosInstance = axios.create({
+    ...getHttpAgents(),
+    ...config,
+  });
+
   if (retries > 0) {
     axiosRetry(axiosInstance, {
       retries,

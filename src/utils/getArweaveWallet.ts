@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -22,11 +22,13 @@ import {
   GetSecretValueCommand,
   SecretsManagerClient,
 } from "@aws-sdk/client-secrets-manager";
-import { GetParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
-import { ArweaveSigner } from "arbundles";
+import { GetParameterCommand } from "@aws-sdk/client-ssm";
+import { ArweaveSigner } from "@dha-team/arbundles";
 import { Base64UrlString } from "arweave/node/lib/utils";
+import winston from "winston";
 
-import { msPerMinute } from "../constants";
+import { ssmClient as svcsSystemsMgrClient } from "../arch/ssmClient";
+import { msPerMinute, turboLocalJwk } from "../constants";
 import logger from "../logger";
 import { JWKInterface } from "../types/jwkTypes";
 
@@ -34,23 +36,48 @@ const sixtyMinutes = msPerMinute * 60;
 
 const opticalWalletCache = new PromiseCache<string, JWKInterface>({
   cacheCapacity: 1,
-  cacheTTL: sixtyMinutes,
+  cacheTTLMillis: sixtyMinutes,
 });
 
 const opticalPubKeyCache = new PromiseCache<string, string>({
   cacheCapacity: 1,
-  cacheTTL: sixtyMinutes,
+  cacheTTLMillis: sixtyMinutes,
 });
 
 const awsRegion = process.env.AWS_REGION ?? "us-east-1";
+const awsCredentials =
+  process.env.AWS_ACCESS_KEY_ID !== undefined &&
+  process.env.AWS_SECRET_ACCESS_KEY !== undefined
+    ? {
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+        ...(process.env.AWS_SESSION_TOKEN
+          ? {
+              sessionToken: process.env.AWS_SESSION_TOKEN,
+            }
+          : {}),
+      }
+    : undefined;
 
+const endpoint = process.env.AWS_ENDPOINT;
 const secretsMgrClient = new SecretsManagerClient({
   region: awsRegion,
+  ...(endpoint
+    ? {
+        endpoint,
+      }
+    : {}),
+  ...(awsCredentials
+    ? {
+        credentials: awsCredentials,
+      }
+    : {}),
 });
 
-const svcsSystemsMgrClient = new SSMClient({ region: awsRegion });
-
-function getSecretValue(secretName: string): Promise<string> {
+function getSecretValue(
+  secretName: string,
+  logger?: winston.Logger
+): Promise<string> {
   return secretsMgrClient
     .send(
       new GetSecretValueCommand({
@@ -65,15 +92,22 @@ function getSecretValue(secretName: string): Promise<string> {
       throw new Error(
         `Unexpectedly got undefined string for secret ${secretName}`
       );
+    })
+    .catch((error) => {
+      logger?.error(
+        `Failed to retrieve '${secretName}' from Secrets Manager.`,
+        error
+      );
+      throw error;
     });
 }
 
-const arweaveWalletSecretName = `arweave-wallet`;
+const arweaveWalletSecretName = "arweave-wallet";
 
 const signingWalletCache = new ReadThroughPromiseCache<string, JWKInterface>({
   cacheParams: {
     cacheCapacity: 1,
-    cacheTTL: sixtyMinutes,
+    cacheTTLMillis: sixtyMinutes,
   },
   readThroughFunction: async () => {
     return getSecretValue(arweaveWalletSecretName).then((walletString) =>
@@ -82,12 +116,20 @@ const signingWalletCache = new ReadThroughPromiseCache<string, JWKInterface>({
   },
 });
 export async function getArweaveWallet(): Promise<JWKInterface> {
+  if (turboLocalJwk) {
+    logger.debug("Using local JWk for Turbo wallet");
+    return turboLocalJwk;
+  }
   // Return any inflight, potentially-resolved promise for the wallet OR
   // start, cache, and return a new one
   return signingWalletCache.get(arweaveWalletSecretName);
 }
 
 export async function getOpticalWallet(): Promise<JWKInterface> {
+  if (turboLocalJwk) {
+    logger.debug("Using local JWk for Turbo optical wallet");
+    return turboLocalJwk;
+  }
   const secretName = `turbo-optical-key-${process.env.NODE_ENV}`;
 
   // Return any inflight, potentially-resolved promise for the wallet OR
@@ -104,6 +146,11 @@ export async function getOpticalWallet(): Promise<JWKInterface> {
 }
 
 export async function getOpticalPubKey(): Promise<Base64UrlString> {
+  if (turboLocalJwk) {
+    logger.debug("Using local JWk for Turbo optical pub key");
+    return new ArweaveSigner(turboLocalJwk).publicKey.toString("base64url");
+  }
+
   const ssmParameterName = `turbo-optical-public-key-${process.env.NODE_ENV}`;
 
   // Return any inflight, potentially-resolved promise for the pubkey OR
@@ -125,7 +172,7 @@ export async function getOpticalPubKey(): Promise<Base64UrlString> {
           }
           throw new Error(`PubKey unexpectedly undefined or zero length!`);
         } catch (error) {
-          logger.error(
+          logger.debug(
             "Couldn't retrieve pubKey from SSM! Falling back to SecretsMgr",
             error
           );
@@ -140,7 +187,7 @@ export async function getOpticalPubKey(): Promise<Base64UrlString> {
 const ssmParamCache = new ReadThroughPromiseCache<string, string>({
   cacheParams: {
     cacheCapacity: 100,
-    cacheTTL: sixtyMinutes,
+    cacheTTLMillis: sixtyMinutes,
   },
   readThroughFunction: async (parameterName) => {
     const command = new GetParameterCommand({

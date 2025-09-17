@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -15,7 +15,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 import Arweave from "arweave";
-import axios, { AxiosRequestHeaders, AxiosResponse } from "axios";
+import axios, { AxiosResponse, RawAxiosRequestHeaders } from "axios";
 import { expect } from "chai";
 import {
   PathLike,
@@ -34,7 +34,7 @@ import { TransactionId } from "../src/types/types";
 export const localTestUrl = `http://localhost:${port}`;
 
 // stubbed arweave against local arweave gateway
-export const arweave = Arweave.init({
+export const testArweave = Arweave.init({
   host: gatewayUrl.hostname,
   port: gatewayUrl.port,
   protocol: gatewayUrl.protocol.replace(":", ""),
@@ -111,7 +111,7 @@ export const ethereumDataItem = readFileSync(
 
 export async function postStubDataItem(
   dataItemBuffer: Buffer,
-  headers: AxiosRequestHeaders = {
+  headers: RawAxiosRequestHeaders = {
     "Content-Type": octetStreamContentType,
   }
 ): Promise<AxiosResponse> {
@@ -143,3 +143,9 @@ export function deleteStubRawDataItems(targetDataItemIds: TransactionId[]) {
     rmSync(`${baseRawDataItemPath}${dataItemId}`);
   }
 }
+
+export const testArweaveJWK = JSON.parse(
+  readFileSync("tests/stubFiles/testWallet.json", {
+    encoding: "utf-8",
+  })
+);

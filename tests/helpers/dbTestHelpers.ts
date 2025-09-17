@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -17,12 +17,15 @@
 import { expect } from "chai";
 import { Knex } from "knex";
 
-import { tableNames } from "../../src/arch/db/dbConstants";
+import { columnNames, tableNames } from "../../src/arch/db/dbConstants";
 import { PostgresDatabase } from "../../src/arch/db/postgres";
 import {
+  DataItemFailedReason,
+  FailedDataItemDBInsert,
   KnexRawResult,
   NewBundleDBInsert,
   NewDataItemDBInsert,
+  NewDataItemDBResult,
   PermanentDataItemDBInsert,
   PlanId,
   PlannedDataItemDBInsert,
@@ -37,6 +40,7 @@ import {
   stubDataItemBufferSignature,
   stubDates,
   stubOwnerAddress,
+  stubPlanId,
   stubWinstonPrice,
 } from "../stubs";
 
@@ -67,10 +71,11 @@ function stubNewDataItemInsert({
     content_type: "text/plain",
     premium_feature_type: "test",
     signature,
+    deadline_height: "200",
   };
 }
 
-function stubPlannedDataItemInsert({
+export function stubPlannedDataItemInsert({
   dataItemId,
   planId,
   plannedDate = stubDates.earliestDate,
@@ -81,9 +86,23 @@ function stubPlannedDataItemInsert({
 } {
   return {
     ...stubNewDataItemInsert({ dataItemId, signature, failedBundles }),
-    plan_id: planId,
+    plan_id: planId ?? stubPlanId,
     uploaded_date: stubDates.earliestDate,
     planned_date: plannedDate,
+  };
+}
+
+function stubFailedDataItemInsert({
+  failedDate = stubDates.earliestDate,
+  failedReason = "too_many_failures",
+  ...params
+}: InsertStubFailedDataItemParams): FailedDataItemDBInsert & {
+  failed_date: string | undefined;
+} {
+  return {
+    ...stubPlannedDataItemInsert(params),
+    failed_date: failedDate,
+    failed_reason: failedReason,
   };
 }
 
@@ -104,10 +123,11 @@ function stubPermanentDataItemInsert({
     failed_bundles: "",
     content_type: "text/plain",
     premium_feature_type: "test",
-    plan_id: planId,
+    plan_id: planId ?? stubPlanId,
     planned_date: stubDates.earliestDate,
     bundle_id: bundleId,
-    block_height: stubBlockHeight.toString(),
+    block_height: stubBlockHeight,
+    deadline_height: 200,
   };
 }
 
@@ -187,10 +207,18 @@ export class DbTestHelper {
     );
   }
 
+  public async insertStubFailedDataItem(
+    insertParams: InsertStubFailedDataItemParams
+  ): Promise<void> {
+    return this.knex(tableNames.failedDataItem).insert(
+      stubFailedDataItemInsert(insertParams)
+    );
+  }
+
   public async insertStubPermanentDataItem(
     insertParams: InsertStubPermanentDataItemParams
   ): Promise<void> {
-    return this.knex(tableNames.permanentDataItem).insert(
+    return this.knex(tableNames.permanentDataItems).insert(
       stubPermanentDataItemInsert(insertParams)
     );
   }
@@ -362,7 +390,7 @@ export class DbTestHelper {
     const dataItemTables: TableNameValues[] = [
       "new_data_item",
       "planned_data_item",
-      "permanent_data_item",
+      "permanent_data_items",
     ];
 
     const where =
@@ -374,6 +402,15 @@ export class DbTestHelper {
 
     await this.knex(tableName).where(where).del();
     expect((await this.knex(tableName).where(where)).length).to.equal(0);
+  }
+
+  public async getAndDeleteNewDataItemDbResultsByIds(
+    dataItemIds: TransactionId[]
+  ): Promise<NewDataItemDBResult[]> {
+    return this.db["writer"]<NewDataItemDBResult>(tableNames.newDataItem)
+      .whereIn(columnNames.dataItemId, dataItemIds)
+      .del() // delete test data from new_data_item as we query
+      .returning("*");
   }
 }
 
@@ -387,8 +424,14 @@ interface InsertStubNewDataItemParams {
 
 interface InsertStubPlannedDataItemParams
   extends Omit<InsertStubNewDataItemParams, "uploadedDate"> {
-  planId: PlanId;
+  planId?: PlanId;
   plannedDate?: string;
+}
+
+interface InsertStubFailedDataItemParams
+  extends Omit<InsertStubPlannedDataItemParams, "plannedDate"> {
+  failedDate?: string;
+  failedReason?: DataItemFailedReason;
 }
 
 interface InsertStubPermanentDataItemParams

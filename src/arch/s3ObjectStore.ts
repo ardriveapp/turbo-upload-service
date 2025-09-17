@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -18,91 +18,214 @@ import {
   CompleteMultipartUploadCommand,
   CompleteMultipartUploadCommandOutput,
   CopyObjectCommand,
+  CopyObjectCommandInput,
   CreateMultipartUploadCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   GetObjectOutput,
   HeadObjectCommand,
-  HeadObjectOutput,
   ListPartsCommand,
+  Part,
   PutObjectCommandInput,
   S3Client,
   UploadPartCommand,
   UploadPartCopyCommand,
 } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
-import { NodeHttpHandler } from "@aws-sdk/node-http-handler";
-import { AbortController } from "@smithy/abort-controller";
+import { ConfiguredRetryStrategy } from "@aws-sdk/util-retry";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
 import * as https from "https";
 import { Readable } from "multistream";
 import pLimit from "p-limit";
 import winston from "winston";
 
 import {
+  BundleHeaderInfo,
+  bundleHeaderInfoFromBuffer,
+} from "../bundles/assembleBundleHeader";
+import {
   payloadContentTypeS3MetaDataTag,
   payloadDataStartS3MetaDataTag,
 } from "../constants";
 import globalLogger from "../logger";
-import { UploadId } from "../types/types";
+import { PayloadInfo, UploadId } from "../types/types";
 import {
   InvalidChunk,
   InvalidChunkSize,
   MultiPartUploadNotFound,
 } from "../utils/errors";
+import { streamToBuffer } from "../utils/streamToBuffer";
 import {
   MoveObjectParams,
   ObjectStore,
   ObjectStoreOptions,
-  PayloadInfo,
 } from "./objectStore";
 
+const awsAccountId = process.env.AWS_ACCOUNT_ID;
+const awsCredentials =
+  process.env.AWS_ACCESS_KEY_ID !== undefined &&
+  process.env.AWS_SECRET_ACCESS_KEY !== undefined
+    ? {
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+        ...(process.env.AWS_SESSION_TOKEN
+          ? {
+              sessionToken: process.env.AWS_SESSION_TOKEN,
+            }
+          : {}),
+      }
+    : undefined;
+
+/* eslint-disable @typescript-eslint/no-explicit-any*/
 export const handleS3MultipartUploadError = (
   error: unknown,
   uploadId: UploadId
 ) => {
   const message = error instanceof Error ? error.message : "Unknown error.";
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  switch ((error as any).Code) {
-    case "NoSuchUpload":
-      throw new MultiPartUploadNotFound(uploadId);
-    case "NotFound":
-      throw new MultiPartUploadNotFound(uploadId);
-    case "InvalidArgument":
-      throw new InvalidChunk(message);
-    case "EntityTooSmall":
-      throw new InvalidChunkSize();
-    default:
-      throw error;
+  if (error && "Code" in (error as any)) {
+    switch ((error as any).Code) {
+      case "NoSuchUpload":
+        throw new MultiPartUploadNotFound(uploadId);
+      case "NotFound":
+        throw new MultiPartUploadNotFound(uploadId);
+      case "InvalidArgument":
+        throw new InvalidChunk(message);
+      case "EntityTooSmall":
+        throw new InvalidChunkSize();
+      default:
+        throw error;
+    }
+  } else {
+    // fallback to message parsing if AWS SDK does not provide an error code
+    switch (true) {
+      case message.includes("The specified upload does not exist"):
+        throw new MultiPartUploadNotFound(uploadId);
+      // TODO: other known AWS error messages that can happen outside of standard error codes
+      default:
+        throw error;
+    }
   }
 };
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+// Build a map of bucket regions to their respective clients based on env vars
+const endpoint = process.env.AWS_ENDPOINT;
+const forcePathStyle = process.env.S3_FORCE_PATH_STYLE;
+const maxRetryAttempts = +(process.env.S3_RETRY_MAX_ATTEMPTS ?? 5);
+const retryBaseDelayMs = +(process.env.S3_RETRY_BASE_DELAY_MS ?? 100);
+const defaultRetryStrategy = new ConfiguredRetryStrategy(
+  maxRetryAttempts,
+  (attempt: number) => retryBaseDelayMs * 2 ** attempt // exponential delay
+);
+type BucketRegion = string;
+const regionsToClients: Record<BucketRegion, S3Client> = {};
+
+[process.env.DATA_ITEM_BUCKET_REGION, process.env.BACKUP_BUCKET_REGION].forEach(
+  (region) => {
+    if (!region) return;
+    if (!regionsToClients[region]) {
+      regionsToClients[region] = new S3Client({
+        requestHandler: new NodeHttpHandler({
+          httpsAgent: new https.Agent({
+            keepAlive: true,
+            timeout: 60_000,
+          }),
+          connectionTimeout: 5_000,
+        }),
+        region,
+        retryStrategy: defaultRetryStrategy,
+        ...(endpoint
+          ? {
+              endpoint,
+            }
+          : {}),
+        ...(awsCredentials
+          ? {
+              credentials: awsCredentials,
+            }
+          : {}),
+        ...(forcePathStyle !== undefined
+          ? { forcePathStyle: forcePathStyle === "true" }
+          : {}),
+      });
+    }
+  }
+);
+
+// Build a map of bucket names to their respective regions based on env vars
+type BucketName = string;
+const bucketNameToRegionMap: Record<BucketName, BucketRegion> = {};
+if (process.env.DATA_ITEM_BUCKET) {
+  bucketNameToRegionMap[process.env.DATA_ITEM_BUCKET] =
+    process.env.DATA_ITEM_BUCKET_REGION ??
+    process.env.AWS_REGION ??
+    "us-east-1";
+}
+if (process.env.BACKUP_DATA_ITEM_BUCKET) {
+  bucketNameToRegionMap[process.env.BACKUP_DATA_ITEM_BUCKET] =
+    process.env.BACKUP_BUCKET_REGION ?? process.env.AWS_REGION ?? "us-east-1";
+}
+
+const defaultS3Client = new S3Client({
+  requestHandler: new NodeHttpHandler({
+    httpsAgent: new https.Agent({
+      keepAlive: true,
+      timeout: 60_000,
+    }),
+    connectionTimeout: 5_000,
+  }),
+  retryStrategy: defaultRetryStrategy,
+  region: process.env.AWS_REGION ?? "us-east-1",
+  ...(endpoint
+    ? {
+        endpoint,
+      }
+    : {}),
+  ...(awsCredentials
+    ? {
+        credentials: awsCredentials,
+      }
+    : {}),
+  ...(forcePathStyle !== undefined
+    ? { forcePathStyle: forcePathStyle === "true" }
+    : {}),
+});
+
+function s3ClientForBucket(bucketName: string): S3Client {
+  const region =
+    bucketNameToRegionMap[bucketName] ?? process.env.AWS_REGION ?? "us-east-1";
+  return regionsToClients[region] ?? defaultS3Client;
+}
 
 export class S3ObjectStore implements ObjectStore {
-  private s3: S3Client;
   private bucketName: string;
+  private backupBucketName: string | undefined;
   private logger: winston.Logger;
   private multipartCopyObjectLimitBytes = 1024 * 1024 * 1024 * 5; // 5GiB limit for AWS S3 `CopyObject` operation
   private multipartCopyParallelLimit = 10;
 
   constructor({
-    s3Client = new S3Client({
-      requestHandler: new NodeHttpHandler({
-        httpsAgent: new https.Agent({
-          keepAlive: true,
-          timeout: 0,
-        }),
-        requestTimeout: 0,
-      }),
-    }),
+    s3Client,
     // TODO: add otel tracer to track events
     bucketName,
+    backupBucketName,
     logger = globalLogger,
   }: {
     s3Client?: S3Client;
     bucketName: string;
+    backupBucketName?: string;
     logger?: winston.Logger;
   }) {
-    this.s3 = s3Client;
+    if (s3Client) {
+      if (typeof s3Client.config.region === "string") {
+        regionsToClients[s3Client.config.region] = s3Client;
+      } else {
+        // We can't await on the call to fetch the region here so just... do our best :(
+        regionsToClients[process.env.AWS_REGION ?? "us-east-1"] = s3Client;
+      }
+    }
     this.bucketName = bucketName;
+    this.backupBucketName = backupBucketName;
     this.logger = logger.child({
       bucketName: this.bucketName,
       objectStore: "S3ObjectStore",
@@ -111,12 +234,7 @@ export class S3ObjectStore implements ObjectStore {
 
   public async getObjectPayloadInfo(Key: string): Promise<PayloadInfo> {
     try {
-      const headObjectResponse: HeadObjectOutput = await this.s3.send(
-        new HeadObjectCommand({
-          Key,
-          Bucket: this.bucketName,
-        })
-      );
+      const headObjectResponse = await this.headObject(Key);
 
       if (!headObjectResponse.Metadata) {
         throw Error("No object found");
@@ -151,7 +269,7 @@ export class S3ObjectStore implements ObjectStore {
     const params: PutObjectCommandInput = {
       Key,
       Body,
-      ...this.s3CommandParamsFromOptions(Options),
+      ...this.s3CommandParamsFromOptions(Options, this.bucketName),
     };
 
     const controller = new AbortController();
@@ -168,7 +286,7 @@ export class S3ObjectStore implements ObjectStore {
 
     // In order to upload streams, must use Upload instead of PutObjectCommand
     const putObject = new Upload({
-      client: this.s3,
+      client: s3ClientForBucket(this.bucketName),
       params,
       queueSize: 1, // forces synchronous uploads
       abortController: controller,
@@ -200,14 +318,22 @@ export class S3ObjectStore implements ObjectStore {
 
   public async createMultipartUpload(Key: string): Promise<string> {
     try {
+      let Metadata;
+      if (awsAccountId) {
+        Metadata = {
+          uploader: awsAccountId,
+        };
+      }
+
       // Step 1: Start the multipart upload and get the upload ID
       const newUploadCommand = new CreateMultipartUploadCommand({
         Bucket: this.bucketName,
         Key,
+        Metadata,
       });
-      const createMultipartUploadResponse = await this.s3.send(
-        newUploadCommand
-      );
+      const createMultipartUploadResponse = await s3ClientForBucket(
+        this.bucketName
+      ).send(newUploadCommand);
       const uploadId = createMultipartUploadResponse.UploadId;
 
       if (!uploadId) {
@@ -227,24 +353,38 @@ export class S3ObjectStore implements ObjectStore {
     partNumber: number,
     ContentLength: number
   ): Promise<string> {
-    try {
-      this.logger.debug("Uploading part", {
-        Key,
-        uploadId,
-        partNumber,
-        ContentLength,
-      });
+    this.logger.debug("Uploading part", {
+      Key,
+      uploadId,
+      partNumber,
+      ContentLength,
+    });
 
+    const attemptUploadPart = async (bucketName: string) => {
       const uploadPartCommand = new UploadPartCommand({
         UploadId: uploadId,
-        Bucket: this.bucketName,
+        Bucket: bucketName,
         Key,
         Body,
         PartNumber: partNumber,
         ContentLength,
       });
+      return await s3ClientForBucket(bucketName).send(uploadPartCommand);
+    };
+    try {
+      const uploadResponse = await attemptUploadPart(this.bucketName).catch(
+        async (error) => {
+          if (
+            error instanceof Error &&
+            error.name === "NoSuchUpload" &&
+            this.backupBucketName
+          ) {
+            return await attemptUploadPart(this.backupBucketName);
+          }
+          throw error;
+        }
+      );
 
-      const uploadResponse = await this.s3.send(uploadPartCommand);
       if (!uploadResponse.ETag) {
         throw Error("No ETag returned from S3");
       }
@@ -257,28 +397,73 @@ export class S3ObjectStore implements ObjectStore {
   }
 
   public async completeMultipartUpload(Key: string, uploadId: UploadId) {
-    try {
-      this.logger.debug("Completing multipart upload", { Key, uploadId });
+    this.logger.debug("Completing multipart upload", { Key, uploadId });
 
-      const partsCom = new ListPartsCommand({
-        Bucket: this.bucketName,
-        Key,
-        UploadId: uploadId,
-      });
-      const partsS3 = await this.s3.send(partsCom);
+    const attemptCompleteMultipartUpload = async (bucketName: string) => {
+      let parts: Part[] = [];
+      let partNumberMarker: string | undefined = undefined;
+
+      // Bounded upper limit of loops. AWS only allows 10,000 Parts, 1000 per List Command
+      const maxLoops = 10;
+
+      for (let i = 0; i < maxLoops; i++) {
+        const partsCommand = new ListPartsCommand({
+          Bucket: bucketName,
+          Key,
+          UploadId: uploadId,
+          PartNumberMarker: partNumberMarker,
+          MaxParts: 1000,
+        }) as ListPartsCommand;
+
+        const res = await s3ClientForBucket(bucketName).send(partsCommand);
+
+        if (res.Parts?.length) {
+          parts = [...parts, ...res.Parts];
+        }
+
+        if (!res.IsTruncated) {
+          break; // no more pages
+        }
+
+        if (i === maxLoops - 1 && res.IsTruncated) {
+          // Edge case: too many parts. Throw an error that explains the situation
+          throw new Error(
+            "ListParts pagination exceeded safety cap (possible >10,000 parts or bad pagination)."
+          );
+        }
+
+        partNumberMarker = res.NextPartNumberMarker;
+      }
 
       const completeMultipartUploadCommand = new CompleteMultipartUploadCommand(
         {
-          Bucket: this.bucketName,
+          Bucket: bucketName,
           Key,
           UploadId: uploadId,
           MultipartUpload: {
-            Parts: partsS3.Parts,
+            Parts: parts,
           },
         }
       );
 
-      const uploadResponse = await this.s3.send(completeMultipartUploadCommand);
+      return await s3ClientForBucket(bucketName).send(
+        completeMultipartUploadCommand
+      );
+    };
+
+    try {
+      const uploadResponse = await attemptCompleteMultipartUpload(
+        this.bucketName
+      ).catch(async (error) => {
+        if (
+          error instanceof Error &&
+          error.name === "NoSuchUpload" &&
+          this.backupBucketName
+        ) {
+          return await attemptCompleteMultipartUpload(this.backupBucketName);
+        }
+        throw error;
+      });
       if (!uploadResponse.ETag) {
         throw Error("No ETag returned from S3");
       }
@@ -303,17 +488,40 @@ export class S3ObjectStore implements ObjectStore {
       Bucket: this.bucketName,
     });
 
-    try {
-      const getObjectResponse: GetObjectOutput = await this.s3.send(
+    const attemptGetObject = async (
+      bucketName: string
+    ): Promise<GetObjectOutput> => {
+      const getObjectResponse = await s3ClientForBucket(bucketName).send(
         new GetObjectCommand({
           Key,
-          Bucket: this.bucketName,
+          Bucket: bucketName,
           Range,
         })
       );
       if (!getObjectResponse.Body) {
         throw Error("No object found");
       }
+      return getObjectResponse;
+    };
+
+    try {
+      const getObjectResponse = await attemptGetObject(this.bucketName).catch(
+        async (error) => {
+          if (
+            error instanceof Error &&
+            ["NoSuchKey", "AccessDenied"].includes(error.name) &&
+            this.backupBucketName
+          ) {
+            return await attemptGetObject(this.backupBucketName);
+          }
+          throw error;
+        }
+      );
+
+      if (!getObjectResponse.Body) {
+        throw Error("No object found");
+      }
+
       const readableStream = getObjectResponse.Body as Readable;
       return {
         readable: readableStream.on("error", (err: Error) => {
@@ -332,29 +540,14 @@ export class S3ObjectStore implements ObjectStore {
       Key,
       Bucket: this.bucketName,
     });
-    const getHeadResponse: HeadObjectOutput = await this.s3.send(
-      new HeadObjectCommand({
-        Key,
-        Bucket: this.bucketName,
-      })
-    );
+    const getHeadResponse = await this.headObject(Key);
     return getHeadResponse.ContentLength ?? 0;
   }
 
-  public async removeObject(Key: string): Promise<void> {
-    this.logger.debug(`Deleting S3 object...`, {
-      Key,
-      Bucket: this.bucketName,
-    });
-    await this.s3.send(
-      new DeleteObjectCommand({
-        Bucket: this.bucketName,
-        Key,
-      })
-    );
-  }
-
-  private s3CommandParamsFromOptions(Options: ObjectStoreOptions): {
+  private s3CommandParamsFromOptions(
+    Options: ObjectStoreOptions,
+    bucket: string
+  ): {
     Bucket: string;
     ContentType?: string;
     ContentLength?: number;
@@ -362,16 +555,25 @@ export class S3ObjectStore implements ObjectStore {
   } {
     const { contentType, contentLength, payloadInfo } = Options;
 
+    const Metadata: Record<string, string> = {};
+    if (payloadInfo) {
+      Metadata[
+        payloadDataStartS3MetaDataTag
+      ] = `${payloadInfo.payloadDataStart}`;
+      Metadata[payloadContentTypeS3MetaDataTag] =
+        payloadInfo.payloadContentType;
+    }
+    if (awsAccountId) {
+      Metadata.uploader = awsAccountId;
+    }
+
     return {
-      Bucket: this.bucketName,
+      Bucket: bucket,
       ...(contentType ? { ContentType: contentType } : {}),
       ...(contentLength ? { ContentLength: contentLength } : {}),
-      ...(payloadInfo
+      ...(Metadata
         ? {
-            Metadata: {
-              [payloadDataStartS3MetaDataTag]: `${payloadInfo.payloadDataStart}`,
-              [payloadContentTypeS3MetaDataTag]: payloadInfo.payloadContentType,
-            },
+            Metadata,
           }
         : {}),
     };
@@ -382,29 +584,32 @@ export class S3ObjectStore implements ObjectStore {
     destinationKey,
     Options,
   }: MoveObjectParams): Promise<void> {
-    const params = {
-      ...this.s3CommandParamsFromOptions(Options),
-      CopySource: `${this.bucketName}/${sourceKey}`,
-      Key: destinationKey,
-      MetadataDirective: "REPLACE",
-    };
-
-    const fnLogger = this.logger.child({
+    const destinationBucketName = this.bucketName;
+    let fnLogger = this.logger.child({
       sourceKey,
       destinationKey,
-      bucket: this.bucketName,
+      destinationBucketName,
     });
 
-    fnLogger.debug(`Moving S3 object...`, {
-      ...params,
-    });
+    const attemptMoveObject = async (sourceBucketName: string) => {
+      fnLogger = fnLogger.child({ sourceBucketName });
+      const params: CopyObjectCommandInput = {
+        ...this.s3CommandParamsFromOptions(Options, destinationBucketName),
+        CopySource: `${sourceBucketName}/${encodeURIComponent(sourceKey)}`,
+        Key: destinationKey,
+        MetadataDirective: "REPLACE",
+      };
 
-    try {
+      fnLogger.debug(`Moving S3 object...`, {
+        ...params,
+      });
       const headRequest = new HeadObjectCommand({
-        Bucket: this.bucketName,
+        Bucket: sourceBucketName,
         Key: sourceKey,
       });
-      const headResponse = await this.s3.send(headRequest);
+      const headResponse = await s3ClientForBucket(sourceBucketName).send(
+        headRequest
+      );
       const startTime = Date.now();
       if (
         headResponse.ContentLength &&
@@ -416,29 +621,45 @@ export class S3ObjectStore implements ObjectStore {
         await this.copyLargeObject({
           contentLength: headResponse.ContentLength,
           partSize: this.multipartCopyObjectLimitBytes,
+          sourceBucketName,
           sourceKey,
+          destinationBucketName,
           destinationKey,
         });
       } else {
         fnLogger.debug(`Copying object directly to source bucket`, {
           contentLength: headResponse.ContentLength,
         });
-        await this.s3.send(new CopyObjectCommand(params));
+        await s3ClientForBucket(destinationBucketName).send(
+          new CopyObjectCommand(params)
+        );
       }
       fnLogger.debug("Successfully copied object...", {
         contentLength: headResponse.ContentLength,
         durationMs: Date.now() - startTime,
       });
       // delete object after copying
-      await this.s3.send(
+      await s3ClientForBucket(sourceBucketName).send(
         new DeleteObjectCommand({
-          Bucket: this.bucketName,
+          Bucket: sourceBucketName,
           Key: sourceKey,
         })
       );
       fnLogger.debug(`Moved S3 object!`, {
         sourceKey,
         destinationKey,
+      });
+    };
+    try {
+      await attemptMoveObject(this.bucketName).catch(async (error) => {
+        if (
+          error instanceof Error &&
+          error.name === "NotFound" &&
+          this.backupBucketName
+        ) {
+          return await attemptMoveObject(this.backupBucketName);
+        }
+        throw error;
       });
     } catch (error) {
       fnLogger.error(`Failed to move object!`, {
@@ -457,13 +678,20 @@ export class S3ObjectStore implements ObjectStore {
       partNumber: number;
     }[]
   > {
-    try {
+    const attemptGetMultipartUploadParts = async (
+      bucketName: string
+    ): Promise<
+      {
+        size: number;
+        partNumber: number;
+      }[]
+    > => {
       const getPartsCommand = new ListPartsCommand({
-        Bucket: this.bucketName,
+        Bucket: bucketName,
         Key,
         UploadId: uploadId,
       });
-      const partsS3 = await this.s3.send(getPartsCommand);
+      const partsS3 = await s3ClientForBucket(bucketName).send(getPartsCommand);
       if (!partsS3.Parts) {
         return [];
       }
@@ -479,6 +707,21 @@ export class S3ObjectStore implements ObjectStore {
         };
       });
       return parts;
+    };
+
+    try {
+      return attemptGetMultipartUploadParts(this.bucketName).catch(
+        async (error) => {
+          if (
+            error instanceof Error &&
+            error.name === "NoSuchUpload" &&
+            this.backupBucketName
+          ) {
+            return await attemptGetMultipartUploadParts(this.backupBucketName);
+          }
+          throw error;
+        }
+      );
     } catch (error) {
       this.logger.debug("Failed to get multipart upload chunks!", {
         error,
@@ -493,24 +736,38 @@ export class S3ObjectStore implements ObjectStore {
   private async copyLargeObject({
     contentLength,
     partSize,
+    sourceBucketName,
     sourceKey,
+    destinationBucketName,
     destinationKey,
   }: {
     contentLength: number;
     partSize: number;
+    sourceBucketName: string;
     sourceKey: string;
+    destinationBucketName: string;
     destinationKey: string;
   }): Promise<CompleteMultipartUploadCommandOutput> {
+    let Metadata;
+    if (awsAccountId) {
+      Metadata = {
+        uploader: awsAccountId,
+      };
+    }
+
     // Start the multipart upload to get the upload ID
     const createCommand = new CreateMultipartUploadCommand({
-      Bucket: this.bucketName,
+      Bucket: destinationBucketName,
       Key: destinationKey,
+      Metadata,
     });
-    const { UploadId } = await this.s3.send(createCommand);
+    const { UploadId } = await s3ClientForBucket(destinationBucketName).send(
+      createCommand
+    );
     const fnLogger = this.logger.child({
       sourceKey,
       destinationKey,
-      bucket: this.bucketName,
+      bucket: destinationBucketName,
       contentLength,
       uploadId: UploadId,
       partSize,
@@ -531,8 +788,8 @@ export class S3ObjectStore implements ObjectStore {
         contentLength - 1
       )}`;
       const uploadPartCopyCommand = new UploadPartCopyCommand({
-        Bucket: this.bucketName,
-        CopySource: `${this.bucketName}/${sourceKey}`,
+        Bucket: destinationBucketName,
+        CopySource: `${sourceBucketName}/${encodeURIComponent(sourceKey)}`,
         Key: destinationKey,
         PartNumber: partNumber,
         UploadId,
@@ -546,7 +803,9 @@ export class S3ObjectStore implements ObjectStore {
           fnLogger.debug("Copying part of large object...", {
             ...uploadPartCommand,
           });
-          return this.s3.send(uploadPartCommand);
+          return s3ClientForBucket(destinationBucketName).send(
+            uploadPartCommand
+          );
         })
       )
     );
@@ -559,38 +818,64 @@ export class S3ObjectStore implements ObjectStore {
 
     // Complete the multipart upload
     const completeCommand = new CompleteMultipartUploadCommand({
-      Bucket: this.bucketName,
+      Bucket: destinationBucketName,
       Key: destinationKey,
       UploadId,
       MultipartUpload: { Parts: partTags },
     });
     fnLogger.debug("Completing large object copy...");
-    return this.s3.send(completeCommand);
+    return s3ClientForBucket(destinationBucketName).send(completeCommand);
   }
 
   public async headObject(Key: string): Promise<{
     etag: string | undefined;
     ContentLength: number;
     ContentType: string | undefined;
+    Metadata: Record<string, string> | undefined;
   }> {
     this.logger.debug(`Heading S3 object...`, {
       Key,
       Bucket: this.bucketName,
     });
-    const {
-      ETag: etag,
-      ContentLength,
-      ContentType,
-    } = await this.s3.send(
-      new HeadObjectCommand({
-        Bucket: this.bucketName,
-        Key,
-      })
-    );
-    return {
-      etag,
-      ContentLength: ContentLength ?? 0,
-      ContentType,
+
+    const attemptHeadObject = async (bucketName: string) => {
+      const headObjectResponse = await s3ClientForBucket(bucketName).send(
+        new HeadObjectCommand({
+          Bucket: bucketName,
+          Key,
+        })
+      );
+      if (!headObjectResponse.ETag) {
+        throw Error("No ETag returned from S3");
+      }
+      return {
+        etag: headObjectResponse.ETag,
+        ContentLength: headObjectResponse.ContentLength ?? 0,
+        ContentType: headObjectResponse.ContentType,
+        Metadata: headObjectResponse.Metadata,
+      };
     };
+
+    return await attemptHeadObject(this.bucketName).catch(async (error) => {
+      if (
+        error instanceof Error &&
+        error.name === "NotFound" &&
+        this.backupBucketName
+      ) {
+        return await attemptHeadObject(this.backupBucketName);
+      }
+      throw error;
+    });
+  }
+
+  public async getBundleHeaderInfo(
+    Key: string,
+    range: string
+  ): Promise<BundleHeaderInfo> {
+    const stream = await this.getObject(Key, range).then(
+      ({ readable }) => readable
+    );
+    const buffer = await streamToBuffer(stream);
+    return bundleHeaderInfoFromBuffer(buffer);
   }
 }

@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -33,7 +33,10 @@ export type Signature = Buffer;
 export type DataStart = number;
 export type BlockHeight = number;
 
-export type FailedReason = "not_found" | "failed_to_post";
+export type BundleFailedReason = "not_found" | "failed_to_post";
+export type DataItemFailedReason =
+  | "missing_from_object_store"
+  | "too_many_failures";
 
 export type ContentType = string;
 
@@ -50,6 +53,7 @@ export interface NewDataItem {
   payloadContentType?: ContentType;
   payloadDataStart?: DataStart;
   signature?: Signature;
+  deadlineHeight?: BlockHeight;
 }
 export type PostedNewDataItem = Required<NewDataItem>;
 
@@ -62,6 +66,11 @@ export interface PermanentDataItem extends Omit<PlannedDataItem, "signature"> {
   bundleId: TransactionId;
   permanentDate: Timestamp;
   blockHeight: BlockHeight;
+}
+
+export interface FailedDataItem extends PlannedDataItem {
+  failedDate: Timestamp;
+  failedReason: DataItemFailedReason;
 }
 
 export interface BundlePlan {
@@ -98,7 +107,7 @@ export interface SeededBundle extends PostedBundle {
 
 export interface FailedBundle extends SeededBundle {
   failedDate: Timestamp;
-  failedReason?: FailedReason;
+  failedReason?: BundleFailedReason;
 }
 
 export interface PermanentBundle extends SeededBundle {
@@ -152,6 +161,7 @@ export interface NewDataItemDBInsert extends NewDataItemDB {
   content_type: string;
   premium_feature_type: string;
   signature: Buffer;
+  deadline_height: string;
 }
 
 export type RePackDataItemDbInsert = NewDataItemDB & {
@@ -172,6 +182,7 @@ export interface NewDataItemDBResult extends NewDataItemDB {
   content_type: string | null;
   premium_feature_type: string | null;
   signature: Buffer | null;
+  deadline_height: string | null;
 }
 
 export interface PlannedDataItemDBInsert extends NewDataItemDBResult {
@@ -182,14 +193,36 @@ export interface PlannedDataItemDBInsert extends NewDataItemDBResult {
 
 export type PlannedDataItemDBResult = PlannedDataItemDBInsert;
 
-export interface PermanentDataItemDBInsert
-  extends Omit<PlannedDataItemDBResult, "signature"> {
-  block_height: string;
+export type PermanentDataItemDBInsert = {
+  data_item_id: string;
+  owner_public_address: string;
+  byte_count: string;
+  uploaded_date: string;
+  assessed_winston_price: string;
+  plan_id: string;
+  planned_date: string;
   bundle_id: string;
+
+  block_height: number;
+
+  data_start: number | null;
+  signature_type: number | null;
+  failed_bundles: string | null;
+  content_type: string | null;
+  premium_feature_type: string | null;
+  deadline_height: number | null;
+};
+
+export type PermanentDataItemDBResult = PermanentDataItemDBInsert & {
+  permanent_date: string;
+};
+
+export interface FailedDataItemDBInsert extends PlannedDataItemDBResult {
+  failed_reason: DataItemFailedReason;
 }
 
-export interface PermanentDataItemDBResult extends PermanentDataItemDBInsert {
-  permanent_date: string;
+export interface FailedDataItemDBResult extends FailedDataItemDBInsert {
+  failed_date: string;
 }
 
 export interface BundlePlanDBInsert {
@@ -297,6 +330,7 @@ export type FinishedMultiPartUploadDBResult = FinishedMultiPartUploadDBInsert;
 export interface InFlightMultiPartUploadParams {
   uploadId: UploadId;
   uploadKey: string;
+  chunkSize?: number;
 }
 
 export interface InFlightMultiPartUpload {
@@ -314,4 +348,14 @@ export interface FinishedMultiPartUpload extends InFlightMultiPartUpload {
   etag: string;
 }
 
-export type MultipartUploadFailedReason = "INVALID" | "UNDERFUNDED";
+export type MultipartUploadFailedReason =
+  | "INVALID"
+  | "UNDERFUNDED"
+  | "APPROVAL_FAILED"
+  | "REVOKE_FAILED";
+
+export type DataItemDbResults =
+  | NewDataItemDBResult
+  | PlannedDataItemDBResult
+  | PermanentDataItemDBResult
+  | FailedDataItemDBResult;

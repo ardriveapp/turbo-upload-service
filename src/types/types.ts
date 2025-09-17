@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -14,11 +14,12 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-import { Tag } from "arbundles";
+import { Tag } from "@dha-team/arbundles";
 import { CreateTransactionInterface } from "arweave/node/common";
 
 export type Base64String = string;
 export type PublicArweaveAddress = Base64String;
+export type NativeAddress = string;
 export type TransactionId = Base64String;
 export type DataItemId = TransactionId;
 export type UploadId = string;
@@ -41,3 +42,36 @@ export type ParsedDataItemHeader = {
   dataOffset: number;
   dataSize: number;
 };
+
+export interface PayloadInfo {
+  payloadDataStart: number;
+  payloadContentType: string;
+}
+
+export interface SigInfo {
+  signatureLength: number;
+  pubkeyLength: number;
+  name: string;
+}
+
+export enum SignatureConfig {
+  ARWEAVE = 1,
+  ED25519,
+  ETHEREUM,
+  SOLANA,
+  INJECTEDAPTOS = 5,
+  MULTIAPTOS = 6,
+  TYPEDETHEREUM = 7,
+  KYVE = 101,
+}
+
+export interface DataItemOffsetsInfo {
+  dataItemId: TransactionId;
+  rawContentLength: number;
+  payloadContentType: string;
+  payloadDataStart: number;
+  rootBundleId?: TransactionId;
+  startOffsetInRootBundle?: number;
+  parentDataItemId?: TransactionId;
+  startOffsetInParentDataItemPayload?: number;
+}

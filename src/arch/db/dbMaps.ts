@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -16,8 +16,11 @@
  */
 import { defaultPremiumFeatureType } from "../../constants";
 import {
+  DataItemFailedReason,
   FailedBundle,
   FailedBundleDBResult,
+  FailedDataItem,
+  FailedDataItemDBResult,
   NewBundle,
   NewBundleDBResult,
   NewDataItem,
@@ -108,6 +111,7 @@ export function newDataItemDbResultToNewDataItemMap({
   content_type,
   premium_feature_type,
   signature,
+  deadline_height,
 }: NewDataItemDBResult): NewDataItem {
   return {
     assessedWinstonPrice: W(assessed_winston_price),
@@ -121,6 +125,7 @@ export function newDataItemDbResultToNewDataItemMap({
     payloadDataStart: data_start ?? undefined,
     payloadContentType: content_type ?? undefined,
     signature: signature ?? undefined,
+    deadlineHeight: deadline_height ? +deadline_height : undefined,
   };
 }
 
@@ -150,6 +155,7 @@ export function permanentDataItemDbResultToPermanentDataItemMap({
   bundle_id,
   permanent_date,
   block_height,
+  deadline_height,
 }: PermanentDataItemDBResult): PermanentDataItem {
   return {
     assessedWinstonPrice: W(assessed_winston_price),
@@ -166,6 +172,45 @@ export function permanentDataItemDbResultToPermanentDataItemMap({
     plannedDate: planned_date,
     bundleId: bundle_id,
     permanentDate: permanent_date,
-    blockHeight: +block_height,
+    blockHeight: block_height,
+    deadlineHeight: deadline_height ? deadline_height : undefined,
+  };
+}
+
+export function failedDataItemDbResultToFailedDataItemMap({
+  assessed_winston_price,
+  byte_count,
+  data_item_id,
+  owner_public_address,
+  uploaded_date,
+  data_start,
+  failed_bundles,
+  signature_type,
+  content_type,
+  premium_feature_type,
+  plan_id,
+  planned_date,
+  deadline_height,
+  failed_date,
+  failed_reason,
+  signature,
+}: FailedDataItemDBResult): FailedDataItem {
+  return {
+    assessedWinstonPrice: W(assessed_winston_price),
+    dataItemId: data_item_id,
+    ownerPublicAddress: owner_public_address,
+    byteCount: +byte_count,
+    uploadedDate: uploaded_date,
+    premiumFeatureType: premium_feature_type ?? defaultPremiumFeatureType,
+    failedBundles: failed_bundles ? failed_bundles.split(",") : [],
+    signatureType: signature_type ?? undefined,
+    payloadDataStart: data_start ?? undefined,
+    payloadContentType: content_type ?? undefined,
+    signature: signature ?? undefined,
+    planId: plan_id,
+    plannedDate: planned_date,
+    deadlineHeight: deadline_height ? +deadline_height : undefined,
+    failedDate: failed_date,
+    failedReason: failed_reason as DataItemFailedReason,
   };
 }

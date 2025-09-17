@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -21,18 +21,19 @@ import { PostgresDatabase } from "../arch/db/postgres";
 import { ObjectStore } from "../arch/objectStore";
 import { PaymentService, TurboPaymentService } from "../arch/payment";
 import { createQueueHandler, enqueue } from "../arch/queues";
-import { gatewayUrl } from "../constants";
+import { gatewayUrl, jobLabels } from "../constants";
 import defaultLogger from "../logger";
 import { MetricRegistry } from "../metricRegistry";
-import { PlanId } from "../types/dbTypes";
+import { NewBundle, PlanId } from "../types/dbTypes";
 import { Winston } from "../types/winston";
-import { ownerToAddress } from "../utils/base64";
+import { ownerToNormalizedB64Address } from "../utils/base64";
+import { BundlePlanExistsInAnotherStateWarning } from "../utils/errors";
 import { getBundleTx, getS3ObjectStore } from "../utils/objectStoreUtils";
 
 interface PostBundleJobInjectableArch {
   database?: Database;
   objectStore?: ObjectStore;
-  gateway?: Gateway;
+  arweaveGateway?: Gateway;
   paymentService?: PaymentService;
 }
 
@@ -41,14 +42,24 @@ export async function postBundleHandler(
   {
     database = new PostgresDatabase(),
     objectStore = getS3ObjectStore(),
-    gateway = new ArweaveGateway({
+    arweaveGateway = new ArweaveGateway({
       endpoint: gatewayUrl,
     }),
     paymentService = new TurboPaymentService(),
   }: PostBundleJobInjectableArch,
   logger = defaultLogger.child({ job: "post-bundle-job", planId })
 ) {
-  const dbNextBundle = await database.getNextBundleToPostByPlanId(planId);
+  let dbNextBundle: NewBundle;
+  try {
+    dbNextBundle = await database.getNextBundleToPostByPlanId(planId);
+  } catch (error) {
+    if (error instanceof BundlePlanExistsInAnotherStateWarning) {
+      logger.warn(error.message);
+      return;
+    }
+    logger.error("Failed to get next bundle to post.", { error });
+    throw error;
+  }
   const { bundleId, transactionByteCount } = dbNextBundle;
 
   logger.info(`Posting bundle.`, {
@@ -65,7 +76,10 @@ export async function postBundleHandler(
 
   try {
     // post bundle, throw error on failure
-    const transactionPostResponseData = await gateway.postBundleTx(bundleTx);
+    const [transactionPostResponseData] = await Promise.all([
+      arweaveGateway.postBundleTx(bundleTx),
+      arweaveGateway.postBundleTxToAdminQueue(bundleTx.id),
+    ]);
 
     // fetch AR rate - but don't throw on failure
     const usdToArRate = await paymentService
@@ -85,7 +99,7 @@ export async function postBundleHandler(
     });
 
     await database.insertPostedBundle({ bundleId, usdToArRate });
-    await enqueue("seed-bundle", { planId });
+    await enqueue(jobLabels.seedBundle, { planId });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error.";
     logger.error("Post Bundle Job has failed!", {
@@ -93,8 +107,8 @@ export async function postBundleHandler(
       error: message,
     });
 
-    const balance = await gateway.getBalanceForWallet(
-      ownerToAddress(bundleTx.owner)
+    const balance = await arweaveGateway.getBalanceForWallet(
+      ownerToNormalizedB64Address(bundleTx.owner)
     );
 
     if (new Winston(bundleTx.reward).isGreaterThan(balance)) {
@@ -112,7 +126,7 @@ export async function postBundleHandler(
   }
 }
 export const handler = createQueueHandler(
-  "post-bundle",
+  jobLabels.postBundle,
   (message) => postBundleHandler(message.planId, defaultArchitecture),
   {
     before: async () => {

@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -25,10 +25,14 @@ import {
 import { writeFile } from "fs/promises";
 import { Readable } from "stream";
 
+import {
+  BundleHeaderInfo,
+  bundleHeaderInfoFromBuffer,
+} from "../bundles/assembleBundleHeader";
 import logger from "../logger";
-import { TransactionId, UploadId } from "../types/types";
-import { cleanUpTempFile } from "../utils/common";
-import { MoveObjectParams, ObjectStore, PayloadInfo } from "./objectStore";
+import { PayloadInfo, UploadId } from "../types/types";
+import { streamToBuffer } from "../utils/streamToBuffer";
+import { MoveObjectParams, ObjectStore } from "./objectStore";
 
 const localDirectories = [
   "temp",
@@ -117,10 +121,6 @@ export class FileSystemObjectStore implements ObjectStore {
     throw new Error("Method not implemented.");
   }
 
-  public async removeObject(dataItemTxId: TransactionId) {
-    return cleanUpTempFile(`temp/${dataItemTxId}`);
-  }
-
   /* eslint-disable @typescript-eslint/no-unused-vars */
   // multipart uploads
   public async createMultipartUpload(_Key: string): Promise<string> {
@@ -189,6 +189,17 @@ export class FileSystemObjectStore implements ObjectStore {
       ContentType: "application/octet-stream", // TODO: undefined better?
     };
   }
+
+  public async getBundleHeaderInfo(
+    Key: string,
+    range: string
+  ): Promise<BundleHeaderInfo> {
+    const stream = await this.getObject(Key, range).then(
+      ({ readable }) => readable
+    );
+    const buffer = await streamToBuffer(stream);
+    return bundleHeaderInfoFromBuffer(buffer);
+  }
 }
 
 function calculateMD5(readStream: ReadStream): Promise<string> {
@@ -196,7 +207,7 @@ function calculateMD5(readStream: ReadStream): Promise<string> {
     // Create a hash object
     const hash = createHash("md5");
 
-    readStream.on("data", (data: any) => {
+    readStream.on("data", (data) => {
       // Update hash with data chunk
       hash.update(data);
     });
@@ -207,7 +218,7 @@ function calculateMD5(readStream: ReadStream): Promise<string> {
       resolve(md5);
     });
 
-    readStream.on("error", (err: any) => {
+    readStream.on("error", (err) => {
       // Reject the promise on error
       reject(err);
     });

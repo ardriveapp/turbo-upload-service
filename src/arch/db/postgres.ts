@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2022-2023 Permanent Data Solutions, Inc. All Rights Reserved.
+ * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -15,7 +15,6 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 import knex, { Knex } from "knex";
-import pLimit from "p-limit";
 import path from "path";
 import winston from "winston";
 
@@ -23,16 +22,21 @@ import {
   batchingSize,
   failedReasons,
   maxDataItemsPerBundle,
+  retryLimitForFailedDataItems,
 } from "../../constants";
 import logger from "../../logger";
+import { MetricRegistry } from "../../metricRegistry";
 import {
   BundlePlanDBResult,
+  DataItemDbResults,
+  DataItemFailedReason,
   FailedBundleDbInsert,
+  FailedDataItemDBInsert,
+  FailedDataItemDBResult,
   FinishedMultiPartUpload,
   FinishedMultiPartUploadDBInsert,
   FinishedMultiPartUploadDBResult,
   InFlightMultiPartUpload,
-  InFlightMultiPartUploadDBInsert,
   InFlightMultiPartUploadDBResult,
   InFlightMultiPartUploadParams,
   InsertNewBundleParams,
@@ -58,7 +62,14 @@ import {
   SeededBundle,
   SeededBundleDBResult,
 } from "../../types/dbTypes";
-import { TransactionId, UploadId, W, Winston } from "../../types/types";
+import {
+  DataItemId,
+  TransactionId,
+  UploadId,
+  W,
+  Winston,
+} from "../../types/types";
+import { isValidArweaveBase64URL } from "../../utils/base64";
 import { generateArrayChunks } from "../../utils/common";
 import {
   BundlePlanExistsInAnotherStateWarning,
@@ -115,7 +126,9 @@ export class PostgresDatabase implements Database {
       dataItem: restOfNewDataItem,
     });
 
-    if (await this.dataItemExists(newDataItem.dataItemId)) {
+    if (
+      (await this.getExistingDataItemIds([newDataItem.dataItemId])).size > 0
+    ) {
       throw new DataItemExistsWarning(newDataItem.dataItemId);
     }
 
@@ -140,31 +153,161 @@ export class PostgresDatabase implements Database {
     return;
   }
 
-  private async dataItemExists(data_item_id: TransactionId): Promise<boolean> {
-    return this.reader.transaction(async (knexTransaction) => {
-      const dataItemResults = await Promise.all([
-        knexTransaction<NewDataItemDBResult>(tableNames.newDataItem).where({
-          data_item_id,
-        }),
-        knexTransaction<PlannedDataItemDBResult>(
-          tableNames.plannedDataItem
-        ).where({
-          data_item_id,
-        }),
-        knexTransaction<PermanentDataItemDBResult>(
-          tableNames.permanentDataItem
-        ).where({
-          data_item_id,
-        }),
-      ]);
+  private dataItemTables = [
+    tableNames.newDataItem,
+    tableNames.plannedDataItem,
+    tableNames.permanentDataItems,
+    tableNames.failedDataItem,
+  ] as const;
 
-      for (const result of dataItemResults) {
-        if (result.length > 0) {
-          return true;
-        }
-      }
-      return false;
+  private async getExistingDataItemIds(
+    dataItemIds: TransactionId[]
+  ): Promise<Set<TransactionId>> {
+    const [
+      existingNewIds,
+      existingPlannedIds,
+      existingPermanentIds,
+      existingFailedIds,
+    ] = await Promise.all(
+      this.dataItemTables.map((tableName) =>
+        this.reader<DataItemDbResults>(tableName)
+          .whereIn(columnNames.dataItemId, dataItemIds)
+          .andWhereRaw(
+            `${columnNames.uploadedDate} > NOW() - interval '30 days'`
+          )
+          .select(columnNames.dataItemId)
+          .then((results) => results.map((r) => r.data_item_id))
+      )
+    );
+
+    // Delete any failed data items, as this read is checking before a re-insert
+    if (existingFailedIds.length > 0) {
+      this.log.warn(
+        "Data items already exist in database as failed! Removing from database to retry...",
+        { existingFailedIds }
+      );
+      await this.writer(tableNames.failedDataItem)
+        .whereIn(columnNames.dataItemId, existingFailedIds)
+        .del();
+    }
+
+    return new Set([
+      ...existingNewIds,
+      ...existingPlannedIds,
+      ...existingPermanentIds,
+    ]);
+  }
+
+  public async insertNewDataItemBatch(
+    dataItemBatch: PostedNewDataItem[]
+  ): Promise<void> {
+    this.log.debug("Inserting new data item batch...", {
+      dataItemBatch,
     });
+    // Dedupe any data items duplicated within a batch by dataItemId
+    const seenDataItemIds = new Set<string>();
+    dataItemBatch = dataItemBatch.filter((newDataItem) => {
+      if (seenDataItemIds.has(newDataItem.dataItemId)) {
+        this.log.warn("Duplicate data item found in batch!", {
+          dataItemId: newDataItem.dataItemId,
+        });
+        MetricRegistry.duplicateDataItemsWithinBatch.inc();
+        return false;
+      } else {
+        seenDataItemIds.add(newDataItem.dataItemId);
+        return true;
+      }
+    });
+
+    // Check if any data items already exist in the database
+    const existingDataItemIds = await this.getExistingDataItemIds(
+      dataItemBatch.map((newDataItem) => newDataItem.dataItemId)
+    );
+    if (existingDataItemIds.size > 0) {
+      this.log.warn(
+        "Data items already exist in database! Removing from batch insert...",
+        {
+          existingDataItemIds: Array.from(existingDataItemIds),
+        }
+      );
+      MetricRegistry.duplicateDataItemsFoundFromDatabaseReader.inc();
+
+      dataItemBatch = dataItemBatch.filter(
+        (newDataItem) => !existingDataItemIds.has(newDataItem.dataItemId)
+      );
+    }
+
+    const performInsert: (
+      dataItemInserts: NewDataItemDBInsert[]
+    ) => Promise<void> = async (dataItemInserts: NewDataItemDBInsert[]) => {
+      try {
+        await this.writer.batchInsert<NewDataItemDBInsert, NewDataItemDBResult>(
+          tableNames.newDataItem,
+          dataItemInserts
+        );
+      } catch (error) {
+        if (isPostgresError(error)) {
+          const failedId = error.detail.match(
+            /\(data_item_id\)=\(([^)]+)\)/
+          )?.[1];
+
+          if (
+            error.code === postgresInsertFailedPrimaryKeyNotUniqueCode &&
+            failedId &&
+            isValidArweaveBase64URL(failedId)
+          ) {
+            this.log.warn(
+              "Data Item Insert Failed on Duplicate Data Item Primary Key -- Removing item from batch and trying again",
+              {
+                error,
+                failedId,
+              }
+            );
+            MetricRegistry.primaryKeyErrorsEncounteredOnNewDataItemBatchInsert.inc();
+
+            // Remove failed data item from batch and recurse to try again
+            const batchExcludingFailedDataItem = dataItemInserts.filter(
+              (insert) => insert.data_item_id !== failedId
+            );
+
+            if (
+              batchExcludingFailedDataItem.length === dataItemInserts.length
+            ) {
+              this.log.error(
+                "Data Item Batch Insert Failed on Duplicate Data Item Primary Key -- Failed data item not found in batch!",
+                {
+                  error,
+                  failedId,
+                  dataItemIds: dataItemBatch.map((d) => d.dataItemId),
+                }
+              );
+              throw error;
+            }
+
+            if (batchExcludingFailedDataItem.length === 0) {
+              this.log.warn(
+                "Data Item Batch is empty! No more work left to do in this job -- exiting..."
+              );
+              return;
+            }
+
+            return performInsert(batchExcludingFailedDataItem);
+          }
+        }
+
+        this.log.error("Data Item Batch Insert Failed: ", {
+          error,
+          dataItemIds: dataItemBatch.map((d) => d.dataItemId),
+        });
+        throw error;
+      }
+    };
+
+    // Insert new data items
+    const dataItemInserts = dataItemBatch.map((newDataItem) =>
+      this.newDataItemToDbInsert(newDataItem)
+    );
+    await performInsert(dataItemInserts);
   }
 
   private newDataItemToDbInsert({
@@ -179,6 +322,7 @@ export class PostgresDatabase implements Database {
     payloadContentType,
     premiumFeatureType,
     signature,
+    deadlineHeight,
   }: PostedNewDataItem): NewDataItemDBInsert {
     return {
       assessed_winston_price: assessedWinstonPrice.toString(),
@@ -192,6 +336,7 @@ export class PostgresDatabase implements Database {
       content_type: payloadContentType,
       premium_feature_type: premiumFeatureType,
       signature,
+      deadline_height: deadlineHeight?.toString(),
     };
   }
 
@@ -199,21 +344,15 @@ export class PostgresDatabase implements Database {
     this.log.debug("Getting new data items from database...");
 
     try {
-      /**
-       * Note: Locking will only occur for the duration of this query, it will be released
-       * once the query completes.
-       */
       // Using a raw query here due to the db driver's behavior of returning uploaded_date in the "wrong" UTC timezone
       const fetchStartTimestamp = Date.now();
       const dbResult: (NewDataItemDBResult & { uploaded_date_utc: string })[] =
         (
-          (await this.writer.raw(
+          (await this.reader.raw(
             `SELECT *, uploaded_date AT TIME ZONE 'UTC' as uploaded_date_utc
               FROM ${tableNames.newDataItem}
               ORDER BY uploaded_date
               LIMIT ${maxDataItemsPerBundle * 5}
-              FOR UPDATE
-              NOWAIT
             `
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
           )) as any
@@ -339,9 +478,30 @@ export class PostgresDatabase implements Database {
     ).where({ plan_id: planId });
     if (bundlePlanDbResult.length === 0) {
       logger.warn(
-        `[DUPLICATE-MESSAGE] No bundle plan still exists for plan id!`
+        "No bundle plan found! Checking other tables for plan id...",
+        { planId }
       );
-      return [];
+      const bundlePlanResults = await Promise.all([
+        this.reader<NewBundleDBResult>(tableNames.newBundle).where({
+          plan_id: planId,
+        }),
+        this.reader<PostedBundleDBResult>(tableNames.postedBundle).where({
+          plan_id: planId,
+        }),
+        this.reader<SeededBundleDBResult>(tableNames.seededBundle).where({
+          plan_id: planId,
+        }),
+        this.reader<PermanentBundleDBResult>(tableNames.permanentBundle).where({
+          plan_id: planId,
+        }),
+      ]);
+      if (
+        bundlePlanResults.some((bundlePlanResult) => bundlePlanResult.length)
+      ) {
+        throw new BundlePlanExistsInAnotherStateWarning(planId);
+      } else {
+        throw Error(`No bundle plan found for plan id ${planId}!`);
+      }
     }
 
     return this.getPlannedDataItemsByPlanId(planId);
@@ -396,7 +556,6 @@ export class PostgresDatabase implements Database {
         .returning("*");
 
       if (bundlePlanDbResults.length === 0) {
-        // If no bundle plan is found, check if plan id exists in another table
         logger.warn(
           "No bundle plan found! Checking other tables for plan id...",
           { planId, bundleId }
@@ -448,7 +607,24 @@ export class PostgresDatabase implements Database {
     ).where(columnNames.planId, planId);
 
     if (newBundleDbResult.length === 0) {
-      throw Error(`No new_bundle found for plan id ${planId}!`);
+      const bundlePlanResults = await Promise.all([
+        this.reader<PostedBundleDBResult>(tableNames.postedBundle).where({
+          plan_id: planId,
+        }),
+        this.reader<SeededBundleDBResult>(tableNames.seededBundle).where({
+          plan_id: planId,
+        }),
+        this.reader<PermanentBundleDBResult>(tableNames.permanentBundle).where({
+          plan_id: planId,
+        }),
+      ]);
+      if (
+        bundlePlanResults.some((bundlePlanResult) => bundlePlanResult.length)
+      ) {
+        throw new BundlePlanExistsInAnotherStateWarning(planId);
+      } else {
+        throw Error(`No new_bundle exists for plan id ${planId}!`);
+      }
     }
 
     return newBundleDbResultToNewBundleMap(newBundleDbResult[0]);
@@ -495,6 +671,28 @@ export class PostgresDatabase implements Database {
     ).where({ plan_id: planId });
 
     if (postedBundleDbResult.length === 0) {
+      // check if its already seeded
+      const seededBundleDbResult = await this.writer<SeededBundleDBResult>(
+        tableNames.seededBundle
+      ).where({ plan_id: planId });
+      if (seededBundleDbResult.length > 0) {
+        throw new BundlePlanExistsInAnotherStateWarning(
+          planId,
+          seededBundleDbResult[0].bundle_id
+        );
+      }
+      // check if its already permanent
+      const permanentBundleDbResult =
+        await this.writer<PermanentBundleDBResult>(
+          tableNames.permanentBundle
+        ).where({ plan_id: planId });
+      if (permanentBundleDbResult.length > 0) {
+        throw new BundlePlanExistsInAnotherStateWarning(
+          planId,
+          permanentBundleDbResult[0].bundle_id
+        );
+      }
+
       throw Error(`No posted_bundle found for plan id ${planId}!`);
     }
 
@@ -605,12 +803,15 @@ export class PostgresDatabase implements Database {
       const permanentDataItemInserts: PermanentDataItemDBInsert[] =
         dataItems.map(({ signature: _, ...restOfPlannedDataItem }) => ({
           ...restOfPlannedDataItem,
-          block_height: blockHeight.toString(),
+          block_height: blockHeight,
+          deadline_height: restOfPlannedDataItem.deadline_height
+            ? +restOfPlannedDataItem.deadline_height
+            : null,
           bundle_id: bundleId,
         }));
 
       await dbTx.batchInsert<PermanentDataItemDBResult>(
-        tableNames.permanentDataItem,
+        tableNames.permanentDataItems,
         permanentDataItemInserts
       );
     });
@@ -639,18 +840,34 @@ export class PostgresDatabase implements Database {
         .del()
         .returning("*");
 
-      const dbInserts: RePackDataItemDbInsert[] = deletedDataItems.map(
-        ({ plan_id: _pi, planned_date: _pd, ...restOfDataItem }) => ({
-          ...restOfDataItem,
-          failed_bundles: [
-            ...(restOfDataItem.failed_bundles
-              ? restOfDataItem.failed_bundles.split(",")
-              : []),
-            failedBundleId,
-          ].join(","),
-        })
-      );
-
+      // For any data items over the retry limit, we will move them to failed data items
+      const dbInserts: RePackDataItemDbInsert[] = [];
+      for (const {
+        failed_bundles,
+        plan_id,
+        planned_date,
+        ...restOfDataItem
+      } of deletedDataItems) {
+        const failedBundles = failed_bundles ? failed_bundles.split(",") : [];
+        failedBundles.push(failedBundleId);
+        if (failedBundles.length >= retryLimitForFailedDataItems) {
+          const failedDbInsert: FailedDataItemDBInsert = {
+            ...restOfDataItem,
+            failed_reason: "too_many_failures",
+            plan_id,
+            planned_date,
+            failed_bundles: failedBundles.join(","),
+          };
+          await knexTransaction(tableNames.failedDataItem).insert(
+            failedDbInsert
+          );
+        } else {
+          dbInserts.push({
+            ...restOfDataItem,
+            failed_bundles: failedBundles.join(","),
+          });
+        }
+      }
       await knexTransaction.batchInsert<
         RePackDataItemDbInsert,
         NewDataItemDBResult
@@ -711,58 +928,35 @@ export class PostgresDatabase implements Database {
     planId: PlanId,
     failedBundleId: TransactionId
   ): Promise<void> {
+    logger.debug("Repacking data items for plan...", {
+      planId,
+      failedBundleId,
+    });
     const plannedDataItems = await this.reader<PlannedDataItemDBResult>(
       tableNames.plannedDataItem
     ).where({ plan_id: planId });
 
-    const newDataItemInserts = plannedDataItems.map(
-      ({ plan_id: _pi, planned_date: _pd, failed_bundles, ...rest }) => {
-        const failedBundlesArray = failed_bundles
-          ? failed_bundles.split(",")
-          : [];
-        failedBundlesArray.push(failedBundleId);
-
-        return {
-          ...rest,
-          failed_bundles: failedBundlesArray.join(","),
-        };
-      }
-    );
-
     const rePackDataItemInsertBatches = [
-      ...generateArrayChunks<RePackDataItemDbInsert>(
-        newDataItemInserts,
+      ...generateArrayChunks<DataItemId>(
+        plannedDataItems.map((pdi) => pdi.data_item_id),
         batchingSize
       ),
     ];
-    const parallelLimit = pLimit(1);
-    const transactionPromises = rePackDataItemInsertBatches.map((batch) =>
-      parallelLimit(() =>
-        // Each batch will insert and delete in its own atomic transaction
-        this.writer.transaction(async (dbTx) => {
-          await dbTx.batchInsert<NewDataItemDBResult>(
-            tableNames.newDataItem,
-            batch
-          );
-          await dbTx(tableNames.plannedDataItem)
-            .whereIn(
-              columnNames.dataItemId,
-              batch.map((b) => b.data_item_id)
-            )
-            .del();
-        })
-      )
-    );
 
-    await Promise.all(transactionPromises);
+    for (const batch of rePackDataItemInsertBatches) {
+      await this.updateDataItemsToBeRePacked(batch, failedBundleId);
+    }
   }
 
   public async getDataItemInfo(dataItemId: string): Promise<
     | {
-        status: "new" | "pending" | "permanent";
+        status: "new" | "pending" | "permanent" | "failed";
         assessedWinstonPrice: Winston;
         bundleId?: string | undefined;
         uploadedTimestamp: number;
+        deadlineHeight?: number;
+        failedReason?: DataItemFailedReason;
+        owner: string;
       }
     | undefined
   > {
@@ -782,6 +976,10 @@ export class PostgresDatabase implements Database {
         uploadedTimestamp: new Date(
           newDataItemDbResult[0].uploaded_date
         ).getTime(),
+        deadlineHeight: newDataItemDbResult[0].deadline_height
+          ? +newDataItemDbResult[0].deadline_height
+          : undefined,
+        owner: newDataItemDbResult[0].owner_public_address,
       };
     }
 
@@ -816,13 +1014,17 @@ export class PostgresDatabase implements Database {
         uploadedTimestamp: new Date(
           plannedDataItemDbResult[0].uploaded_date
         ).getTime(),
+        deadlineHeight: plannedDataItemDbResult[0].deadline_height
+          ? +plannedDataItemDbResult[0].deadline_height
+          : undefined,
+        owner: plannedDataItemDbResult[0].owner_public_address,
       };
     }
 
     // Check for a permanent data item
     const permanentDataItemDbResult =
       await this.reader<PermanentDataItemDBResult>(
-        tableNames.permanentDataItem
+        tableNames.permanentDataItems
       ).where({ data_item_id: dataItemId });
     if (permanentDataItemDbResult.length > 0) {
       return {
@@ -834,6 +1036,31 @@ export class PostgresDatabase implements Database {
         uploadedTimestamp: new Date(
           permanentDataItemDbResult[0].uploaded_date
         ).getTime(),
+        deadlineHeight: permanentDataItemDbResult[0].deadline_height
+          ? +permanentDataItemDbResult[0].deadline_height
+          : undefined,
+        owner: permanentDataItemDbResult[0].owner_public_address,
+      };
+    }
+
+    // Check for a failed data item
+    const failedDataItemDbResult = await this.reader<FailedDataItemDBResult>(
+      tableNames.failedDataItem
+    ).where({ data_item_id: dataItemId });
+    if (failedDataItemDbResult.length > 0) {
+      return {
+        status: "failed",
+        assessedWinstonPrice: W(
+          failedDataItemDbResult[0].assessed_winston_price
+        ),
+        uploadedTimestamp: new Date(
+          failedDataItemDbResult[0].uploaded_date
+        ).getTime(),
+        deadlineHeight: failedDataItemDbResult[0].deadline_height
+          ? +failedDataItemDbResult[0].deadline_height
+          : undefined,
+        failedReason: failedDataItemDbResult[0].failed_reason,
+        owner: failedDataItemDbResult[0].owner_public_address,
       };
     }
 
@@ -863,18 +1090,30 @@ export class PostgresDatabase implements Database {
   public async insertInFlightMultiPartUpload({
     uploadId,
     uploadKey,
-  }: InFlightMultiPartUploadParams): Promise<void> {
+    chunkSize,
+  }: InFlightMultiPartUploadParams): Promise<InFlightMultiPartUpload> {
     this.log.debug("Inserting in flight multipart upload...", {
       uploadId,
       uploadKey,
     });
 
-    return this.writer.transaction(async (knexTransaction) => {
-      await knexTransaction(tableNames.inFlightMultiPartUpload).insert({
-        upload_id: uploadId,
-        upload_key: uploadKey,
-      });
+    const result = await this.writer.transaction(async (knexTransaction) => {
+      const [insertedRow] =
+        await knexTransaction<InFlightMultiPartUploadDBResult>(
+          tableNames.inFlightMultiPartUpload
+        )
+          .insert({
+            upload_id: uploadId,
+            upload_key: uploadKey,
+            chunk_size:
+              chunkSize === undefined ? undefined : chunkSize.toString(),
+          })
+          .returning("*"); // Returning the inserted row
+
+      return insertedRow;
     });
+
+    return entityToInFlightMultiPartUpload(result);
   }
 
   public async finalizeMultiPartUpload({
@@ -937,18 +1176,7 @@ export class PostgresDatabase implements Database {
       throw new MultiPartUploadNotFound(uploadId);
     }
 
-    return {
-      uploadId: inFlightUpload.upload_id,
-      uploadKey: inFlightUpload.upload_key,
-      createdAt: inFlightUpload.created_at,
-      expiresAt: inFlightUpload.expires_at,
-      chunkSize: inFlightUpload.chunk_size
-        ? +inFlightUpload.chunk_size
-        : undefined,
-      failedReason: isMultipartUploadFailedReason(inFlightUpload.failed_reason)
-        ? inFlightUpload.failed_reason
-        : undefined,
-    };
+    return entityToInFlightMultiPartUpload(inFlightUpload);
   }
 
   public async failInflightMultiPartUpload({
@@ -988,20 +1216,7 @@ export class PostgresDatabase implements Database {
         `Deleted ${numDeletedRows} in flight uploads past their expired dates.`
       );
 
-      return {
-        uploadId: updatedInFlightUpload.upload_id,
-        uploadKey: updatedInFlightUpload.upload_key,
-        createdAt: updatedInFlightUpload.created_at,
-        expiresAt: updatedInFlightUpload.expires_at,
-        chunkSize: updatedInFlightUpload.chunk_size
-          ? +updatedInFlightUpload.chunk_size
-          : undefined,
-        failedReason: isMultipartUploadFailedReason(
-          updatedInFlightUpload.failed_reason
-        )
-          ? updatedInFlightUpload.failed_reason
-          : undefined,
-      };
+      return entityToInFlightMultiPartUpload(updatedInFlightUpload);
     });
   }
 
@@ -1098,20 +1313,87 @@ export class PostgresDatabase implements Database {
 
   public async updateMultipartChunkSize(
     chunkSize: number,
-    uploadId: UploadId
-  ): Promise<void> {
+    upload: InFlightMultiPartUpload
+  ): Promise<number> {
     this.log.debug("Updating multipart chunk size...", {
       chunkSize,
     });
 
-    await this.writer<InFlightMultiPartUploadDBInsert>(
-      tableNames.inFlightMultiPartUpload
-    )
-      .update({
-        chunk_size: chunkSize.toString(),
-      })
-      .where({ upload_id: uploadId })
-      .forUpdate();
+    // TODO: This will be brittle if we add more columns to the inFlightMultiPartUpload table
+    const { uploadId, uploadKey, createdAt, expiresAt, failedReason } = upload;
+    const chunkSizeStr = chunkSize.toString();
+
+    // Use a CAS upsert to ensure we only update the chunk size if it's larger than the current value
+    // This assists in cases where the last chunk might have been processed first
+    const bestKnownChunkSize = await this.writer.transaction(async (trx) => {
+      const query = `
+        INSERT INTO ${tableNames.inFlightMultiPartUpload} (upload_id, upload_key, created_at, expires_at, chunk_size, failed_reason)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT (upload_id) DO UPDATE SET
+          chunk_size = CASE
+            WHEN ${tableNames.inFlightMultiPartUpload}.chunk_size IS NULL OR ${tableNames.inFlightMultiPartUpload}.chunk_size::bigint < EXCLUDED.chunk_size::bigint
+            THEN EXCLUDED.chunk_size
+            ELSE ${tableNames.inFlightMultiPartUpload}.chunk_size
+          END
+        RETURNING chunk_size;
+      `;
+
+      const result = await trx.raw(query, [
+        uploadId,
+        uploadKey,
+        createdAt,
+        expiresAt,
+        chunkSizeStr,
+        failedReason || null,
+      ]);
+      return result.rows[0].chunk_size;
+    });
+
+    if (bestKnownChunkSize !== chunkSizeStr) {
+      this.log.warn(
+        "Chunk size not updated because current size is larger or equal.",
+        {
+          currentChunkSize: bestKnownChunkSize,
+          attemptedChunkSize: chunkSize,
+        }
+      );
+    } else {
+      this.log.debug("Chunk size updated successfully.", {
+        chunkSize,
+      });
+    }
+    return +bestKnownChunkSize;
+  }
+
+  public async updatePlannedDataItemAsFailed({
+    dataItemId,
+    failedReason,
+  }: {
+    dataItemId: DataItemId;
+    failedReason: DataItemFailedReason;
+  }): Promise<void> {
+    this.log.warn("Updating planned data item as failed...", {
+      dataItemId,
+      failedReason,
+    });
+
+    await this.writer.transaction(async (knexTransaction) => {
+      const plannedDataItem = await knexTransaction<PlannedDataItemDBResult>(
+        tableNames.plannedDataItem
+      )
+        .where({ data_item_id: dataItemId })
+        .del()
+        .returning("*");
+
+      const dbInsert: FailedDataItemDBInsert = {
+        ...plannedDataItem[0],
+        failed_reason: failedReason,
+      };
+
+      await knexTransaction(
+        tableNames.failedDataItem
+      ).insert<FailedDataItemDBInsert>(dbInsert);
+    });
   }
 }
 
@@ -1119,4 +1401,30 @@ function isMultipartUploadFailedReason(
   reason: string | undefined
 ): reason is MultipartUploadFailedReason {
   return ["INVALID", "UNDERFUNDED"].includes(reason ?? "");
+}
+
+function entityToInFlightMultiPartUpload(
+  entity: InFlightMultiPartUploadDBResult
+): InFlightMultiPartUpload {
+  return {
+    uploadId: entity.upload_id,
+    uploadKey: entity.upload_key,
+    createdAt: entity.created_at,
+    expiresAt: entity.expires_at,
+    chunkSize: entity.chunk_size ? +entity.chunk_size : undefined,
+    failedReason: isMultipartUploadFailedReason(entity.failed_reason)
+      ? entity.failed_reason
+      : undefined,
+  };
+}
+
+function isPostgresError(error: unknown): error is PostgresError {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof (error as PostgresError).code === "string" &&
+    "detail" in error &&
+    typeof (error as PostgresError).detail === "string"
+  );
 }
