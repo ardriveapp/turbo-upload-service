@@ -27,7 +27,9 @@ export async function loadConfig() {
     return;
   }
 
-  process.env.HONEYCOMB_API_KEY = await getSSMParameter(
+  process.env.HONEYCOMB_API_KEY ??= await getSSMParameter(
     "honeycomb-events-api-key"
   );
+  process.env.CDP_API_KEY_ID ??= await getSSMParameter("cdp-api-key");
+  process.env.CDP_API_SECRET_ID ??= await getSSMParameter("cdp-secret-key");
 }

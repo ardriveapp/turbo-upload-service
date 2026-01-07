@@ -15,14 +15,17 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 import { expect } from "chai";
+import { Readable } from "stream";
 
 import { stubDataItemRawSignatureReadStream } from "../../tests/stubs";
+import { ByteCount } from "../types/types";
 import { toB64Url } from "../utils/base64";
 import { streamToBuffer } from "../utils/streamToBuffer";
 import {
   BundleHeaderInfo,
   assembleBundleHeader,
   bundleHeaderInfoFromBuffer,
+  parseBundleHeaderInfo,
   totalBundleSizeFromHeaderInfo,
 } from "./assembleBundleHeader";
 import { bufferIdFromReadableSignature } from "./idFromSignature";
@@ -93,3 +96,108 @@ describe("totalBundleSizeFromHeaderInfo function", () => {
     expect(totalBundleSizeFromHeaderInfo(stubHeaderInfo)).to.equal(739);
   });
 });
+
+describe("parseBundleHeaderInfo", () => {
+  it("parses header from a single-chunk stream and leaves payload intact", async () => {
+    const items: { dataItemRawId: Buffer; byteCount: ByteCount }[] = [
+      { dataItemRawId: Buffer.alloc(32, 1), byteCount: 4 },
+      { dataItemRawId: Buffer.alloc(32, 2), byteCount: 3 },
+    ];
+
+    const headerStream = await assembleBundleHeader(items);
+    const headerBuf = await readAll(headerStream);
+
+    const payloads = [Buffer.from("abcd"), Buffer.from("xyz")];
+    const combined = Buffer.concat([headerBuf, ...payloads]);
+
+    const stream = Readable.from([combined]);
+    stream.pause();
+
+    const { bundleHeaderInfo: info, rest } = await parseBundleHeaderInfo(
+      stream
+    );
+    expect(info.numDataItems).to.equal(2);
+    expect(info.dataItems.map((d) => d.size)).to.deep.equal([4, 3]);
+
+    // consume remaining data from returned rest stream
+    const restBuf = await readAll(rest);
+    expect(restBuf).to.deep.equal(Buffer.concat(payloads));
+  });
+
+  it("parses header split across many small chunks", async () => {
+    const items: { dataItemRawId: Buffer; byteCount: ByteCount }[] = [
+      { dataItemRawId: Buffer.alloc(32, 3), byteCount: 5 },
+      { dataItemRawId: Buffer.alloc(32, 4), byteCount: 2 },
+      { dataItemRawId: Buffer.alloc(32, 5), byteCount: 1 },
+    ];
+
+    const headerStream = await assembleBundleHeader(items);
+    const headerBuf = await readAll(headerStream);
+    const payloads = [
+      Buffer.alloc(5, 7),
+      Buffer.alloc(2, 8),
+      Buffer.alloc(1, 9),
+    ];
+    const combined = Buffer.concat([headerBuf, ...payloads]);
+
+    // split into many tiny chunks
+    const chunks: Buffer[] = [];
+    for (let i = 0; i < combined.length; i += 3) {
+      chunks.push(combined.slice(i, i + 3));
+    }
+
+    const stream = Readable.from(chunks);
+    stream.pause();
+
+    const { bundleHeaderInfo: info, rest } = await parseBundleHeaderInfo(
+      stream
+    );
+    expect(info.numDataItems).to.equal(3);
+    expect(info.dataItems.map((d) => d.size)).to.deep.equal([5, 2, 1]);
+
+    const restBuf = await readAll(rest);
+    expect(restBuf).to.deep.equal(Buffer.concat(payloads));
+  });
+
+  it("throws when stream ends prematurely", async () => {
+    const items: { dataItemRawId: Buffer; byteCount: ByteCount }[] = [
+      { dataItemRawId: Buffer.alloc(32, 6), byteCount: 10 },
+    ];
+    const headerStream = await assembleBundleHeader(items);
+    const headerBuf = await readAll(headerStream);
+
+    // give only part of the header (first 16 bytes)
+    const partial = headerBuf.slice(0, 16);
+    const stream = Readable.from([partial]);
+    stream.pause();
+
+    try {
+      await parseBundleHeaderInfo(stream);
+      throw new Error("Expected parseBundleHeaderInfo to throw");
+    } catch (err) {
+      expect(err).to.exist;
+    }
+  });
+});
+
+async function readAll(stream: Readable): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  return new Promise((resolve, reject) => {
+    const onData = (c: Buffer) => chunks.push(c);
+    const onEnd = () => {
+      stream.off("data", onData);
+      resolve(Buffer.concat(chunks));
+    };
+    const onError = (e: Error) => {
+      stream.off("data", onData);
+      reject(e);
+    };
+
+    stream.on("data", onData);
+    stream.once("end", onEnd);
+    stream.once("error", onError);
+
+    // Ensure the stream flows even if currently paused
+    stream.resume();
+  });
+}

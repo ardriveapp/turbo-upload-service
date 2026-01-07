@@ -14,17 +14,85 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-import { gatewayUrl } from "../constants";
+import { ReadThroughPromiseCache } from "@ardrive/ardrive-promise-cache";
+import { Logger } from "winston";
+
+import { gatewayUrl, winstonPerAr } from "../constants";
+import defaultLogger from "../logger";
 import { PlannedDataItem } from "../types/dbTypes";
-import { ByteCount, TxAttributes } from "../types/types";
+import { ByteCount, TxAttributes, Winston } from "../types/types";
+import { RetryHttpClient, createRetryHttpClient } from "../utils/httpClient";
 import { ArweaveGateway, Gateway } from "./arweaveGateway";
 
+const coinGeckoUrl = "https://api.coingecko.com/api/v3/simple/price";
+const cacheTTLMillis = 5 * 60 * 1000; // 5 minutes
+
+interface PricingServiceParams extends X402PricingSettings {
+  httpClient?: RetryHttpClient;
+  gateway?: Gateway;
+  logger?: Logger;
+}
+
+interface X402PricingSettings {
+  minimumMUsdcAmount?: number;
+  x402MarkupPercentage?: number;
+}
+
 export class PricingService {
-  constructor(
-    private readonly gateway: Gateway = new ArweaveGateway({
-      endpoint: gatewayUrl,
-    })
-  ) {}
+  private arUsdPriceReadThroughPromiseCache: ReadThroughPromiseCache<
+    "price",
+    string
+  > = new ReadThroughPromiseCache<"price", string>({
+    cacheParams: { cacheCapacity: 100, cacheTTLMillis: cacheTTLMillis }, // 5 minutes
+    readThroughFunction: async (): Promise<string> => {
+      const response = await this.httpClient.get(coinGeckoUrl, {
+        params: {
+          ids: "arweave",
+          vs_currencies: "usd",
+        },
+      });
+      const arPriceInUsd = response.data?.arweave?.usd;
+      if (arPriceInUsd === undefined) {
+        throw new Error(
+          `Failed to get AR price from Coingecko response: ${JSON.stringify(
+            response.data
+          )}`
+        );
+      }
+      return arPriceInUsd.toString();
+    },
+  });
+
+  private httpClient: RetryHttpClient;
+  private gateway: Gateway;
+  private logger: Logger;
+
+  private minimumMUsdcAmount: number;
+  private x402MarkupPercentage: number;
+
+  constructor({
+    httpClient = createRetryHttpClient(),
+    gateway = new ArweaveGateway({ endpoint: gatewayUrl }),
+    logger = defaultLogger,
+    minimumMUsdcAmount = +(process.env.MINIMUM_X402_MUSDC_AMOUNT || 1_000), // 0.001 USDC for smallest uploads
+    x402MarkupPercentage = +(process.env.X402_MARKUP_PERCENTAGE || 30), // 30% markup
+  }: PricingServiceParams = {}) {
+    this.httpClient = httpClient;
+    this.gateway = gateway;
+    this.logger = logger;
+    if (!Number.isFinite(minimumMUsdcAmount)) {
+      throw new Error(
+        "MINIMUM_X402_MUSDC_AMOUNT must resolve to a finite number."
+      );
+    }
+    if (!Number.isFinite(x402MarkupPercentage)) {
+      throw new Error(
+        "X402_MARKUP_PERCENTAGE must resolve to a finite number."
+      );
+    }
+    this.minimumMUsdcAmount = minimumMUsdcAmount;
+    this.x402MarkupPercentage = x402MarkupPercentage;
+  }
 
   public async getTxAttributesForDataItems(
     dataItems: PlannedDataItem[]
@@ -50,6 +118,37 @@ export class PricingService {
     txAttributes.last_tx = await this.gateway.getBlockHash();
 
     return txAttributes;
+  }
+
+  public async getUsdcForByteCount(
+    byteCount: ByteCount
+  ): Promise<{ winc: Winston; mUsdc: number }> {
+    const winstonCost = await this.gateway.getWinstonPriceForByteCount(
+      byteCount
+    );
+    const arUsdPriceString = await this.arUsdPriceReadThroughPromiseCache.get(
+      "price"
+    );
+    const arUsdPrice = parseFloat(arUsdPriceString);
+    const mUsdcAmount = Math.max(
+      this.minimumMUsdcAmount,
+      Math.ceil(
+        (+winstonCost / winstonPerAr) *
+          arUsdPrice *
+          1e6 *
+          // Add infrastructure markup
+          (1 + this.x402MarkupPercentage / 100)
+      )
+    );
+
+    this.logger.debug("Calculated USDC amount for byte count", {
+      byteCount,
+      winstonCost: winstonCost.toString(),
+      arUsdPrice,
+      mUsdcAmount,
+    });
+
+    return { winc: winstonCost, mUsdc: mUsdcAmount };
   }
 }
 

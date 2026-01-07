@@ -17,11 +17,9 @@
 import { ReadThroughPromiseCache } from "@ardrive/ardrive-promise-cache";
 import { GetParameterCommand } from "@aws-sdk/client-ssm";
 import { SQSEvent } from "aws-lambda";
-import { AxiosInstance } from "axios";
 import CircuitBreaker from "opossum";
 import winston from "winston";
 
-import { createAxiosInstance } from "../arch/axiosClient";
 import { ssmClient } from "../arch/ssmClient";
 import logger from "../logger";
 import {
@@ -31,6 +29,7 @@ import {
 } from "../metricRegistry";
 import { fromB64Url, toB64Url } from "../utils/base64";
 import { getOpticalPubKey } from "../utils/getArweaveWallet";
+import { RetryHttpClient, createRetryHttpClient } from "../utils/httpClient";
 import { SignedDataItemHeader } from "../utils/opticalUtils";
 
 // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
@@ -93,7 +92,7 @@ const arDriveGatewayOpticalUrlAndApiKeyPairs =
     })
     ?.filter(({ url }) => !!url) ?? [];
 
-let cachedAxios: AxiosInstance | undefined = undefined;
+let cachedAxios: RetryHttpClient | undefined = undefined;
 
 export const opticalPostHandler = async ({
   stringifiedDataItemHeaders,
@@ -183,10 +182,9 @@ export const opticalPostHandler = async ({
   }
 
   const getAxios = () => {
-    cachedAxios ??= createAxiosInstance({
-      retries: 3,
+    cachedAxios ??= createRetryHttpClient({
+      maxTries: 4,
       config: {
-        validateStatus: () => true,
         headers,
       },
     });

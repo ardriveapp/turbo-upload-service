@@ -6,11 +6,20 @@ process.env.ARWEAVE_GATEWAY ??= "http://localhost:1984";
 process.env.BLOCKLISTED_ADDRESSES ??= // cspell:disable
   "xnbLpqfiRIInqrxkhV7M-iSr8YUtm9aoezGjSnXnOFo"; // cspell:enable
 
+// Enable X402 service for testing with mock values
+process.env.CDP_API_KEY_ID ??= "test-key-id";
+process.env.CDP_API_SECRET_ID ??= "test-secret-id";
+process.env.X_402_BASE_ADDRESS ??= "0x1234567890123456789012345678901234567890";
+
 // Mocha configuration file
 // Reference for options: https://github.com/mochajs/mocha/blob/master/example/config/.mocharc.js
 module.exports = {
   extension: ["ts"],
-  require: ["ts-node/register/transpile-only", "tests/testSetup.ts"],
+  require: [
+    "tests/mockSetup.js",
+    "ts-node/register/transpile-only",
+    "tests/testSetup.ts",
+  ],
   timeout: "20000", // 20 seconds
   parallel: false,
   exit: true,

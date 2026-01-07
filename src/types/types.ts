@@ -17,6 +17,9 @@
 import { Tag } from "@dha-team/arbundles";
 import { CreateTransactionInterface } from "arweave/node/common";
 
+import { DataItemFailedReason } from "./dbTypes";
+import { Winston } from "./winston";
+
 export type Base64String = string;
 export type PublicArweaveAddress = Base64String;
 export type NativeAddress = string;
@@ -75,3 +78,13 @@ export interface DataItemOffsetsInfo {
   parentDataItemId?: TransactionId;
   startOffsetInParentDataItemPayload?: number;
 }
+
+export type DataItemInfo = {
+  status: "new" | "pending" | "permanent" | "failed";
+  assessedWinstonPrice: Winston;
+  bundleId?: TransactionId;
+  uploadedTimestamp: number;
+  deadlineHeight?: number;
+  failedReason?: DataItemFailedReason;
+  owner: string;
+};

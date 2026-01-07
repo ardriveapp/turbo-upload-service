@@ -51,11 +51,11 @@ const configSpec = {
     env: "CACHE_DATAITEM_BYTES_THRESHOLD",
   },
   fsBackupWriteDataItemSamplingRate: {
-    default: 1.0,
+    default: 0.0,
     env: "FS_BACKUP_WRITE_DATA_ITEM_SAMPLING_RATE",
   },
   fsBackupWriteNestedDataItemSamplingRate: {
-    default: 1.0,
+    default: 0.0,
     env: "FS_BACKUP_WRITE_NESTED_DATA_ITEM_SAMPLING_RATE",
   },
   objStoreDataItemSamplingRate: {
@@ -87,6 +87,10 @@ const configSpec = {
     env: "DYNAMO_DATA_ITEM_BYTES_THRESHOLD",
   },
   inFlightDataItemTtlSecs: { default: 60, env: "IN_FLIGHT_DATA_ITEM_TTL_SECS" },
+  offsetsCollectionTimeoutMs: {
+    default: 60_000,
+    env: "OFFSETS_COLLECTION_TIMEOUT_MS",
+  },
 } as const;
 
 type ConfigSpec = typeof configSpec;

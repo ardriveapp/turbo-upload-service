@@ -24,11 +24,23 @@ import {
   readFileSync,
   rmSync,
 } from "fs";
+import { Agent as HttpAgent } from "http";
+import { Agent as HttpsAgent } from "https";
 import { pipeline } from "stream/promises";
 
 import { octetStreamContentType, port } from "../src/constants";
 import { gatewayUrl } from "../src/constants";
 import { TransactionId } from "../src/types/types";
+
+// Configure axios to disable keepAlive for tests in Node 22+
+// In Node 19+, keepAlive is enabled by default which can cause socket hang up issues
+// Disabling keepAlive for tests ensures each request uses a fresh connection
+axios.defaults.httpAgent = new HttpAgent({
+  keepAlive: false,
+});
+axios.defaults.httpsAgent = new HttpsAgent({
+  keepAlive: false,
+});
 
 // upload service url
 export const localTestUrl = `http://localhost:${port}`;

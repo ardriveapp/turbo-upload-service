@@ -49,15 +49,21 @@ redis.on("connect", () =>
 );
 redis.on("ready", () => globalLogger.info(`Elasticache at ${host} is ready!`));
 redis.on("close", () => {
-  globalLogger.info(`Connection to Elasticache at ${host} closed.`);
+  if (process.env.NODE_ENV !== "test") {
+    globalLogger.info(`Connection to Elasticache at ${host} closed.`);
+  }
 });
 redis.on("reconnecting", () => {
-  globalLogger.info(`Reconnecting to Elasticache at ${host}...`);
+  if (process.env.NODE_ENV !== "test") {
+    globalLogger.info(`Reconnecting to Elasticache at ${host}...`);
+  }
 });
 redis.on("error", (error) => {
-  globalLogger.error(`Connection error with Elasticache at host ${host}`, {
-    error,
-  });
+  if (process.env.NODE_ENV !== "test") {
+    globalLogger.error(`Connection error with Elasticache at host ${host}`, {
+      error,
+    });
+  }
 });
 
 export function getElasticacheService(): CacheService {

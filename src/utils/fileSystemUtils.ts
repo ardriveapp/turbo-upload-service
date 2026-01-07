@@ -23,6 +23,8 @@ import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import winston from "winston";
 
+import { ConfigKeys, getConfigValue } from "../arch/remoteConfig";
+import { quarantinePrefix } from "../constants";
 import globalLogger from "../logger";
 import {
   MetricRegistry,
@@ -72,13 +74,24 @@ export async function ensureDataItemsBackupDirExists(): Promise<void> {
   });
 }
 
-ensureDataItemsBackupDirExists().catch((error) => {
-  globalLogger.error(
-    `Failed to create upload data directory at ${UPLOAD_DATA_PATH}!`,
-    { error }
-  );
-  throw error;
-});
+isBackupFSNeeded()
+  .then((needed) =>
+    needed
+      ? ensureDataItemsBackupDirExists().catch((error) => {
+          globalLogger.error(
+            `Failed to create upload data directory at ${UPLOAD_DATA_PATH}!`,
+            { error }
+          );
+          throw error;
+        })
+      : Promise.resolve()
+  )
+  .catch((error) => {
+    globalLogger.error(`Failed to determine if backup filesystem is needed!`, {
+      error,
+    });
+    throw error;
+  });
 
 export function backupDirForDataItem(dataItemId: TransactionId): string {
   return `${UPLOAD_DATA_PATH}/${dataItemId.substring(
@@ -125,12 +138,15 @@ export function filenameForMetadata({
 
 export async function fsBackupHasRawDataItem(
   dataItemId: TransactionId,
-  backupDir: string = backupDirForDataItem(dataItemId)
+  backupDir: string = backupDirForDataItem(dataItemId),
+  quarantine = false
 ): Promise<boolean> {
   return fsBreaker
     .fire(async () => {
       try {
-        await fs.stat(filenameForRawDataItem({ dataItemId, backupDir }));
+        await fs.stat(
+          filenameForRawDataItem({ dataItemId, backupDir, quarantine })
+        );
         return true;
       } catch (err: any) {
         if (err.code === "ENOENT") {
@@ -150,12 +166,15 @@ export async function fsBackupHasRawDataItem(
 
 export async function fsBackupHasMetadata(
   dataItemId: TransactionId,
-  backupDir: string = backupDirForDataItem(dataItemId)
+  backupDir: string = backupDirForDataItem(dataItemId),
+  quarantine = false
 ): Promise<boolean> {
   return fsBreaker
     .fire(async () => {
       try {
-        await fs.stat(filenameForMetadata({ dataItemId, backupDir }));
+        await fs.stat(
+          filenameForMetadata({ dataItemId, backupDir, quarantine })
+        );
         return true;
       } catch (err: any) {
         if (err.code === "ENOENT") {
@@ -175,7 +194,8 @@ export async function fsBackupHasMetadata(
 
 export async function fsBackupHasDataItem(
   dataItemId: TransactionId,
-  logger: winston.Logger = globalLogger
+  logger: winston.Logger = globalLogger,
+  quarantine = false
 ): Promise<boolean> {
   if (!backupFsAvailable()) {
     logger.debug(
@@ -187,8 +207,8 @@ export async function fsBackupHasDataItem(
   const backupDir = backupDirForDataItem(dataItemId);
   try {
     const hasDataItem =
-      (await fsBackupHasMetadata(dataItemId, backupDir)) &&
-      (await fsBackupHasRawDataItem(dataItemId, backupDir));
+      (await fsBackupHasMetadata(dataItemId, backupDir, quarantine)) &&
+      (await fsBackupHasRawDataItem(dataItemId, backupDir, quarantine));
     if (!hasDataItem) {
       logger.debug(`Data item ID ${dataItemId} not found in FS backup`);
     }
@@ -227,20 +247,27 @@ export async function fsBackupRawDataItemReadable({
   dataItemId,
   startOffset,
   endOffsetInclusive,
+  quarantine = false,
 }: {
   dataItemId: TransactionId;
   startOffset?: number;
   endOffsetInclusive?: number;
+  quarantine?: boolean;
 }): Promise<{
   readable: Readable;
 }> {
   const backupDir = backupDirForDataItem(dataItemId);
   return fsBreaker.fire(async () =>
     Promise.resolve({
-      readable: createReadStream(`${backupDir}/raw_${dataItemId}`, {
-        start: startOffset,
-        end: endOffsetInclusive,
-      }),
+      readable: createReadStream(
+        `${backupDir}/${
+          quarantine ? quarantinePrefix + "_" : ""
+        }raw_${dataItemId}`,
+        {
+          start: startOffset,
+          end: endOffsetInclusive,
+        }
+      ),
     })
   );
 }
@@ -476,4 +503,12 @@ export async function fsBackupNestedDataItemInfo({
       throw err;
     }
   });
+}
+
+export async function isBackupFSNeeded(): Promise<boolean> {
+  return (
+    (await getConfigValue(ConfigKeys.fsBackupWriteDataItemSamplingRate)) > 0 ||
+    (await getConfigValue(ConfigKeys.fsBackupWriteNestedDataItemSamplingRate)) >
+      0
+  );
 }

@@ -55,7 +55,6 @@ function expectedHeadersWithContentLength(contentLength: number) {
   return {
     "content-type": "text/plain; charset=utf-8",
     "content-length": `${contentLength}`,
-    connection: "close",
   };
 }
 

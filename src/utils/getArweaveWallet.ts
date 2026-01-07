@@ -28,7 +28,7 @@ import { Base64UrlString } from "arweave/node/lib/utils";
 import winston from "winston";
 
 import { ssmClient as svcsSystemsMgrClient } from "../arch/ssmClient";
-import { msPerMinute, turboLocalJwk } from "../constants";
+import { msPerMinute, turboLocalEvmSigner, turboLocalJwk } from "../constants";
 import logger from "../logger";
 import { JWKInterface } from "../types/jwkTypes";
 
@@ -123,6 +123,26 @@ export async function getArweaveWallet(): Promise<JWKInterface> {
   // Return any inflight, potentially-resolved promise for the wallet OR
   // start, cache, and return a new one
   return signingWalletCache.get(arweaveWalletSecretName);
+}
+
+const evmDataItemSigningWalletSecretName = "turbo-evm-data-item-signing-key";
+
+const dataItemSigningWalletCache = new ReadThroughPromiseCache<string, string>({
+  cacheParams: {
+    cacheCapacity: 1,
+    cacheTTLMillis: sixtyMinutes,
+  },
+  readThroughFunction: async () =>
+    getSecretValue(evmDataItemSigningWalletSecretName),
+});
+export async function getEvmDataItemSigningPrivateKey(): Promise<string> {
+  if (turboLocalEvmSigner) {
+    logger.debug("Using local wallet for Turbo EVM data item signing wallet");
+    return turboLocalEvmSigner;
+  }
+  // Return any inflight, potentially-resolved promise for the wallet OR
+  // start, cache, and return a new one
+  return dataItemSigningWalletCache.get(evmDataItemSigningWalletSecretName);
 }
 
 export async function getOpticalWallet(): Promise<JWKInterface> {

@@ -3,8 +3,8 @@ services:
     build:
       context: .
       args:
-        NODE_VERSION: ${NODE_VERSION:-18.17.0}
-        NODE_VERSION_SHORT: ${NODE_VERSION_SHORT:-18}
+        NODE_VERSION: ${NODE_VERSION:-22.14.0}
+        NODE_VERSION_SHORT: ${NODE_VERSION_SHORT:-22}
     environment:
       NODE_ENV: ${NODE_ENV:-local}
       DB_HOST: upload-service-pg
@@ -60,8 +60,8 @@ services:
       context: .
       dockerfile: Dockerfile.fulfillment
       args:
-        NODE_VERSION: ${NODE_VERSION:-18.17.0}
-        NODE_VERSION_SHORT: ${NODE_VERSION_SHORT:-18}
+        NODE_VERSION: ${NODE_VERSION:-22.14.0}
+        NODE_VERSION_SHORT: ${NODE_VERSION_SHORT:-22}
     environment:
       NODE_ENV: ${NODE_ENV:-local}
       DB_HOST: upload-service-pg
@@ -88,6 +88,7 @@ services:
       S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-}
       AWS_REGION: ${AWS_REGION:-us-east-1}
       OVERDUE_DATA_ITEM_THRESHOLD_MS: ${OVERDUE_DATA_ITEM_THRESHOLD_MS:-0} # plan data items immediately into bundles when plan-bundle runs
+      LOG_LEVEL: ${LOG_LEVEL:-info}
       ELASTICACHE_HOST: ${ELASTICACHE_HOST:-redis}
       ELASTICACHE_NO_CLUSTERING: ${ELASTICACHE_NO_CLUSTERING:-true}
     ports:
@@ -106,7 +107,7 @@ services:
       context: .
       dockerfile: Dockerfile.migration
       args:
-        NODE_VERSION: ${NODE_VERSION:-18.17.0}
+        NODE_VERSION: ${NODE_VERSION:-22.14.0}
     environment:
       DB_HOST: upload-service-pg
       DB_PORT: 5432
@@ -141,6 +142,7 @@ services:
       - NODE_ENV=${NODE_ENV:-local}
       - ARWEAVE_WALLET=${ARWEAVE_WALLET:-}
       - TURBO_OPTICAL_KEY=${TURBO_OPTICAL_KEY:-$ARWEAVE_WALLET}
+      - TURBO_EVM_DATA_ITEM_SIGNING_KEY=${TURBO_EVM_DATA_ITEM_SIGNING_KEY:-}
       - DATA_ITEM_BUCKET=${DATA_ITEM_BUCKET:-raw-data-items}
     volumes:
       - "${LOCALSTACK_VOLUME_DIR:-./volume}:/var/lib/localstack"
@@ -165,9 +167,9 @@ services:
       - test
     build:
       context: .
-      dockerfile: tests/integration.Dockerfile
+      dockerfile: tests/Dockerfile.integration
       args:
-        NODE_VERSION: ${NODE_VERSION:-18.17.0}
+        NODE_VERSION: ${NODE_VERSION:-22.14.0}
     environment:
       DB_HOST: upload-service-pg
       DB_PASSWORD: postgres
@@ -191,6 +193,7 @@ services:
       DATA_ITEM_BUCKET: ${DATA_ITEM_BUCKET:-raw-data-items}
       DATA_ITEM_BUCKET_REGION: ${DATA_ITEM_BUCKET_REGION:-us-east-1}
       S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-}
+      X402_BASE_ADDRESS: ${X402_BASE_ADDRESS:-}
     depends_on:
       localstack:
         condition: service_healthy

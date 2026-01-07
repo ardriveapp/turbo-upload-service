@@ -43,6 +43,9 @@ const oneGiB = 1_073_741_824;
 const twoGiB = oneGiB * 2;
 const fourGiB = oneGiB * 4;
 const oneKiB = 1024;
+const tenKiB = oneKiB * 10;
+
+export const inMemoryDataItemThreshold = tenKiB;
 
 export const maxDataItemsPerBundle = process.env.MAX_DATA_ITEM_LIMIT
   ? +process.env.MAX_DATA_ITEM_LIMIT
@@ -57,6 +60,9 @@ export const maxBundleDataItemsByteCount = process.env.MAX_BUNDLE_SIZE
 export const maxSingleDataItemByteCount = process.env.MAX_DATA_ITEM_SIZE
   ? +process.env.MAX_DATA_ITEM_SIZE
   : fourGiB;
+
+/** Max allowed data item limit on data post ingest */
+export const maxRawDataEndpointByteCount = maxSingleDataItemByteCount;
 
 export const freeUploadLimitBytes = +(
   process.env.FREE_UPLOAD_LIMIT ?? oneKiB * 505
@@ -120,7 +126,7 @@ export const failedReasons = {
 } as const;
 
 export const msPerMinute = 60_000;
-
+export const winstonPerAr = 1e12;
 export const signatureTypeLength = 2;
 export const emptyTargetLength = 1;
 export const targetLength = 33;
@@ -269,6 +275,9 @@ export const blocklistedAddresses =
 export const turboLocalJwk = process.env.TURBO_JWK_FILE
   ? JSON.parse(fs.readFileSync(process.env.TURBO_JWK_FILE, "utf-8"))
   : undefined;
+
+// allows providing a local EVM wallet for testing purposes
+export const turboLocalEvmSigner = process.env.TURBO_EVM_SIGNER_PRIVATE_KEY;
 
 export const allowListedSignatureTypes = process.env
   .ALLOW_LISTED_SIGNATURE_TYPES
@@ -489,3 +498,10 @@ export const DataItemOffsets = {
         1
       : undefined,
 } as const;
+
+export const pendingCacheAgeSeconds = 15;
+export const permanentCacheAgeSeconds = 86_400; // 1 day in seconds
+
+export const quarantinePrefix = process.env.QUARANTINE_PREFIX ?? "quarantine";
+
+export const stubEvmAddress = "0x0000000000000000000000000000000000000000";

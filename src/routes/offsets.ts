@@ -17,25 +17,47 @@
 import { Next } from "koa";
 
 import { KoaContext } from "../server";
+import { TransactionId } from "../types/types";
+import { setCacheControlHeadersForDataItemInfo } from "../utils/cacheControl";
 import { getDynamoOffsetsInfo } from "../utils/dynamoDbUtils";
+import { dataItemInfoCache } from "../utils/infoCache";
 
 export async function offsetsHandler(ctx: KoaContext, next: Next) {
-  const { logger } = ctx.state;
+  if (!ctx.params.id) {
+    ctx.status = 400;
+    ctx.body = "Data item ID not specified";
+    return next();
+  }
+
+  const dataItemId = ctx.params.id as TransactionId;
+  const { logger, database } = ctx.state;
 
   try {
-    const maybeOffsetsInfo = await getDynamoOffsetsInfo(ctx.params.id, logger);
+    // Fetch db info and offsets info concurrently
+    const [maybeOffsetsInfo, maybeInfo] = await Promise.all([
+      getDynamoOffsetsInfo(dataItemId, logger),
+      dataItemInfoCache.get(dataItemId, { database, logger }),
+    ]);
+
     if (maybeOffsetsInfo === undefined) {
       ctx.status = 404;
       ctx.body = "TX doesn't exist";
       return next();
     }
 
-    // TODO: Decide whether to use the database to help provide for longer cache durations (e.g. when data is permanent)
-    const cacheControlAgeSeconds = 60;
-    ctx.set("Cache-Control", `public, max-age=${cacheControlAgeSeconds}`);
+    setCacheControlHeadersForDataItemInfo(ctx, maybeInfo);
+
+    logger.debug(
+      `Status age: ${
+        maybeInfo ? Date.now() - maybeInfo.uploadedTimestamp : "unknown"
+      }`,
+      {
+        context: "offsets",
+      }
+    );
 
     // Remove the dataItemId from the response
-    const { dataItemId, ...offsetsInfo } = maybeOffsetsInfo;
+    const { dataItemId: _, ...offsetsInfo } = maybeOffsetsInfo;
     ctx.body = {
       ...offsetsInfo,
       payloadContentLength:

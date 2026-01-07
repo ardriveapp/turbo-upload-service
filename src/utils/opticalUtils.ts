@@ -18,6 +18,7 @@ import { ArweaveSigner, Tag, deepHash } from "@dha-team/arbundles";
 import { stringToBuffer } from "arweave/node/lib/utils";
 
 import { fromB64Url, toB64Url } from "./base64";
+import { containsAns104Tags } from "./dataItemUtils";
 import { getOpticalWallet } from "./getArweaveWallet";
 
 export type DataItemHeader = {
@@ -89,14 +90,4 @@ export async function signDataItemHeader(
 
 export function filterForNestedBundles(decodedHeader: DataItemHeader): boolean {
   return containsAns104Tags(decodedHeader.tags);
-}
-
-export function containsAns104Tags(tags: Tag[]) {
-  const hasBundleFormatHeader = tags.some(
-    (tag) => tag.name === "Bundle-Format" && tag.value === "binary"
-  );
-  return (
-    hasBundleFormatHeader &&
-    tags.some((tag) => tag.name === "Bundle-Version" && tag.value === "2.0.0")
-  );
 }

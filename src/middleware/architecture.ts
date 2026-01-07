@@ -29,6 +29,11 @@ export async function architectureMiddleware(
   ctx.state.cacheService = arch.cacheService;
   ctx.state.paymentService = arch.paymentService;
   ctx.state.getArweaveWallet = arch.getArweaveWallet;
+  ctx.state.getEVMDataItemSigningPrivateKey =
+    arch.getEVMDataItemSigningPrivateKey;
   ctx.state.arweaveGateway = arch.arweaveGateway;
+  ctx.state.pricingService = arch.pricingService;
+  ctx.state.x402Service = arch.x402Service;
+  ctx.state.tracer = arch.tracer;
   return next();
 }

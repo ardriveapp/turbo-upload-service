@@ -30,6 +30,7 @@ import {
 } from "../../types/dbTypes";
 import {
   DataItemId,
+  DataItemInfo,
   TransactionId,
   UploadId,
   Winston,
@@ -129,18 +130,7 @@ export interface Database {
   ): Promise<void>;
 
   /** Gets latest status of a data item from the database */
-  getDataItemInfo(dataItemId: TransactionId): Promise<
-    | {
-        status: "new" | "pending" | "permanent" | "failed";
-        assessedWinstonPrice: Winston;
-        bundleId?: TransactionId;
-        uploadedTimestamp: number;
-        deadlineHeight?: number;
-        failedReason?: DataItemFailedReason;
-        owner: string;
-      }
-    | undefined
-  >;
+  getDataItemInfo(dataItemId: TransactionId): Promise<DataItemInfo | undefined>;
 
   getLastDataItemInBundle(planId: PlanId): Promise<PlannedDataItem>;
 
@@ -189,6 +179,17 @@ export interface Database {
   updatePlannedDataItemAsFailed(params: {
     dataItemId: DataItemId;
     failedReason: DataItemFailedReason;
+  }): Promise<void>;
+
+  // x402 Payment Methods
+  insertX402Payment(params: {
+    txHash: string;
+    network: string;
+    payerAddress: string;
+    usdcAmount: string;
+    wincAmount: Winston;
+    dataItemId?: DataItemId;
+    byteCount: number;
   }): Promise<void>;
 }
 

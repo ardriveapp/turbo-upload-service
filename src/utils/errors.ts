@@ -124,3 +124,9 @@ export class PaymentServiceReturnedError extends BaseError {
     super(message);
   }
 }
+
+export class BadRequest extends BaseError {
+  constructor(message = "Bad Request") {
+    super(message);
+  }
+}

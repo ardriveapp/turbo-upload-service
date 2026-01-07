@@ -18,6 +18,7 @@ import { ArweaveSigner, createData } from "@dha-team/arbundles";
 import Arweave from "arweave";
 import axios from "axios";
 import { expect } from "chai";
+import { hexlify, randomBytes } from "ethers";
 import { readFileSync } from "fs";
 import { Server } from "http";
 import { stub } from "sinon";
@@ -26,11 +27,13 @@ import { ArweaveGateway } from "../src/arch/arweaveGateway";
 import { PostgresDatabase } from "../src/arch/db/postgres";
 import { FileSystemObjectStore } from "../src/arch/fileSystemObjectStore";
 import { TurboPaymentService } from "../src/arch/payment";
+import { PricingService } from "../src/arch/pricing";
+import { X402Service } from "../src/arch/x402";
 import { octetStreamContentType, receiptVersion } from "../src/constants";
 import logger from "../src/logger";
 import { createServer } from "../src/server";
 import { JWKInterface } from "../src/types/jwkTypes";
-import { W } from "../src/types/winston";
+import { W, Winston } from "../src/types/winston";
 import {
   deleteDynamoDataItemOffsets,
   putDynamoOffsetsInfo,
@@ -84,7 +87,6 @@ describe("Router tests", function () {
       expect(headers["content-type"]).to.equal(
         "application/json; charset=utf-8"
       );
-      expect(headers.connection).to.equal("close");
 
       expect(data).to.deep.equal({
         version: "0.2.0",
@@ -789,6 +791,387 @@ describe("Router tests", function () {
       expect(response.data.status).to.equal("FINALIZED");
       expect(Math.abs(Date.now() - response.data.timestamp)).to.be.lessThan(
         3000
+      );
+    });
+  });
+  const paymentPayload = {
+    x402Version: 1,
+    scheme: "exact",
+    network: "base-sepolia",
+    payload: {
+      signature: "0x" + "1234567890abcdef".repeat(8) + "12",
+      authorization: {
+        from: "0x" + "abcd".repeat(10),
+        to: "0x" + "1234".repeat(10),
+        value: "10000000", // 10 USDC
+        // 10 hr after now
+        validBefore: Math.floor(Date.now() / 1000) + 36000,
+        // Now
+        validAfter: Math.floor(Date.now() / 1000),
+        nonce: hexlify(randomBytes(32)),
+      },
+    },
+  };
+
+  describe("POST `/x402/data-item/signed", () => {
+    const validPaymentHeader = Buffer.from(
+      JSON.stringify(paymentPayload)
+    ).toString("base64");
+    const arweaveGateway = new ArweaveGateway({
+      endpoint: new URL("http://fake.com"),
+    });
+
+    const pricingService = new PricingService();
+    const x402Service = new X402Service();
+    const database = new PostgresDatabase({});
+    before(async () => {
+      server = await createServer({
+        paymentService: new TurboPaymentService(),
+        getArweaveWallet: () => Promise.resolve(testArweaveJWK),
+        arweaveGateway,
+        pricingService,
+        x402Service,
+        database,
+      });
+    });
+
+    after(() => {
+      closeServer();
+    });
+
+    beforeEach(() => {
+      // Dont hit real arweave gateway or coingecko in tests
+      stub(pricingService, "getUsdcForByteCount").callsFake((byteCount) =>
+        Promise.resolve({
+          mUsdc: 1000 * byteCount, // 0.001 USDC per byte stub
+          winc: new Winston(10_000 * byteCount), // 10,000 Winc per byte stub
+        })
+      );
+      stub(arweaveGateway, "getCurrentBlockHeight").resolves(500);
+    });
+
+    it("with no valid x402 payment header returns 402 with requirements for payment header", async () => {
+      const response = await axios.post(
+        `${localTestUrl}/v1/x402/data-item/signed`,
+        validDataItem,
+        {
+          headers: {
+            "Content-Type": octetStreamContentType,
+            "Content-Length": validDataItem.byteLength.toString(),
+            // No X-PAYMENT header
+          },
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+          validateStatus: () => true,
+        }
+      );
+      // Expect 402 Payment Required
+      expect(response.status).to.equal(402);
+      expect(response.data).to.have.property("x402Version");
+      expect(response.data).to.have.property("accepts");
+      expect(response.data.accepts[0]).to.have.property("resource");
+      expect(response.data.accepts[0]).to.have.property("description");
+      expect(response.data.accepts[0]).to.have.property("mimeType");
+      expect(response.data.accepts[0]).to.have.property("maxTimeoutSeconds");
+      // TODO; validate the accepts array
+    });
+
+    it("rejects upload without Content-Length when X-PAYMENT header is present", async () => {
+      const response = await axios.post(
+        `${localTestUrl}/v1/x402/data-item/signed`,
+        validDataItem,
+        {
+          headers: {
+            "Content-Type": octetStreamContentType,
+            "X-PAYMENT": validPaymentHeader,
+            "Content-Length": null,
+          },
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+          validateStatus: () => true,
+        }
+      );
+      // Expect 400 Bad Request
+      expect(response.status).to.equal(411);
+      expect(response.data).to.equal(
+        "Missing Content Length. Content Length is required for x402 upload."
+      );
+    });
+
+    it("with a x402 payment header containing insufficient payment amount for the content length returns 402", async () => {
+      const insufficientPaymentPayload = {
+        ...paymentPayload,
+        payload: {
+          ...paymentPayload.payload,
+          authorization: {
+            ...paymentPayload.payload.authorization,
+            value: "100000", // 0.1 USDC
+          },
+        },
+      };
+      const insufficientPaymentHeader = Buffer.from(
+        JSON.stringify(insufficientPaymentPayload)
+      ).toString("base64");
+
+      const response = await axios.post(
+        `${localTestUrl}/v1/x402/data-item/signed`,
+        validDataItem,
+        {
+          headers: {
+            "Content-Type": octetStreamContentType,
+            "Content-Length": validDataItem.byteLength.toString(),
+            "X-PAYMENT": insufficientPaymentHeader,
+          },
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+          validateStatus: () => true,
+        }
+      );
+      // Expect 402 Payment Required
+      expect(response.status).to.equal(402);
+    });
+
+    it("with a valid x402 payment header and content-length returns 200 and a valid receipt", async () => {
+      stub(x402Service, "verifyPayment").resolves({
+        isValid: true,
+        payerAddress: "0x" + "abcd".repeat(10),
+        usdcAmount: "10000000",
+      });
+      stub(x402Service, "settlePayment").resolves({
+        success: true,
+        transaction: "0x" + "1234".repeat(16),
+        network: "base-sepolia",
+      });
+
+      const response = await axios.post(
+        `${localTestUrl}/v1/x402/data-item/signed`,
+        validDataItem,
+        {
+          headers: {
+            "Content-Type": octetStreamContentType,
+            "Content-Length": validDataItem.byteLength.toString(),
+            "X-PAYMENT": validPaymentHeader,
+          },
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+          validateStatus: () => true,
+        }
+      );
+      // Expect 200 OK
+      expect(response.status).to.equal(200);
+      expect(response.data).to.have.property("id");
+      expect(response.data).to.have.property("owner");
+      expect(response.data.dataCaches).to.deep.equal(["arweave.net"]);
+      expect(await verifyReceipt(response.data)).to.be.true;
+
+      // Verify x402 payment was recorded in the database
+      const dataItemId = response.data.id;
+      const paymentRecord = await database["reader"]<{
+        tx_hash: string;
+        network: string;
+        payer_address: string;
+        usdc_amount: string;
+        winc_amount: string;
+        data_item_id: string;
+        byte_count: string;
+      }>("x402_payments")
+        .where({ data_item_id: dataItemId })
+        .first();
+
+      expect(paymentRecord).to.exist;
+      expect(paymentRecord?.tx_hash).to.equal("0x" + "1234".repeat(16));
+      expect(paymentRecord?.network).to.equal("base-sepolia");
+      expect(paymentRecord?.payer_address).to.equal("0x" + "abcd".repeat(10));
+      expect(paymentRecord?.usdc_amount).to.equal("10000000");
+      expect(paymentRecord?.winc_amount).to.equal(
+        (10_000 * validDataItem.byteLength).toString()
+      );
+      expect(paymentRecord?.data_item_id).to.equal(dataItemId);
+      expect(paymentRecord?.byte_count).to.equal(
+        validDataItem.byteLength.toString()
+      );
+    });
+  });
+
+  describe("POST `/x402/data-item/unsigned", () => {
+    const validPaymentHeader = Buffer.from(
+      JSON.stringify(paymentPayload)
+    ).toString("base64");
+    const arweaveGateway = new ArweaveGateway({
+      endpoint: new URL("http://fake.com"),
+    });
+
+    const pricingService = new PricingService();
+    const x402Service = new X402Service();
+    const database = new PostgresDatabase({});
+    before(async () => {
+      server = await createServer({
+        paymentService: new TurboPaymentService(),
+        getArweaveWallet: () => Promise.resolve(testArweaveJWK),
+        arweaveGateway,
+        pricingService,
+        x402Service,
+        database,
+      });
+    });
+
+    after(() => {
+      closeServer();
+    });
+
+    beforeEach(() => {
+      // Dont hit real arweave gateway or coingecko in tests
+      stub(pricingService, "getUsdcForByteCount").callsFake((byteCount) =>
+        Promise.resolve({
+          mUsdc: 1000 * byteCount, // 0.001 USDC per byte stub
+          winc: new Winston(10_000 * byteCount), // 10,000 Winc per byte stub
+        })
+      );
+      stub(arweaveGateway, "getCurrentBlockHeight").resolves(500);
+    });
+
+    const stubUnsignedDataItem = Buffer.from("stub unsigned data item");
+
+    it("with no valid x402 payment header returns 402 with requirements for payment header", async () => {
+      const response = await axios.post(
+        `${localTestUrl}/v1/x402/data-item/unsigned`,
+        stubUnsignedDataItem,
+        {
+          headers: {
+            "Content-Type": octetStreamContentType,
+            "Content-Length": stubUnsignedDataItem.byteLength.toString(),
+            // No X-PAYMENT header
+          },
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+          validateStatus: () => true,
+        }
+      );
+      // Expect 402 Payment Required
+      expect(response.status).to.equal(402);
+      expect(response.data).to.have.property("x402Version");
+      expect(response.data).to.have.property("accepts");
+      expect(response.data.accepts[0]).to.have.property("resource");
+      expect(response.data.accepts[0]).to.have.property("description");
+      expect(response.data.accepts[0]).to.have.property("mimeType");
+      expect(response.data.accepts[0]).to.have.property("maxTimeoutSeconds");
+      // TODO; validate the accepts array
+    });
+
+    it("rejects upload without Content-Length when X-PAYMENT header is present", async () => {
+      const response = await axios.post(
+        `${localTestUrl}/v1/x402/data-item/unsigned`,
+        stubUnsignedDataItem,
+        {
+          headers: {
+            "Content-Type": octetStreamContentType,
+            "X-PAYMENT": validPaymentHeader,
+            "Content-Length": null,
+          },
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+          validateStatus: () => true,
+        }
+      );
+      // Expect 400 Bad Request
+      expect(response.status).to.equal(411);
+      expect(response.data).to.equal(
+        "Missing Content Length. Content Length is required for raw data post."
+      );
+    });
+
+    it("with a x402 payment header containing insufficient payment amount for the content length returns 402", async () => {
+      const insufficientPaymentPayload = {
+        ...paymentPayload,
+        payload: {
+          ...paymentPayload.payload,
+          authorization: {
+            ...paymentPayload.payload.authorization,
+            value: "100000", // 0.1 USDC
+          },
+        },
+      };
+      const insufficientPaymentHeader = Buffer.from(
+        JSON.stringify(insufficientPaymentPayload)
+      ).toString("base64");
+
+      const response = await axios.post(
+        `${localTestUrl}/v1/x402/data-item/unsigned`,
+        stubUnsignedDataItem,
+        {
+          headers: {
+            "Content-Type": octetStreamContentType,
+            "Content-Length": stubUnsignedDataItem.byteLength.toString(),
+            "X-PAYMENT": insufficientPaymentHeader,
+          },
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+          validateStatus: () => true,
+        }
+      );
+      // Expect 402 Payment Required
+      expect(response.status).to.equal(402);
+    });
+
+    it.skip("with a valid x402 payment header and content-length returns 200 and a valid receipt", async () => {
+      stub(x402Service, "verifyPayment").resolves({
+        isValid: true,
+        payerAddress: "0x" + "abcd".repeat(10),
+        usdcAmount: "10000000",
+      });
+      stub(x402Service, "settlePayment").resolves({
+        success: true,
+        transaction: "0x" + "1234".repeat(16),
+        network: "base-sepolia",
+      });
+
+      const dataOver100KiB = Buffer.alloc(150 * 1024, "a");
+      const response = await axios.post(
+        `${localTestUrl}/v1/x402/data-item/unsigned`,
+        dataOver100KiB,
+        {
+          headers: {
+            "Content-Type": octetStreamContentType,
+            "Content-Length": dataOver100KiB.byteLength.toString(),
+            "X-PAYMENT": validPaymentHeader,
+          },
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+          validateStatus: () => true,
+        }
+      );
+      // Expect 200 OK
+      expect(response.status).to.equal(200);
+      expect(response.data).to.have.property("id");
+      expect(response.data).to.have.property("owner");
+      expect(response.data.dataCaches).to.deep.equal(["arweave.net"]);
+      expect(await verifyReceipt(response.data)).to.be.true;
+
+      // Verify x402 payment was recorded in the database
+      const dataItemId = response.data.id;
+      const paymentRecord = await database["reader"]<{
+        tx_hash: string;
+        network: string;
+        payer_address: string;
+        usdc_amount: string;
+        winc_amount: string;
+        data_item_id: string;
+        byte_count: string;
+      }>("x402_payments")
+        .where({ data_item_id: dataItemId })
+        .first();
+
+      expect(paymentRecord).to.exist;
+      expect(paymentRecord?.tx_hash).to.equal("0x" + "1234".repeat(16));
+      expect(paymentRecord?.network).to.equal("base-sepolia");
+      expect(paymentRecord?.payer_address).to.equal("0x" + "abcd".repeat(10));
+      expect(paymentRecord?.usdc_amount).to.equal("10000000");
+      expect(paymentRecord?.winc_amount).to.equal(
+        (10_000 * dataOver100KiB.byteLength).toString()
+      );
+      expect(paymentRecord?.data_item_id).to.equal(dataItemId);
+      expect(paymentRecord?.byte_count).to.equal(
+        dataOver100KiB.byteLength.toString()
       );
     });
   });

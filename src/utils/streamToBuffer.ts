@@ -28,12 +28,8 @@ export const streamToBuffer = async (
     `Converting stream of expected data size ${data_size} to Buffer...`
   );
 
-  if (stream.isPaused()) {
-    stream.resume();
-  }
-
   let buffer: Buffer = Buffer.alloc(data_size, undefined, encoding);
-  return new Promise((resolve, reject) => {
+  const promise: Promise<Buffer> = new Promise((resolve, reject) => {
     stream.on("data", (chunk: Buffer) => {
       if (data_size > 0) {
         // Faster than concat, if we already know buffer size
@@ -55,6 +51,12 @@ export const streamToBuffer = async (
       resolve(buffer);
     });
   });
+
+  if (stream.isPaused()) {
+    stream.resume();
+  }
+
+  return promise;
 };
 
 // Presumes that the buffer is preallocated to receive the stream data

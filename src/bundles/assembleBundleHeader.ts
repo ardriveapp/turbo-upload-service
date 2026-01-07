@@ -19,6 +19,7 @@ import { Readable } from "stream";
 
 import { ByteCount } from "../types/types";
 import { toB64Url } from "../utils/base64";
+import { LookaheadReader, withLookahead } from "../utils/streamUtils";
 
 export interface DataItemInfo {
   size: number;
@@ -67,6 +68,64 @@ export function bundleHeaderInfoFromBuffer(
   return {
     numDataItems,
     dataItems,
+  };
+}
+
+/**
+ * Parse a bundle header from a PAUSED Readable stream, reading only the bytes
+ * necessary from the stream to construct the BundleHeaderInfo.
+ */
+export async function parseBundleHeaderInfo(bundleStream: Readable): Promise<{
+  bundleHeaderInfo: BundleHeaderInfo;
+  bundleHeaderByteCount: number;
+  rest: Readable;
+}> {
+  const dataItemsCountByteCount = 32;
+  const dataItemSizeByteCount = 32;
+  const dataItemIdByteCount = 32;
+  const headerEntryByteCount = dataItemSizeByteCount + dataItemIdByteCount;
+
+  const { result, rest } = await withLookahead(
+    bundleStream,
+    async (reader: LookaheadReader) => {
+      const numDataItemsAsBytes = await reader.readExactly(
+        dataItemsCountByteCount
+      );
+      const numDataItems = Number(byteArrayToLong(numDataItemsAsBytes));
+      if (!Number.isFinite(numDataItems) || numDataItems < 0) {
+        throw new Error("Invalid number of data items in bundle header");
+      }
+
+      const dataItems: DataItemInfo[] = [];
+
+      let dataOffset =
+        dataItemsCountByteCount + headerEntryByteCount * numDataItems;
+      for (let i = 0; i < numDataItems; i++) {
+        const dataItemSizeBytes = await reader.readExactly(
+          dataItemSizeByteCount
+        );
+        if (dataItemSizeBytes.length !== dataItemSizeByteCount) {
+          throw new Error(`Failed to read size for data item ${i}`);
+        }
+        const dataItemSize = Number(byteArrayToLong(dataItemSizeBytes));
+        const idBuf = await reader.readExactly(dataItemIdByteCount);
+        if (idBuf.length !== dataItemIdByteCount) {
+          throw new Error(`Failed to read id for data item ${i}`);
+        }
+        dataItems.push({ size: dataItemSize, id: toB64Url(idBuf), dataOffset });
+        dataOffset += dataItemSize;
+      }
+
+      const info: BundleHeaderInfo = { numDataItems, dataItems };
+      return info;
+    }
+  );
+
+  return {
+    bundleHeaderInfo: result,
+    bundleHeaderByteCount:
+      dataItemsCountByteCount + headerEntryByteCount * result.numDataItems,
+    rest,
   };
 }
 
