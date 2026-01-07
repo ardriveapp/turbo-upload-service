@@ -29,6 +29,7 @@ import winston from "winston";
 import { gunzipSync, gzipSync } from "zlib";
 
 import { ConfigKeys, getConfigValue } from "../arch/remoteConfig";
+import { quarantinePrefix } from "../constants";
 import globalLogger from "../logger";
 import {
   MetricRegistry,
@@ -121,19 +122,26 @@ export function dynamoAvailable(): boolean {
 const dynamoDataItemCache = new ReadThroughPromiseCache<
   TransactionId,
   { buffer: Buffer; info: PayloadInfo },
-  { dynamoClient: DynamoDBClient; logger: winston.Logger }
+  { dynamoClient: DynamoDBClient; logger: winston.Logger; quarantine?: boolean }
 >({
   cacheParams: {
     cacheCapacity: 1000,
     cacheTTLMillis: 60_000,
   },
-  readThroughFunction: async (dataItemId, { dynamoClient, logger }) => {
+  readThroughFunction: async (
+    dataItemId,
+    { dynamoClient, logger, quarantine }
+  ) => {
+    const binaryId = quarantine
+      ? quarantineIdBinary(dataItemId)
+      : idToBinary(dataItemId);
+
     try {
       const res = (await breakerForDynamo(dynamoClient).fire(async () => {
         return dynamoClient.send(
           new GetItemCommand({
             TableName: cacheTableName,
-            Key: { Id: { B: idToBinary(dataItemId) } },
+            Key: { Id: { B: binaryId } },
           })
         );
       })) as GetItemCommandOutput;
@@ -180,13 +188,16 @@ const dynamoDataItemCache = new ReadThroughPromiseCache<
 const dynamoDataItemExistsCache = new ReadThroughPromiseCache<
   TransactionId,
   boolean,
-  { dynamoClient: DynamoDBClient; logger: winston.Logger }
+  { dynamoClient: DynamoDBClient; logger: winston.Logger; quarantine?: boolean }
 >({
   cacheParams: {
     cacheCapacity: 1000,
     cacheTTLMillis: 60_000,
   },
-  readThroughFunction: async (dataItemId, { dynamoClient, logger }) => {
+  readThroughFunction: async (
+    dataItemId,
+    { dynamoClient, logger, quarantine }
+  ) => {
     // Hack to keep dynamo out of unit tests
     if (process.env.NODE_ENV === "test") {
       logger.debug(
@@ -195,12 +206,16 @@ const dynamoDataItemExistsCache = new ReadThroughPromiseCache<
       return false;
     }
 
+    const binaryId = quarantine
+      ? quarantineIdBinary(dataItemId)
+      : idToBinary(dataItemId);
+
     try {
       const res = (await breakerForDynamo(dynamoClient).fire(async () => {
         return dynamoClient.send(
           new GetItemCommand({
             TableName: cacheTableName,
-            Key: { Id: { B: idToBinary(dataItemId) } },
+            Key: { Id: { B: binaryId } },
             ProjectionExpression: "Id",
           })
         );
@@ -320,17 +335,62 @@ export async function putDynamoDataItem(params: {
   logger.debug(`Stored data item ${dataItemId} in dynamodb`);
 }
 
+export async function quarantineDynamoDataItem(
+  dataItemId: TransactionId,
+  logger: winston.Logger
+): Promise<void> {
+  logger.info(`Quarantining DynamoDB item ${dataItemId}...`);
+  try {
+    const existing = await dynamoClient.send(
+      new GetItemCommand({
+        TableName: cacheTableName,
+        Key: { Id: { B: idToBinary(dataItemId) } },
+      })
+    );
+
+    if (!existing.Item) {
+      logger.info(
+        `No DynamoDB item found for ${dataItemId}, nothing to quarantine`
+      );
+      return;
+    }
+
+    const expiresAt =
+      Math.floor(Date.now() / 1000) +
+      (await getConfigValue(ConfigKeys.dynamoWriteDataItemTtlSecs)) * 2; // give quarantined items extra time before expiry
+    await dynamoClient.send(
+      new PutItemCommand({
+        TableName: cacheTableName,
+        Item: {
+          ...existing.Item,
+          Id: { B: quarantineIdBinary(dataItemId) }, // Prefixed quarantine key
+          X: { N: expiresAt.toString() }, // New expiration timestamp
+        },
+      })
+    );
+
+    await deleteDynamoDataItem(dataItemId, logger);
+
+    logger.info(`Quarantined DynamoDB item ${dataItemId}`);
+  } catch (err) {
+    logger.error(`Failed to quarantine ${dataItemId} in DynamoDB`, { err });
+  }
+}
+
 export async function getDynamoDataItem({
   dataItemId,
   logger,
+  quarantine = false,
 }: {
   dataItemId: TransactionId;
   logger: winston.Logger;
+  quarantine?: boolean;
 }): Promise<{ buffer: Buffer; info: PayloadInfo } | undefined> {
   return dynamoDataItemCache
     .get(dataItemId, {
       dynamoClient,
       logger,
+      quarantine,
     })
     .catch(() => undefined);
 }
@@ -393,12 +453,18 @@ export async function deleteDynamoDataItemOffsets(
 
 export async function dynamoHasDataItem(
   dataItemId: TransactionId,
-  logger: winston.Logger
+  logger: winston.Logger,
+  quarantine = false
 ): Promise<boolean> {
+  logger.debug(`Checking DynamoDB for data item ${dataItemId}...`, {
+    quarantine,
+  });
+
   return dynamoDataItemExistsCache
     .get(dataItemId, {
       dynamoClient,
       logger,
+      quarantine,
     })
     .catch(() => false);
 }
@@ -408,14 +474,21 @@ export async function dynamoReadableRange({
   start,
   inclusiveEnd,
   logger,
+  quarantine = false,
 }: {
   dataItemId: TransactionId;
   start: number;
   inclusiveEnd?: number;
   logger: winston.Logger;
+  quarantine?: boolean;
 }): Promise<Readable | undefined> {
-  const item = await getDynamoDataItem({ dataItemId, logger });
+  const item = await getDynamoDataItem({ dataItemId, logger, quarantine });
   if (!item) return undefined;
+  logger.debug("Got dynamo item for readable range", {
+    dataItemId,
+    itemLength: item.buffer.length,
+    quarantine,
+  });
   const end =
     inclusiveEnd !== undefined ? inclusiveEnd + 1 : item.buffer.length;
   return Readable.from(item.buffer.subarray(start, end));
@@ -439,6 +512,12 @@ export async function dynamoPayloadInfo({
 
 export function idToBinary(dataItemId: TransactionId): Uint8Array {
   return Buffer.from(dataItemId, "base64url");
+}
+
+function quarantineIdBinary(dataItemId: TransactionId): Uint8Array {
+  const original = idToBinary(dataItemId);
+  const prefix = Buffer.from(quarantinePrefix + "_"); // plain bytes, not base64
+  return Buffer.concat([prefix, original]);
 }
 
 export async function putDynamoOffsetsInfo({

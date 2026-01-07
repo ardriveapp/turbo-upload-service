@@ -14,7 +14,6 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-import { AxiosInstance } from "axios";
 import { sign } from "jsonwebtoken";
 import winston from "winston";
 
@@ -37,7 +36,7 @@ import {
   Winston,
 } from "../types/types";
 import { PaymentServiceReturnedError } from "../utils/errors";
-import { createAxiosInstance } from "./axiosClient";
+import { RetryHttpClient, createRetryHttpClient } from "../utils/httpClient";
 
 // TODO: Payment service response API
 export interface ReserveBalanceResponse {
@@ -137,7 +136,7 @@ export class TurboPaymentService implements PaymentService {
   constructor(
     private readonly shouldAllowArFSData: boolean = allowArFSData,
     // TODO: create a client config with base url pointing at the base url of the payment service
-    private readonly axios: AxiosInstance = createAxiosInstance({}),
+    private readonly httpClient: RetryHttpClient = createRetryHttpClient({}),
     private readonly logger: winston.Logger = defaultLogger,
     readonly paymentServiceURL: string | undefined = process.env
       .PAYMENT_SERVICE_BASE_URL,
@@ -149,7 +148,7 @@ export class TurboPaymentService implements PaymentService {
       paymentServiceURL,
       shouldAllowArFSData,
     });
-    this.axios = axios;
+    this.httpClient = httpClient;
     this.paymentServiceURL = paymentServiceURL
       ? `${paymentServiceProtocol}://${paymentServiceURL}`
       : undefined;
@@ -211,18 +210,13 @@ export class TurboPaymentService implements PaymentService {
       url.searchParams.append("paidBy", address);
     }
 
-    const { status, statusText, data } = await this.axios.get<
+    const { status, statusText, data } = await this.httpClient.get<
       PaymentServiceCheckBalanceResponse | string
     >(url.href, {
       headers: {
         Authorization: `Bearer ${token}`,
       },
-      validateStatus: (status) => {
-        if (status >= 500) {
-          throw new Error(`Payment service unavailable. Status: ${status}`);
-        }
-        return true;
-      },
+      validateStatus: () => true,
     });
 
     logger.debug("Payment service response.", {
@@ -274,7 +268,13 @@ export class TurboPaymentService implements PaymentService {
     signatureType,
     paidBy = [],
   }: ReserveBalanceParams): Promise<ReserveBalanceResponse> {
-    const logger = this.logger.child({ nativeAddress, size });
+    const logger = this.logger.child({
+      nativeAddress,
+      size,
+      paidBy,
+      signatureType,
+      dataItemId,
+    });
 
     logger.debug("Reserving balance for wallet.");
 
@@ -317,22 +317,19 @@ export class TurboPaymentService implements PaymentService {
       url.searchParams.append("paidBy", address);
     }
 
-    const { status, statusText, data } = await this.axios.get(url.href, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-      validateStatus: (status) => {
-        if (status >= 500) {
-          throw new Error(`Payment service unavailable. Status: ${status}`);
-        }
-        return true;
-      },
-    });
+    const { status, statusText, data } = await this.httpClient.get<string>(
+      url.href,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
 
     logger.debug("Payment service response.", {
-      status,
-      statusText,
-      data,
+      status: status,
+      statusText: statusText,
+      data: data,
     });
 
     const walletExists = +status !== 404;
@@ -380,7 +377,7 @@ export class TurboPaymentService implements PaymentService {
     });
 
     try {
-      await this.axios.get(
+      await this.httpClient.get(
         `${this.paymentServiceURL}/v1/refund-balance/${signatureTypeInfo[signatureType].name}/${nativeAddress}?winstonCredits=${winston}&dataItemId=${dataItemId}`,
         {
           headers: {
@@ -402,7 +399,7 @@ export class TurboPaymentService implements PaymentService {
   public async getFiatToARConversionRate(
     currency: "usd" = "usd"
   ): Promise<number> {
-    const { data: fiatToArRate } = await this.axios.get(
+    const { data: fiatToArRate } = await this.httpClient.get(
       `${this.paymentServiceURL}/v1/rates/${currency}`
     );
     return +fiatToArRate.rate;
@@ -420,7 +417,7 @@ export class TurboPaymentService implements PaymentService {
     });
 
     const { status, statusText, data } =
-      await this.axios.get<CreateDelegatedPaymentApprovalResponse>(
+      await this.httpClient.get<CreateDelegatedPaymentApprovalResponse>(
         `${
           this.paymentServiceURL
         }/v1/account/approvals/create?dataItemId=${dataItemId}&winc=${winc}&payingAddress=${payingAddress}&approvedAddress=${approvedAddress}${
@@ -458,7 +455,7 @@ export class TurboPaymentService implements PaymentService {
       expiresIn: "1h",
     });
 
-    const { status, statusText, data } = await this.axios.get<
+    const { status, statusText, data } = await this.httpClient.get<
       DelegatedPaymentApproval[]
     >(
       `${this.paymentServiceURL}/v1/account/approvals/revoke?dataItemId=${dataItemId}&payingAddress=${payingAddress}&approvedAddress=${revokedAddress}`,

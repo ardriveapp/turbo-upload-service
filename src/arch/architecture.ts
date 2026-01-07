@@ -21,7 +21,10 @@ import winston from "winston";
 
 import { gatewayUrl, migrateOnStartup } from "../constants";
 import globalLogger from "../logger";
-import { getArweaveWallet } from "../utils/getArweaveWallet";
+import {
+  getArweaveWallet,
+  getEvmDataItemSigningPrivateKey,
+} from "../utils/getArweaveWallet";
 import { getS3ObjectStore } from "../utils/objectStoreUtils";
 import { ArweaveGateway } from "./arweaveGateway";
 import { CacheService } from "./cacheServiceTypes";
@@ -31,6 +34,8 @@ import { PostgresDatabase } from "./db/postgres";
 import { getElasticacheService } from "./elasticacheService";
 import { ObjectStore } from "./objectStore";
 import { PaymentService, TurboPaymentService } from "./payment";
+import { PricingService } from "./pricing";
+import { CompositeX402Service, X402Service } from "./x402";
 
 export interface Architecture {
   objectStore: ObjectStore;
@@ -40,6 +45,9 @@ export interface Architecture {
   logger: winston.Logger;
   arweaveGateway: ArweaveGateway;
   getArweaveWallet: () => Promise<JWKInterface>;
+  getEVMDataItemSigningPrivateKey: () => Promise<string>;
+  pricingService: PricingService;
+  x402Service: X402Service;
   tracer?: Tracer;
 }
 
@@ -54,7 +62,10 @@ export const defaultArchitecture: Architecture = {
   paymentService: new TurboPaymentService(),
   logger: globalLogger,
   getArweaveWallet: () => getArweaveWallet(),
+  getEVMDataItemSigningPrivateKey: () => getEvmDataItemSigningPrivateKey(),
   arweaveGateway: new ArweaveGateway({
     endpoint: gatewayUrl,
   }),
+  pricingService: new PricingService(),
+  x402Service: new CompositeX402Service(),
 };

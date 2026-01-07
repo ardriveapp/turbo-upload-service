@@ -131,24 +131,24 @@ function cacheKeyForMetadata({
 const smallDataItemCache = new ReadThroughPromiseCache<
   TransactionId,
   Buffer,
-  CacheService
+  { cacheService: CacheService; quarantine?: boolean }
 >({
   cacheParams: {
     cacheCapacity: 1000,
     cacheTTLMillis: 60_000,
   },
-  readThroughFunction: async (dataItemId, cacheService) => {
-    const rawData = await breakerForCache(cacheService).fire(() =>
-      cacheService.getBuffer(cacheKeyForRawDataItem({ dataItemId }))
+  readThroughFunction: async (dataItemId, { cacheService, quarantine }) => {
+    const rawDataItem = await breakerForCache(cacheService).fire(() =>
+      cacheService.getBuffer(cacheKeyForRawDataItem({ dataItemId, quarantine }))
     );
 
-    if (!rawData) {
+    if (!rawDataItem) {
       throw new CacheServiceError(
         `Cached raw data item with ID ${dataItemId} not found!`
       );
     }
 
-    return rawData;
+    return rawDataItem;
   },
   metricsConfig: {
     cacheName: "small_item_cache",
@@ -193,17 +193,17 @@ const metadataCache = new ReadThroughPromiseCache<
 const smallDataItemExistsCache = new ReadThroughPromiseCache<
   TransactionId,
   boolean,
-  CacheService
+  { cacheService: CacheService; quarantine?: boolean }
 >({
   cacheParams: {
     cacheCapacity: 1000,
     cacheTTLMillis: 60_000,
   },
-  readThroughFunction: async (dataItemId, cacheService) => {
+  readThroughFunction: async (dataItemId, { cacheService, quarantine }) => {
     const existsCount = await breakerForCache(cacheService).fire(() => {
       return cacheService.exists(
-        cacheKeyForRawDataItem({ dataItemId }),
-        cacheKeyForMetadata({ dataItemId })
+        cacheKeyForRawDataItem({ dataItemId, quarantine }),
+        cacheKeyForMetadata({ dataItemId, quarantine })
       );
     });
     return existsCount === 2;
@@ -344,13 +344,15 @@ export async function cacheHasDataItem({
   cacheService,
   dataItemId,
   logger,
+  quarantine = false,
 }: {
   cacheService: CacheService;
   dataItemId: TransactionId;
   logger: winston.Logger;
+  quarantine?: boolean;
 }): Promise<boolean> {
   return smallDataItemExistsCache
-    .get(dataItemId, cacheService)
+    .get(dataItemId, { cacheService, quarantine })
     .catch((error) => {
       logger.error(
         `Error while checking if data item with ID ${dataItemId} exists in cache!`,
@@ -369,9 +371,10 @@ export async function cachedDataItemMetadata(
 
 export function cachedRawDataItem(
   cacheService: CacheService,
-  dataItemId: TransactionId
+  dataItemId: TransactionId,
+  quarantine?: boolean
 ): Promise<Buffer> {
-  return smallDataItemCache.get(dataItemId, cacheService);
+  return smallDataItemCache.get(dataItemId, { cacheService, quarantine });
 }
 
 export async function cachedDataItemReadableRange({
@@ -379,26 +382,31 @@ export async function cachedDataItemReadableRange({
   dataItemId,
   startOffset,
   endOffsetInclusive,
+  quarantine = false,
 }: {
   cacheService: CacheService;
   dataItemId: TransactionId;
   startOffset?: number;
   endOffsetInclusive?: number;
+  quarantine?: boolean;
 }): Promise<{ readable: Readable }> {
-  return cachedRawDataItem(cacheService, dataItemId).then((rawData) => {
-    return {
-      readable: Readable.from(
-        (startOffset ?? endOffsetInclusive) !== undefined
-          ? rawData.subarray(
-              startOffset || 0,
-              endOffsetInclusive !== undefined
-                ? endOffsetInclusive + 1 // subarray uses exclusive end index
-                : undefined
-            )
-          : rawData
-      ),
-    };
-  });
+  const rawDataItem = await cachedRawDataItem(
+    cacheService,
+    dataItemId,
+    quarantine
+  );
+  return {
+    readable: Readable.from(
+      (startOffset ?? endOffsetInclusive) !== undefined
+        ? rawDataItem.subarray(
+            startOffset || 0,
+            endOffsetInclusive !== undefined
+              ? endOffsetInclusive + 1 // subarray uses exclusive end index
+              : undefined
+          )
+        : rawDataItem
+    ),
+  };
 }
 
 export async function removeDataItemsFromCache(

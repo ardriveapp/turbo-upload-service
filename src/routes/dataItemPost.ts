@@ -28,7 +28,7 @@ import {
   InMemoryDataItem,
   StreamingDataItem,
 } from "../bundles/streamingDataItem";
-import { signatureTypeInfo } from "../constants";
+import { inMemoryDataItemThreshold, signatureTypeInfo } from "../constants";
 import {
   anchorLength,
   approvalAmountTagName,
@@ -65,6 +65,7 @@ import {
   ValidDataItemStore,
   allValidDataItemStores,
   cacheDataItem,
+  containsAns104Tags,
   dataItemExists,
   quarantineDataItem,
   streamsForDataItemStorage,
@@ -77,6 +78,7 @@ import {
 import {
   UPLOAD_DATA_PATH,
   ensureDataItemsBackupDirExists,
+  isBackupFSNeeded,
 } from "../utils/fileSystemUtils";
 import {
   dataItemIsInFlight,
@@ -84,7 +86,6 @@ import {
   removeFromInFlight,
 } from "../utils/inFlightDataItemCache";
 import {
-  containsAns104Tags,
   encodeTagsForOptical,
   signDataItemHeader,
 } from "../utils/opticalUtils";
@@ -98,15 +99,24 @@ import { streamToBuffer } from "../utils/streamToBuffer";
 
 const shouldSkipBalanceCheck = process.env.SKIP_BALANCE_CHECKS === "true";
 const opticalBridgingEnabled = process.env.OPTICAL_BRIDGING_ENABLED !== "false";
-ensureDataItemsBackupDirExists().catch((error) => {
-  globalLogger.error(
-    `Failed to create upload data directory at ${UPLOAD_DATA_PATH}!`,
-    { error }
-  );
-  throw error;
-});
-
-export const inMemoryDataItemThreshold = 10 * 1024; // 10 KiB
+isBackupFSNeeded()
+  .then((needed) =>
+    needed
+      ? ensureDataItemsBackupDirExists().catch((error) => {
+          globalLogger.error(
+            `Failed to create upload data directory at ${UPLOAD_DATA_PATH}!`,
+            { error }
+          );
+          throw error;
+        })
+      : Promise.resolve()
+  )
+  .catch((error) => {
+    globalLogger.error(`Failed to determine if backup filesystem is needed!`, {
+      error,
+    });
+    throw error;
+  });
 
 export async function dataItemRoute(ctx: KoaContext, next: Next) {
   let { logger } = ctx.state;

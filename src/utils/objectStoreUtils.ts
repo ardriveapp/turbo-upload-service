@@ -26,7 +26,7 @@ import {
   BundleHeaderInfo,
   bundleHeaderInfoFromBuffer,
 } from "../bundles/assembleBundleHeader";
-import { DataItemOffsets } from "../constants";
+import { DataItemOffsets, quarantinePrefix } from "../constants";
 import { octetStreamContentType } from "../constants";
 import logger from "../logger";
 import { PlanId } from "../types/dbTypes";
@@ -44,6 +44,8 @@ const multiPartPrefix = process.env.MULTIPART_S3_PREFIX ?? "multipart-uploads";
 const bundlePayloadPrefix =
   process.env.BUNDLE_PAYLOAD_S3_PREFIX ?? "bundle-payload";
 const bundleTxPrefix = process.env.BUNDLE_TX_S3_PREFIX ?? "bundle";
+const rawUnsignedDataPrefix =
+  process.env.RAW_UNSIGNED_DATA_S3_PREFIX ?? "raw-unsigned-data";
 
 let s3ObjectStore: S3ObjectStore | undefined;
 
@@ -78,6 +80,27 @@ export function sanitizePayloadContentType(raw: string): string {
     .trim();
 
   return out.length === 0 ? defaultOctetStream : out;
+}
+
+export function putRawUnsignedData(
+  objectStore: ObjectStore,
+  dataHash: string,
+  data: Readable,
+  contentType: string
+): Promise<void> {
+  return objectStore.putObject(`${rawUnsignedDataPrefix}/${dataHash}`, data, {
+    contentType,
+  });
+}
+
+export async function getRawUnsignedData(
+  objectStore: ObjectStore,
+  dataHash: string
+): Promise<Readable> {
+  const { readable } = await objectStore.getObject(
+    `${rawUnsignedDataPrefix}/${dataHash}`
+  );
+  return readable;
 }
 
 export function putDataItemRaw(
@@ -146,9 +169,12 @@ export async function getDataItemRangeReadable({
 
 export async function getRawDataItem(
   objectStore: ObjectStore,
-  dataItemId: TransactionId
+  dataItemId: TransactionId,
+  quarantine = false
 ): Promise<Readable> {
-  const key = `${dataItemPrefix}/${dataItemId}`;
+  const key =
+    (quarantine ? `${quarantinePrefix}/` : "") +
+    `${dataItemPrefix}/${dataItemId}`;
   return objectStore.getObject(key).then(({ readable }) => readable);
 }
 

@@ -45,7 +45,7 @@ const objectStore = new FileSystemObjectStore();
 describe("Bundle buffer functions", () => {
   it("streamed buffer implementation gives the same buffer as existing implementations", async () => {
     // cspell:disable
-    const dataItemId = "PPqimlPSz890fAufmEs7XnpReEq_o70FvJvz-Leiw1A"; // cspell:enable
+    const dataItemId = "EWMpMP0DvN6sgn5ZtJ3emd47eMF8fsfpXGS5him5vJQ"; // cspell:enable
     const headerBuffer = await streamToBuffer(
       await assembleBundleHeader([
         {
@@ -59,29 +59,50 @@ describe("Bundle buffer functions", () => {
               )
             )
           ),
-          byteCount: 1464,
+          byteCount: 7427,
         },
       ])
     );
 
-    const { payloadReadable } = assembleBundlePayload(
-      objectStore,
-      stubCacheService,
-      headerBuffer,
-      logger
-    );
+    const { payloadReadable, dataItemAttributesPromise } =
+      assembleBundlePayload(
+        objectStore,
+        stubCacheService,
+        headerBuffer,
+        logger
+      );
     const bufferFromStream = await streamToBuffer(payloadReadable);
     const headerSize = totalBundleSizeFromHeaderInfo(
       bundleHeaderInfoFromBuffer(headerBuffer)
     );
     expect(headerSize).to.equal(bufferFromStream.byteLength);
 
+    const dataItemAttributes = await dataItemAttributesPromise;
+    expect(dataItemAttributes).to.deep.equal([
+      {
+        dataItemId: "e11DV0VmlAZtRFphzlphDBcP6XP4oHVyHuZFeQP9KF0",
+        parentDataItemId: "EWMpMP0DvN6sgn5ZtJ3emd47eMF8fsfpXGS5him5vJQ",
+        payloadContentType: "text/plain; charset=utf-8",
+        payloadDataStartOffset: 1085,
+        rawDataItemOffsetInBundle: 1318,
+        rawDataItemSize: 6205,
+        startOffsetInParentDataItemPayload: 96,
+      },
+      {
+        dataItemId: "EWMpMP0DvN6sgn5ZtJ3emd47eMF8fsfpXGS5him5vJQ",
+        payloadContentType: "application/octet-stream",
+        payloadDataStartOffset: 1126,
+        rawDataItemOffsetInBundle: 96,
+        rawDataItemSize: 7427,
+      },
+    ]);
+
     // write header to disk for pLimit implementation to consume
     writeFileSync("temp/header/test-header", headerBuffer);
 
     const bufferFromPLimit = await getBundlePLimitBuffer(
-      objectStore, // cspell:disable
-      ["PPqimlPSz890fAufmEs7XnpReEq_o70FvJvz-Leiw1A"], // cspell:enable
+      objectStore,
+      [dataItemId],
       "test-header"
     );
 
@@ -97,6 +118,95 @@ describe("Bundle buffer functions", () => {
       bufferFromBufferAlloc.byteLength
     );
     expect(bufferFromStream).to.deep.equal(bufferFromBufferAlloc);
+  });
+
+  describe("assembleBundlePayload", () => {
+    it("correctly collects attributes for a bundled data item with 2 nested items", async () => {
+      // cspell:disable
+      const dataItemId = "3yKDnHSQIkvQ5SIm5AEDE7gimJljuKhB2UdrVwY60Jc"; // cspell:enable
+      const headerBuffer = await streamToBuffer(
+        await assembleBundleHeader([
+          {
+            dataItemRawId: await bufferIdFromReadableSignature(
+              await getRawSignatureOfDataItemFromObjStore(
+                objectStore,
+                dataItemId,
+                await getSignatureTypeOfDataItemFromObjStore(
+                  objectStore,
+                  dataItemId
+                )
+              )
+            ),
+            byteCount: 13696,
+          },
+        ])
+      );
+
+      const { payloadReadable, dataItemAttributesPromise } =
+        assembleBundlePayload(
+          objectStore,
+          stubCacheService,
+          headerBuffer,
+          logger
+        );
+      const bufferFromStream = await streamToBuffer(payloadReadable);
+      const headerSize = totalBundleSizeFromHeaderInfo(
+        bundleHeaderInfoFromBuffer(headerBuffer)
+      );
+      expect(headerSize).to.equal(bufferFromStream.byteLength);
+
+      const dataItemAttributes = await dataItemAttributesPromise;
+      // Collected attributes are verified below.
+      expect(dataItemAttributes).to.deep.equal([
+        {
+          dataItemId: "FMI1l58Kimu1LxYfKy4ge2jPQJf9axQIGIPpjrILiXc",
+          parentDataItemId: "3yKDnHSQIkvQ5SIm5AEDE7gimJljuKhB2UdrVwY60Jc",
+          payloadContentType: "text/plain; charset=utf-8",
+          payloadDataStartOffset: 1085,
+          rawDataItemOffsetInBundle: 1382,
+          rawDataItemSize: 6205,
+          startOffsetInParentDataItemPayload: 160,
+        },
+        {
+          dataItemId: "WF2h3SgQxxKZRdqOBbLCMkz2yLIl2DPJLgaWfhxFmng",
+          parentDataItemId: "3yKDnHSQIkvQ5SIm5AEDE7gimJljuKhB2UdrVwY60Jc",
+          payloadContentType: "text/plain; charset=utf-8",
+          payloadDataStartOffset: 1085,
+          rawDataItemOffsetInBundle: 7587,
+          rawDataItemSize: 6205,
+          startOffsetInParentDataItemPayload: 6365,
+        },
+        {
+          dataItemId: "3yKDnHSQIkvQ5SIm5AEDE7gimJljuKhB2UdrVwY60Jc",
+          payloadContentType: "application/octet-stream",
+          payloadDataStartOffset: 1126,
+          rawDataItemOffsetInBundle: 96,
+          rawDataItemSize: 13696,
+        },
+      ]);
+
+      // write header to disk for pLimit implementation to consume
+      writeFileSync("temp/header/test-header", headerBuffer);
+
+      const bufferFromPLimit = await getBundlePLimitBuffer(
+        objectStore,
+        [dataItemId],
+        "test-header"
+      );
+
+      expect(bufferFromStream.byteLength).to.equal(bufferFromPLimit.byteLength);
+      expect(bufferFromStream).to.deep.equal(bufferFromPLimit);
+
+      const bufferFromBufferAlloc = await getBundleBufferAlloc(
+        objectStore,
+        "test-header",
+        headerBuffer
+      );
+      expect(bufferFromStream.byteLength).to.equal(
+        bufferFromBufferAlloc.byteLength
+      );
+      expect(bufferFromStream).to.deep.equal(bufferFromBufferAlloc);
+    });
   });
 });
 

@@ -37,7 +37,9 @@ describe("Knex connected to postgreSQL database", () => {
     const { rows, rowCount } = await listTables(knex);
     expect(rowCount).to.equal(rowCountBefore + 1);
     expect(rows.length).to.equal(rowCountBefore + 1);
-    expect(rows[rows.length - 1].table_name).to.equal("test_table");
+    expect(
+      rows.filter((row) => row.table_name === "test_table")
+    ).to.have.lengthOf(1);
 
     await knex.schema.dropTable("test_table");
 

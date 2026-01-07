@@ -31,6 +31,8 @@ import {
 import { offsetsHandler } from "./routes/offsets";
 import { statusHandler } from "./routes/status";
 import { swaggerDocs, swaggerDocsJSON } from "./routes/swagger";
+import { x402SignedDataItemRoute } from "./routes/x402DataItemPost";
+import { x402RawDataPostRoute } from "./routes/x402RawDataPost";
 import { KoaContext } from "./server";
 
 const metricsRegistry = MetricRegistry.getInstance().getRegistry();
@@ -44,6 +46,20 @@ const serveRoutesAndV1 = (path: string[]) =>
 
 // Raw data post routes
 router.post(serveRoutesAndV1(["/tx", "/tx/:token"]), dataItemRoute);
+router.post(
+  serveRoutesAndV1([
+    "/x402/data-item/unsigned",
+    "/x402/data-item/unsigned/:network",
+  ]),
+  x402RawDataPostRoute
+);
+router.post(
+  serveRoutesAndV1([
+    "/x402/data-item/signed",
+    "/x402/data-item/signed/:network",
+  ]),
+  x402SignedDataItemRoute
+);
 
 /**
  * START TEMPORARY PATCH TO SUPPORT up.arweave.net

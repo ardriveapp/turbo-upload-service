@@ -64,6 +64,7 @@ import {
 } from "../../types/dbTypes";
 import {
   DataItemId,
+  DataItemInfo,
   TransactionId,
   UploadId,
   W,
@@ -392,14 +393,10 @@ export class PostgresDatabase implements Database {
       ...generateArrayChunks<TransactionId>(dataItemIds, batchingSize),
     ];
 
-    const { planned_date } = (
-      await this.writer<BundlePlanDBResult>(tableNames.bundlePlan)
-        .insert({ plan_id: planId })
-        .returning("planned_date")
-    )[0];
+    const planned_date = new Date().toISOString();
 
-    let encounteredEmptyOrLockedDataItem = false;
-
+    let dataItemsMoved = 0;
+    let wroteBundlePlan = false;
     try {
       logger.debug(
         `Batch moving ${dataItemIdBatches.length} batches of ${batchingSize} or less data items from ${tableNames.newDataItem} table to  ${tableNames.plannedDataItem} table...`
@@ -419,6 +416,14 @@ export class PostgresDatabase implements Database {
             .del()
             .returning("*");
 
+          const numItems = deletedDataItems.length;
+          if (numItems === 0) {
+            this.log.warn("No data items deleted from new data item table.", {
+              dataItemIds,
+            });
+            return;
+          }
+
           const dbInserts: PlannedDataItemDBInsert[] = deletedDataItems.map(
             (deletedDataItem) => ({
               ...deletedDataItem,
@@ -431,6 +436,18 @@ export class PostgresDatabase implements Database {
             PlannedDataItemDBInsert,
             PlannedDataItemDBResult
           >(tableNames.plannedDataItem, dbInserts);
+          dataItemsMoved += dataItemIds.length;
+
+          if (!wroteBundlePlan && dataItemsMoved > 0) {
+            logger.debug(`Inserting bundle plan for plan id ${planId}...`);
+            await knexTransaction<BundlePlanDBResult>(
+              tableNames.bundlePlan
+            ).insert({
+              plan_id: planId,
+              planned_date,
+            });
+            wroteBundlePlan = true;
+          }
         });
 
         logger.debug(
@@ -444,26 +461,12 @@ export class PostgresDatabase implements Database {
     } catch (error) {
       if ((error as PostgresError).code === postgresTableRowsLockedUniqueCode) {
         this.log.warn("Data items are locked by another execution...skipping");
-        encounteredEmptyOrLockedDataItem = true;
       }
       throw error;
     }
 
-    // Confirm there are actually data items in the bundled plan, remove if not
-    if (encounteredEmptyOrLockedDataItem) {
-      const bundledDataItems = await this.reader(
-        tableNames.plannedDataItem
-      ).where({ plan_id: planId });
-
-      if (!bundledDataItems.length) {
-        this.log.warn("No data items in bundle plan, removing...", {
-          planId,
-        });
-        // remove empty bundle plan immediately so it doesn't get shared
-        await this.writer(tableNames.bundlePlan)
-          .where({ plan_id: planId })
-          .del();
-      }
+    if (dataItemsMoved === 0) {
+      throw Error("No data items were moved to the planned data item table.");
     }
   }
 
@@ -948,18 +951,9 @@ export class PostgresDatabase implements Database {
     }
   }
 
-  public async getDataItemInfo(dataItemId: string): Promise<
-    | {
-        status: "new" | "pending" | "permanent" | "failed";
-        assessedWinstonPrice: Winston;
-        bundleId?: string | undefined;
-        uploadedTimestamp: number;
-        deadlineHeight?: number;
-        failedReason?: DataItemFailedReason;
-        owner: string;
-      }
-    | undefined
-  > {
+  public async getDataItemInfo(
+    dataItemId: string
+  ): Promise<DataItemInfo | undefined> {
     this.log.debug("Getting data item info...", {
       dataItemId,
     });
@@ -1274,6 +1268,26 @@ export class PostgresDatabase implements Database {
           ? updatedFinishedUpload.failed_reason
           : undefined,
       };
+    });
+  }
+
+  async insertX402Payment(params: {
+    txHash: string;
+    network: string;
+    payerAddress: string;
+    usdcAmount: string;
+    wincAmount: Winston;
+    dataItemId?: DataItemId;
+    byteCount: number;
+  }): Promise<void> {
+    await this.writer("x402_payments").insert({
+      tx_hash: params.txHash,
+      network: params.network,
+      payer_address: params.payerAddress,
+      usdc_amount: params.usdcAmount,
+      winc_amount: params.wincAmount.toString(),
+      data_item_id: params.dataItemId || null,
+      byte_count: params.byteCount,
     });
   }
 

@@ -56,7 +56,7 @@ import {
   payloadContentTypeFromDecodedTags,
   sleep,
 } from "../utils/common";
-import { quarantineDataItem } from "../utils/dataItemUtils";
+import { containsAns104Tags, quarantineDataItem } from "../utils/dataItemUtils";
 import {
   BlocklistedAddressError,
   DataItemExistsWarning,
@@ -81,7 +81,6 @@ import {
   uploadPart,
 } from "../utils/objectStoreUtils";
 import {
-  containsAns104Tags,
   encodeTagsForOptical,
   signDataItemHeader,
 } from "../utils/opticalUtils";

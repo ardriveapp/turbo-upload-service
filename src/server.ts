@@ -62,9 +62,15 @@ export async function createServer(
   const paymentService =
     arch.paymentService ?? defaultArchitecture.paymentService;
   const cacheService = arch.cacheService ?? defaultArchitecture.cacheService;
+  const pricingService =
+    arch.pricingService ?? defaultArchitecture.pricingService;
+  const x402Service = arch.x402Service ?? defaultArchitecture.x402Service;
 
   const getArweaveWallet =
     arch.getArweaveWallet ?? defaultArchitecture.getArweaveWallet;
+  const getEVMDataItemSigningPrivateKey =
+    arch.getEVMDataItemSigningPrivateKey ??
+    defaultArchitecture.getEVMDataItemSigningPrivateKey;
   const arweaveGateway =
     arch.arweaveGateway ?? defaultArchitecture.arweaveGateway;
   const tracer =
@@ -88,11 +94,15 @@ export async function createServer(
       arweaveGateway,
       getArweaveWallet,
       tracer,
+      pricingService,
+      x402Service,
+      getEVMDataItemSigningPrivateKey,
     })
   );
   app.use(router.routes());
   const server = app.listen(port);
   server.keepAliveTimeout = 120_000; // intentionally larger than ALB idle timeout
+  server.headersTimeout = 125_000; // must be larger than keepAliveTimeout to prevent socket hang ups
   server.requestTimeout = 0; // disable request timeout
 
   globalLogger.info(`Listening on port ${port}...`);
@@ -100,6 +110,7 @@ export async function createServer(
     `Communicating with payment service at ${paymentService.paymentServiceURL}...`
   );
   globalLogger.info(`Keep alive is: ${server.keepAliveTimeout}`);
+  globalLogger.info(`Headers timeout is: ${server.headersTimeout}`);
   globalLogger.info(`Request timeout is: ${server.requestTimeout}`);
   return server;
 }

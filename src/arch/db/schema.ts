@@ -26,7 +26,7 @@ import {
   SeededBundleDBResult,
 } from "../../types/dbTypes";
 import { TransactionId } from "../../types/types";
-import { createAxiosInstance } from "../axiosClient";
+import { createRetryHttpClient } from "../../utils/httpClient";
 import { columnNames, tableNames } from "./dbConstants";
 
 const {
@@ -406,7 +406,7 @@ export class Schema {
         totalBundles,
       });
       // Get block heights from a gateway using GQL
-      const response = await createAxiosInstance({}).post(
+      const response = await createRetryHttpClient({}).post(
         "https://arweave.net/graphql",
         {
           query: `query {

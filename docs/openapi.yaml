@@ -6,12 +6,8 @@ info:
   description: The Turbo Upload Service supports posting signed data-items to Arweave.net using Turbo Credits.
 
 servers:
-  - url: https://upload.ardrive.io
-    description: Production server for Turbo Upload Service
   - url: /v1
-    description: v1 API base path for new implementations
   - url: /
-    description: Root path for backwards compatibility
 
 tags:
   - name: Service Info
@@ -88,6 +84,23 @@ components:
         type: string
         enum:
           - application/octet-stream
+
+    x-payment:
+      name: x-payment
+      in: header
+      required: false
+      schema:
+        type: string
+        description: The x402 payment header containing the payment payload and signature. First request gets 402'd with payment requirements, second request requires this header to validate payment.
+
+    x-data-item-tags:
+      name: x-data-item-tags
+      in: header
+      required: false
+      schema:
+        type: string
+        description: The x402 tags header containing tags to be added to the data item when signing.
+
   schemas:
     DataItemStatus:
       type: object
@@ -478,6 +491,124 @@ paths:
                   value: Data item is too large, this service only accepts data items up to 2147483648 bytes!
                 InvalidDataItem:
                   value: Data item parsing error!
+
+  /x402/data-item/signed:
+    servers:
+      - url: /v1
+      - url: /
+    post:
+      summary: Posts a signed data item to arweave using x402 protocol payment validation. See https://x402.org for more details.
+      tags:
+        - Upload
+      parameters:
+        - $ref: "#/components/parameters/content-length"
+        - $ref: "#/components/parameters/content-type"
+        - $ref: "#/components/parameters/x-payment"
+
+      requestBody:
+        required: true
+        description: A signed data item
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+
+      responses:
+        "200":
+          description: The signed data item was successfully submitted to and indexed on Arweave.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/DataItemPost"
+        "202":
+          description: Data item has already been posted to this service.
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                DataItemExists:
+                  value: Data Item Exists
+
+        "402":
+          description: Insufficient balance
+          content:
+            text/plain:
+              schema:
+                type: string
+                default: "Insufficient balance"
+
+        "400":
+          description: Invalid data item post
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                InvalidContentType:
+                  value: Invalid Content Type
+                MissingContentLength:
+                  value: Request content has no length
+                InvalidContentLength:
+                  value: Data item is too large, this service only accepts data items up to 2147483648 bytes!
+                InvalidDataItem:
+                  value: Data item parsing error!
+
+  /x402/data-item/unsigned:
+    servers:
+      - url: /v1
+      - url: /
+    post:
+      summary: Posts an unsigned data item to arweave using x402 protocol payment validation. See https://x402.org for more details.
+      tags:
+        - Upload
+      parameters:
+        - $ref: "#/components/parameters/content-length"
+        - $ref: "#/components/parameters/content-type"
+        - $ref: "#/components/parameters/x-payment"
+        - $ref: "#/components/parameters/x-data-item-tags"
+
+      requestBody:
+        required: true
+        description: An unsigned data item
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+
+      responses:
+        "200":
+          description: The unsigned data was successfully signed, submitted to and indexed on Arweave.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/DataItemPost"
+        "402":
+          description: Insufficient balance
+          content:
+            text/plain:
+              schema:
+                type: string
+                default: "Insufficient balance"
+
+        "400":
+          description: Invalid data post
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                InvalidContentType:
+                  value: Invalid Content Type
+                MissingContentLength:
+                  value: Request content has no length
+                InvalidContentLength:
+                  value: Data is too large, this service only accepts data up to 2147483648 bytes!
+                InvalidDataItem:
+                  value: Data item parsing error!
+
   /tx/:token:
     servers:
       - url: /v1
@@ -526,7 +657,7 @@ paths:
       - url: /v1
       - url: /
     get:
-      summary: Gets the status of a data item
+      summary: Gets the status of a data item uploaded within the last ~90 days
       tags:
         - Transaction Data
       responses:
@@ -548,7 +679,7 @@ paths:
       - url: /v1
       - url: /
     get:
-      summary: Gets the offsets of a data item
+      summary: Gets the offsets of a data item uploaded in the last 1 year (available 2025/09/23 onwards)
       tags:
         - Transaction Data
       parameters:

@@ -16,6 +16,7 @@
  */
 import { Tag } from "@dha-team/arbundles";
 import { PathLike, existsSync, rmSync } from "fs";
+import { IncomingHttpHeaders } from "http";
 import { PassThrough, Readable } from "stream";
 import winston from "winston";
 
@@ -32,6 +33,7 @@ import {
   warpDedicatedBundlesPremiumFeatureType,
 } from "../constants";
 import defaultLogger from "../logger";
+import globalLogger from "../logger";
 import { KoaContext } from "../server";
 import { JWKInterface } from "../types/jwkTypes";
 import {
@@ -82,6 +84,26 @@ export function errorResponse(
   logger.debug(errorMessage ?? error);
 }
 
+export function x402PaymentRequiredResponse(
+  ctx: KoaContext,
+  params: {
+    paymentRequirements: Record<string, unknown>;
+    message?: string;
+    error?: string;
+    payer?: string;
+  }
+) {
+  ctx.req.pause(); // pause the stream to prevent unnecessary consumption of additional bytes
+  ctx.status = 402;
+  ctx.body = {
+    x402Version: 1,
+    accepts: [params.paymentRequirements],
+    error: params?.error || "Payment required to upload data",
+    message: params?.message,
+    payer: params?.payer,
+  };
+}
+
 export function cleanUpTempFile(path: PathLike) {
   if (existsSync(path)) {
     rmSync(path);
@@ -107,31 +129,83 @@ export function tapStream({
 }): PassThrough {
   const passThrough = new PassThrough({ writableHighWaterMark });
   passThrough.setMaxListeners(Infinity); // Suppress leak warnings related to backpressure and drain listeners
-  readable.on("data", (chunk: Buffer) => {
+
+  let detached = false;
+  let pausedByBackpressure = false;
+
+  const onDrain = () => {
+    if (detached) return;
+    logger?.debug("PassThrough stream drained. Resuming readable stream...");
+    try {
+      readable.resume();
+    } finally {
+      pausedByBackpressure = false;
+    }
+  };
+
+  const onData = (chunk: Buffer) => {
+    if (detached) return;
     if (!passThrough.write(chunk)) {
       logger?.debug(
         "PassThrough stream overflowing. Pausing readable stream..."
       );
-      readable.pause(); // stops the input stream from pushing data to the passthrough while it's trying to catch up by processing its enqueued bytes
-      passThrough.once("drain", () => {
-        logger?.debug(
-          "PassThrough stream drained. Resuming readable stream..."
-        );
-        readable.resume();
-      });
+      pausedByBackpressure = true;
+      // stops the input stream from pushing data to the passthrough while it's trying to catch up
+      readable.pause();
+      passThrough.once("drain", onDrain);
     }
-  });
-  readable.once("end", () => {
+  };
+
+  function onReadableEnd() {
+    if (detached) return;
     logger?.debug("Readable stream ended. Closing pass through stream...");
     passThrough.end();
-  });
-  readable.once("error", (error) => {
+    cleanup();
+  }
+
+  function onReadableError(error: Error) {
+    if (detached) return;
     // intentionally cleanup any pass through streams relying on the original input stream
     passThrough.destroy(error);
-  });
+    cleanup();
+  }
+
+  function onReadableClose() {
+    if (detached) return;
+    passThrough.end();
+    cleanup();
+  }
+
+  function cleanup() {
+    if (detached) return;
+    detached = true;
+    readable.off("data", onData);
+    readable.off("end", onReadableEnd);
+    readable.off("error", onReadableError);
+    readable.off("close", onReadableClose);
+    // Ensure the readable isn't left paused due to our backpressure handling
+    if (pausedByBackpressure) {
+      try {
+        readable.resume();
+      } catch (e) {
+        // ignore
+      }
+      pausedByBackpressure = false;
+    }
+  }
+
+  readable.on("data", onData);
+  readable.once("end", onReadableEnd);
+  readable.once("error", onReadableError);
+  readable.once("close", onReadableClose);
+
+  // Detach if the tap itself finishes/closes/errors
+  passThrough.once("finish", cleanup);
+  passThrough.once("close", cleanup);
   if (onError) {
     passThrough.on("error", onError);
   }
+  passThrough.once("error", () => cleanup());
   return passThrough;
 }
 
@@ -377,4 +451,35 @@ export function getErrorCodeFromErrorObject(error: unknown): string {
     typeof error.code === "string"
     ? error.code
     : "unknown";
+}
+
+/**
+ * Extract tags from HTTP header with X-Data-Item-Tags
+ * Example: X-Data-Item-Tags: { name: "App-Name", value: "MyApp" }
+ *
+ * Note: HTTP headers are case-insensitive and often normalized to lowercase.
+ * We convert the tag name from kebab-case to proper case (e.g., "will" -> "Will")
+ */
+
+export function extractTagsFromHeaders(headers: IncomingHttpHeaders): Tag[] {
+  const tags: Tag[] = [];
+
+  for (const [key, value] of Object.entries(headers)) {
+    const lowerKey = key.toLowerCase();
+
+    if (lowerKey === "x-data-item-tags") {
+      // Extract JSON encoded tags from 'x-data-item-tags' header
+      try {
+        const jsonString = Array.isArray(value) ? value[0] : value;
+        if (jsonString) {
+          const parsedTags: Tag[] = JSON.parse(jsonString);
+          tags.push(...parsedTags);
+        }
+      } catch (error) {
+        globalLogger.warn(`Failed to parse tags from header ${key}: ${error}`);
+      }
+    }
+  }
+
+  return tags;
 }

@@ -559,4 +559,12 @@ export class StreamingDataItem implements DataItemInterface {
     }
     return headerByteCount + payloadSize;
   }
+
+  async getPayloadDataStart(): Promise<number> {
+    const headers = await this.getHeaders();
+    if (this.lastError) {
+      throw this.lastError;
+    }
+    return headers.dataOffset;
+  }
 }

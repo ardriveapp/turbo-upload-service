@@ -18,39 +18,49 @@ import { Next } from "koa";
 
 import { KoaContext } from "../server";
 import { DataItemOffsetsInfo } from "../types/types";
+import { setCacheControlHeadersForDataItemInfo } from "../utils/cacheControl";
 import { getDynamoOffsetsInfo } from "../utils/dynamoDbUtils";
-
-const pendingCacheAgeSeconds = 15;
-const permanentCacheAgeSeconds = 86_400; // 1 day in seconds
+import { dataItemInfoCache } from "../utils/infoCache";
 
 export async function statusHandler(ctx: KoaContext, next: Next) {
+  if (!ctx.params.id) {
+    ctx.status = 400;
+    ctx.body = "Data item ID not specified";
+    return next();
+  }
+
+  const dataItemId = ctx.params.id;
   const { logger, database } = ctx.state;
 
   try {
-    // Await both promises concurrently
-    const [maybeOffsetsInfo, info] = await Promise.all([
-      getDynamoOffsetsInfo(ctx.params.id, logger),
-      database.getDataItemInfo(ctx.params.id),
+    // Fetch db info and offsets info concurrently
+    const [maybeOffsetsInfo, maybeInfo] = await Promise.all([
+      getDynamoOffsetsInfo(dataItemId, logger),
+      database
+        .getDataItemInfo(dataItemId)
+        .then((maybeInfo) =>
+          dataItemInfoCache.put(dataItemId, Promise.resolve(maybeInfo))
+        ), // retrieve latest info from db and use it to hydrate the cache
     ]);
 
-    if (info === undefined) {
+    if (maybeInfo === undefined) {
       ctx.status = 404;
       ctx.body = "TX doesn't exist";
       return next();
     }
+    const info = maybeInfo;
+    logger.debug(`Status age: ${Date.now() - info.uploadedTimestamp}`, {
+      context: "status",
+    });
 
-    const cacheControlAgeSeconds =
-      info.status === "permanent"
-        ? permanentCacheAgeSeconds
-        : pendingCacheAgeSeconds;
-    ctx.set("Cache-Control", `public, max-age=${cacheControlAgeSeconds}`);
+    setCacheControlHeadersForDataItemInfo(ctx, info);
 
     // Excise dataItemId and rootBundleId from the response
     let offsetsInfo:
       | Omit<DataItemOffsetsInfo, "dataItemId" | "rootBundleId">
       | undefined;
     if (maybeOffsetsInfo) {
-      const { dataItemId, rootBundleId, ...rest } = maybeOffsetsInfo;
+      const { dataItemId: _, rootBundleId, ...rest } = maybeOffsetsInfo;
       offsetsInfo = rest;
 
       // Validate that info db and offsets db agree on the root bundle ID

@@ -14,7 +14,7 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-import { byteArrayToLong } from "@dha-team/arbundles";
+import { Tag, byteArrayToLong } from "@dha-team/arbundles";
 import { EventEmitter, PassThrough, Readable, once } from "stream";
 import winston from "winston";
 
@@ -22,7 +22,10 @@ import { CacheService } from "../arch/cacheServiceTypes";
 import { Database } from "../arch/db/database";
 import { ObjectStore } from "../arch/objectStore";
 import { ConfigKeys, getConfigValue } from "../arch/remoteConfig";
-import { bundleHeaderInfoFromBuffer } from "../bundles/assembleBundleHeader";
+import {
+  bundleHeaderInfoFromBuffer,
+  parseBundleHeaderInfo,
+} from "../bundles/assembleBundleHeader";
 import {
   DataItemInterface,
   StreamingDataItem,
@@ -41,7 +44,12 @@ import {
   cachedRawDataItem,
   quarantineCachedDataItem,
 } from "./cacheServiceUtils";
-import { shouldSampleIn, sleep, tapStream } from "./common";
+import {
+  payloadContentTypeFromDecodedTags,
+  shouldSampleIn,
+  sleep,
+  tapStream,
+} from "./common";
 import { Deferred } from "./deferred";
 import {
   dynamoAvailable,
@@ -50,6 +58,7 @@ import {
   dynamoReadableRange,
   putDynamoDataItem,
   putDynamoOffsetsInfo,
+  quarantineDynamoDataItem,
 } from "./dynamoDbUtils";
 import {
   backupFsAvailable,
@@ -64,13 +73,14 @@ import {
   dataItemPrefix,
   getDataItemObjectReadableRange,
   getDataItemPayloadInfo,
+  getRawDataItem,
   getRawSignatureOfDataItemFromObjStore,
   getSignatureTypeOfDataItemFromObjStore,
   putDataItemRaw,
   rawDataItemObjectExists,
 } from "./objectStoreUtils";
 import { streamToBuffer } from "./streamToBuffer";
-import { drainStream } from "./streamUtils";
+import { splitReadable, waitForStreamEndOrError } from "./streamUtils";
 import { TaskCounter } from "./taskCounter";
 
 async function shouldUseCacheService(): Promise<boolean> {
@@ -113,30 +123,32 @@ export async function getSignatureTypeOfDataItem(
   }
 
   // Fall back to file system
-  if (await fsBackupHasDataItem(dataItemId, logger)) {
-    try {
-      const fsSignatureTypeReadable = await fsBackupRawDataItemReadable({
-        dataItemId,
-        startOffset: DataItemOffsets.signatureTypeStart,
-        endOffsetInclusive: DataItemOffsets.signatureTypeEnd,
-      });
-      const signatureType = byteArrayToLong(
-        await streamToBuffer(fsSignatureTypeReadable.readable)
-      );
-      logger.debug(
-        `Got signature type for dataitem ID ${dataItemId} from FS: ${signatureType}`
-      );
-      return signatureType;
-    } catch (error) {
+  if (await shouldReadFromBackupFS()) {
+    if (await fsBackupHasDataItem(dataItemId, logger)) {
+      try {
+        const fsSignatureTypeReadable = await fsBackupRawDataItemReadable({
+          dataItemId,
+          startOffset: DataItemOffsets.signatureTypeStart,
+          endOffsetInclusive: DataItemOffsets.signatureTypeEnd,
+        });
+        const signatureType = byteArrayToLong(
+          await streamToBuffer(fsSignatureTypeReadable.readable)
+        );
+        logger.debug(
+          `Got signature type for dataitem ID ${dataItemId} from FS: ${signatureType}`
+        );
+        return signatureType;
+      } catch (error) {
+        logger.error(
+          `Error reading signature type for data item ID ${dataItemId} from FS backup`,
+          { error }
+        );
+      }
+    } else {
       logger.error(
-        `Error reading signature type for data item ID ${dataItemId} from FS backup`,
-        { error }
+        `No signature type found for dataitem ID ${dataItemId} in FS backup`
       );
     }
-  } else {
-    logger.error(
-      `No signature type found for dataitem ID ${dataItemId} in FS backup`
-    );
   }
 
   // Next try DynamoDB
@@ -194,29 +206,31 @@ export async function getRawSignatureOfDataItem(
   }
 
   // Fall back to file system
-  if (await fsBackupHasDataItem(dataItemId, logger)) {
-    try {
-      const fsSignatureReadable = await fsBackupRawDataItemReadable({
-        dataItemId,
-        startOffset: DataItemOffsets.signatureStart,
-        endOffsetInclusive: DataItemOffsets.signatureEnd(signatureType),
-      });
-      logger.debug(
-        `Got raw signature for dataitem ID ${dataItemId} from FS with startOffset ${
-          DataItemOffsets.signatureStart
-        } end offset ${DataItemOffsets.signatureEnd(signatureType)}`
-      );
-      return fsSignatureReadable.readable;
-    } catch (error) {
+  if (await shouldReadFromBackupFS()) {
+    if (await fsBackupHasDataItem(dataItemId, logger)) {
+      try {
+        const fsSignatureReadable = await fsBackupRawDataItemReadable({
+          dataItemId,
+          startOffset: DataItemOffsets.signatureStart,
+          endOffsetInclusive: DataItemOffsets.signatureEnd(signatureType),
+        });
+        logger.debug(
+          `Got raw signature for dataitem ID ${dataItemId} from FS with startOffset ${
+            DataItemOffsets.signatureStart
+          } end offset ${DataItemOffsets.signatureEnd(signatureType)}`
+        );
+        return fsSignatureReadable.readable;
+      } catch (error) {
+        logger.error(
+          `Error reading raw signature for data item ID ${dataItemId} from FS backup`,
+          { error }
+        );
+      }
+    } else {
       logger.error(
-        `Error reading raw signature for data item ID ${dataItemId} from FS backup`,
-        { error }
+        `No raw signature found for dataitem ID ${dataItemId} in FS backup`
       );
     }
-  } else {
-    logger.error(
-      `No raw signature found for dataitem ID ${dataItemId} in FS backup`
-    );
   }
 
   if (await dynamoHasDataItem(dataItemId, logger)) {
@@ -280,29 +294,31 @@ export async function getDataItemMetadata({
   }
 
   // Fall back to file system
-  if (await fsBackupHasDataItem(dataItemId, logger)) {
-    try {
-      const fsMetadata = await fsBackupDataItemMetadata(dataItemId);
-      if (fsMetadata) {
-        logger.debug(
-          `Got metadata for dataitem ID ${dataItemId} from FS: ${JSON.stringify(
-            fsMetadata,
-            null,
-            2
-          )}`
+  if (await shouldReadFromBackupFS()) {
+    if (await fsBackupHasDataItem(dataItemId, logger)) {
+      try {
+        const fsMetadata = await fsBackupDataItemMetadata(dataItemId);
+        if (fsMetadata) {
+          logger.debug(
+            `Got metadata for dataitem ID ${dataItemId} from FS: ${JSON.stringify(
+              fsMetadata,
+              null,
+              2
+            )}`
+          );
+          return fsMetadata;
+        }
+      } catch (error) {
+        logger.error(
+          `Error reading metadata for data item ID ${dataItemId} from FS backup`,
+          { error }
         );
-        return fsMetadata;
       }
-    } catch (error) {
+    } else {
       logger.error(
-        `Error reading metadata for data item ID ${dataItemId} from FS backup`,
-        { error }
+        `No metadata found for dataitem ID ${dataItemId} in FS backup`
       );
     }
-  } else {
-    logger.error(
-      `No metadata found for dataitem ID ${dataItemId} in FS backup`
-    );
   }
 
   if (await dynamoHasDataItem(dataItemId, logger)) {
@@ -378,26 +394,30 @@ export async function getPayloadOfDataItem({
     }
   }
   // Fall back to file system
-  if (await fsBackupHasDataItem(dataItemId, logger)) {
-    try {
-      const fsReadable = await fsBackupRawDataItemReadable({
-        dataItemId,
-        startOffset: payloadDataStart,
-      });
-      if (fsReadable) {
-        logger.debug(
-          `Got payload for dataitem ID ${dataItemId} from FS at payload offset ${payloadDataStart}`
+  if (await shouldReadFromBackupFS()) {
+    if (await fsBackupHasDataItem(dataItemId, logger)) {
+      try {
+        const fsReadable = await fsBackupRawDataItemReadable({
+          dataItemId,
+          startOffset: payloadDataStart,
+        });
+        if (fsReadable) {
+          logger.debug(
+            `Got payload for dataitem ID ${dataItemId} from FS at payload offset ${payloadDataStart}`
+          );
+          return fsReadable.readable;
+        }
+      } catch (error) {
+        logger.error(
+          `Error reading payload for data item ID ${dataItemId} from FS backup`,
+          { error }
         );
-        return fsReadable.readable;
       }
-    } catch (error) {
+    } else {
       logger.error(
-        `Error reading payload for data item ID ${dataItemId} from FS backup`,
-        { error }
+        `No payload found for dataitem ID ${dataItemId} in FS backup`
       );
     }
-  } else {
-    logger.error(`No payload found for dataitem ID ${dataItemId} in FS backup`);
   }
 
   if (await dynamoHasDataItem(dataItemId, logger)) {
@@ -539,7 +559,8 @@ export async function dataItemExists(
     // DynamoDB is a last resort for sufficiently small items
     (await dynamoHasDataItem(dataItemId, logger)) ||
     // File system is an exotic case
-    (await fsBackupHasDataItem(dataItemId, logger))
+    ((await shouldReadFromBackupFS()) &&
+      (await fsBackupHasDataItem(dataItemId, logger)))
   );
 }
 
@@ -549,6 +570,8 @@ export interface DataItemAttributes {
   payloadDataStartOffset: number;
   payloadContentType: string;
   rawDataItemOffsetInBundle: number;
+  parentDataItemId?: TransactionId;
+  startOffsetInParentDataItemPayload?: number;
 }
 
 export interface BundlePayloadResult {
@@ -573,7 +596,7 @@ export function assembleBundlePayload(
   }
 
   // Store data item attributes as they're extracted
-  const dataItemAttributes: DataItemAttributes[] = [];
+  const dataItemAttributes = new Map<TransactionId, DataItemAttributes>();
   const bundleHeaderLength = bundleHeaderBuffer.byteLength;
 
   // Pre-calculate bundle offsets for each data item
@@ -739,6 +762,10 @@ export function assembleBundlePayload(
 
       const dataItemIndex = nextDataItemIndexToFetch;
       const dataItem = bundleHeaderInfo.dataItems[dataItemIndex];
+      const canFetchLogger = logger.child({
+        dataItemId: dataItem.id,
+        dataItemIndex: dataItemIndex,
+      });
 
       // Reserve capacity for prefetching
       inflightRequestCount++;
@@ -755,9 +782,10 @@ export function assembleBundlePayload(
         coordinator.emit("canFetch");
       }
 
+      let remainingQuarantineRecoveries = 1;
       async function safelyFetchDataItemStream(
         dataItemIndex: number,
-        dataItemKey: string
+        quarantine = false
       ): Promise<Readable | undefined> {
         const dataItem = bundleHeaderInfo.dataItems[dataItemIndex];
 
@@ -770,12 +798,14 @@ export function assembleBundlePayload(
                 (await cacheHasDataItem({
                   cacheService,
                   dataItemId: dataItem.id,
-                  logger,
+                  logger: canFetchLogger,
+                  quarantine,
                 }))
               ) {
                 const cached = await cachedDataItemReadableRange({
                   cacheService,
                   dataItemId: dataItem.id,
+                  quarantine,
                 });
                 return cached.readable;
               }
@@ -785,9 +815,17 @@ export function assembleBundlePayload(
           {
             name: "backupFs",
             fetch: async () => {
-              if (await fsBackupHasDataItem(dataItem.id, logger)) {
+              if (
+                (await shouldReadFromBackupFS()) &&
+                (await fsBackupHasDataItem(
+                  dataItem.id,
+                  canFetchLogger,
+                  quarantine
+                ))
+              ) {
                 const { readable } = await fsBackupRawDataItemReadable({
                   dataItemId: dataItem.id,
+                  quarantine,
                 });
                 return readable;
               }
@@ -797,12 +835,16 @@ export function assembleBundlePayload(
           {
             name: "dynamodb",
             fetch: async () => {
-              if (await dynamoHasDataItem(dataItem.id, logger)) {
+              if (
+                await dynamoHasDataItem(dataItem.id, canFetchLogger, quarantine)
+              ) {
                 const readable = await dynamoReadableRange({
                   dataItemId: dataItem.id,
                   start: 0,
-                  logger,
+                  logger: canFetchLogger,
+                  quarantine,
                 });
+
                 return readable ?? undefined;
               }
               return undefined;
@@ -810,9 +852,8 @@ export function assembleBundlePayload(
           },
           {
             name: "objectStore",
-            fetch: async () => {
-              const objStoreStream = await objectStore.getObject(dataItemKey);
-              return objStoreStream.readable;
+            fetch: () => {
+              return getRawDataItem(objectStore, dataItem.id, quarantine);
             },
           },
         ];
@@ -821,60 +862,39 @@ export function assembleBundlePayload(
           try {
             const stream = await service.fetch();
             if (stream) {
+              if (quarantine) {
+                // Dont extract attributes from the quarantine recovery stream
+                // We will recurse to get a new stream and extract attributes from that one
+                return stream;
+              }
+
               // Tap the stream to extract item attributes passively while the data item is being fed into the bundle
               stream.pause(); // Make sure not to affect the stream while tapping
               const tappedStream = tapStream({
                 readable: stream,
-                logger: logger.child({
+                logger: canFetchLogger.child({
                   context: "dataItemAttributeExtraction",
                 }),
               });
 
               offsetsTaskCounter.startTask();
 
-              // Extract attributes asynchronously
+              // Extract attributes (and nested attributes) asynchronously using a recursive helper
               void (async () => {
                 try {
-                  const streamingDataItem = new StreamingDataItem(tappedStream);
-                  // asynchronously drain the full stream so we can consume the data item attributes
-                  void drainStream(tappedStream);
-                  // FUTURE TODO: If tags indicate it's a BDI, recurse to extract offsets for all nested data items (i.e. full unbundling for offsets data)
-                  const rawDataItemSize =
-                    await streamingDataItem.getRawDataItemSize(true);
-                  const headers = await streamingDataItem.getHeaders();
-                  const tags = await streamingDataItem.getTags();
-
-                  // Find content type from tags
-                  const contentTypeTag = tags.find(
-                    (tag) => tag.name.toLowerCase() === "content-type"
-                  );
-                  const payloadContentType =
-                    contentTypeTag?.value || "application/octet-stream";
-
-                  // Store attributes
-                  dataItemAttributes.push({
+                  // Absence of parentDataItemId and startOffsetInParentDataItemPayload indicates a top-level item in the bundle
+                  await extractDataItemAttributesRecursively({
+                    rawDataItemStream: tappedStream,
                     dataItemId: dataItem.id,
-                    rawDataItemSize,
-                    payloadDataStartOffset: headers.dataOffset,
-                    payloadContentType,
-                    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-                    rawDataItemOffsetInBundle: dataItemOffsetsInRawParent.get(
-                      dataItem.id
-                    )!,
-                  });
-
-                  // Consume the tapped stream to prevent backpressure
-                  tappedStream.on("data", () => {
-                    // Intentionally empty - just consuming data to prevent backpressure
-                  });
-                  tappedStream.on("end", () => {
-                    // Intentionally empty - stream completed normally
-                  });
-                  tappedStream.on("error", (err) => {
-                    logger.debug(`Tapped stream error for ${dataItem.id}`, err);
+                    rootOffsetInBundle:
+                      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+                      dataItemOffsetsInRawParent.get(dataItem.id)!,
+                    dataItemAttributes,
+                    offsetsTaskCounter,
+                    logger: canFetchLogger,
                   });
                 } catch (error) {
-                  logger.error(
+                  canFetchLogger.error(
                     `Failed to extract attributes for data item ${dataItem.id}`,
                     {
                       error: error instanceof Error ? error.message : error,
@@ -882,32 +902,96 @@ export function assembleBundlePayload(
                   );
                 } finally {
                   offsetsTaskCounter.finishTask();
+                  // Ensure we detach the tap so we don't hold the source open on error or completion
+                  try {
+                    tappedStream.destroy();
+                  } catch (error) {
+                    canFetchLogger.debug(
+                      "Failed to destroy tappedStream after attribute extraction",
+                      { error }
+                    );
+                  }
                 }
               })();
 
               return stream;
             }
           } catch (err) {
-            logger.error(
+            canFetchLogger.error(
               `safelyFetchDataItemStream failed for dataItemIndex=${dataItemIndex}`,
               {
                 error: err instanceof Error ? err.message : err,
-                dataItemKey,
                 service: service.name,
               }
             );
           }
         }
 
+        if (!quarantine && remainingQuarantineRecoveries > 0) {
+          canFetchLogger.debug("Data item not found; checking quarantine...", {
+            dataItemId: dataItem.id,
+          });
+          const stream = await safelyFetchDataItemStream(dataItemIndex, true);
+          if (stream) {
+            // Recover from quarantine
+            remainingQuarantineRecoveries--;
+            canFetchLogger.warn(
+              `Recovering data item ${dataItem.id} from quarantine...`
+            );
+            stream.pause();
+
+            const {
+              cacheServiceStream,
+              fsBackupStream,
+              objStoreStream,
+              dynamoStream,
+            } = await streamsForDataItemStorage({
+              inputStream: stream,
+              contentLength: dataItem.size,
+              logger: canFetchLogger,
+              cacheService,
+            });
+
+            const haveDurableStream =
+              (fsBackupStream || objStoreStream || dynamoStream) !== undefined;
+            if (!haveDurableStream) {
+              throw new Error(
+                `No durable storage streams available to recover data item ${dataItem.id} from quarantine`
+              );
+            }
+
+            const streamingDataItem = new StreamingDataItem(
+              stream,
+              canFetchLogger
+            );
+            stream.resume();
+
+            await cacheDataItem({
+              streamingDataItem,
+              cacheServiceStream,
+              cacheService,
+              logger: canFetchLogger,
+              objectStore,
+              fsBackupStream,
+              dynamoStream,
+              payloadContentType: payloadContentTypeFromDecodedTags(
+                await streamingDataItem.getTags()
+              ),
+              payloadDataStart: await streamingDataItem.getPayloadDataStart(),
+              objStoreStream,
+              rawContentLength: dataItem.size,
+            });
+
+            return safelyFetchDataItemStream(dataItemIndex);
+          }
+        }
+
         return undefined;
+        // end of safelyFetchDataItemStream function
       }
 
       // Start fetching
-      const dataItemKey = `${dataItemPrefix}/${dataItem.id}`;
-      const dataItemStream = await safelyFetchDataItemStream(
-        dataItemIndex,
-        dataItemKey
-      );
+      const dataItemStream = await safelyFetchDataItemStream(dataItemIndex);
 
       if (!dataItemStream) {
         // TODO: Could consider providing for retrying here
@@ -921,7 +1005,10 @@ export function assembleBundlePayload(
       }
 
       dataItemStream.on("error", (error) => {
-        logger.error(`Stream error for data item ${dataItem.id}`, error);
+        canFetchLogger.error(
+          `Stream error for data item ${dataItem.id}`,
+          error
+        );
         outputStream.emit("error", error);
         outputStream.destroy();
       });
@@ -943,33 +1030,51 @@ export function assembleBundlePayload(
       logger.info(
         `[offsets] Waiting for ${offsetsTaskCounter.activeTaskCount()} tasks to finish...`
       );
-      offsetsTaskCounter
-        .waitForZero(60_000) // Wait for up to 60 seconds for all offsets tasks to finish
+      const loggerContext = () => {
+        dataItemAttributes.keys();
+        const collectedIds = new Set<string>();
+        for (const key of dataItemAttributes.keys()) {
+          collectedIds.add(key);
+        }
+
+        let actualTopLvlAttrsCount = 0;
+        for (const id of dataItemOffsetsInRawParent.keys()) {
+          if (collectedIds.has(id)) actualTopLvlAttrsCount++;
+        }
+        return {
+          allAttrsCount: dataItemAttributes.size,
+          expectedTopLvlAttrsCount: bundleHeaderInfo.dataItems.length,
+          actualTopLvlAttrsCount,
+          activeTasks: offsetsTaskCounter.activeTaskCount(),
+        };
+      };
+      // Don't start waiting for offsets until the output stream has either ended or errored.
+      waitForStreamEndOrError(outputStream)
+        .then(() =>
+          getConfigValue("offsetsCollectionTimeoutMs").then((timeoutMs) =>
+            offsetsTaskCounter.waitForZero(timeoutMs)
+          )
+        )
         .then(() => {
-          logger.info("[offsets] All offsets tasks finished successfully.", {
-            dataItemAttrsCount: dataItemAttributes.length,
-          });
-          resolve([...dataItemAttributes]);
+          logger.info(
+            "[offsets] All offsets tasks finished successfully.",
+            loggerContext()
+          );
+          resolve([...dataItemAttributes.values()]);
         })
         .catch((error) => {
           logger.error(
             `[offsets] Error waiting for offsets task counter to finish: ${error}`,
-            {
-              dataItemAttrsCount: dataItemAttributes.length,
-              activeTasks: offsetsTaskCounter.activeTaskCount(),
-            }
+            loggerContext()
           );
-          resolve([...dataItemAttributes]); // Return what we have even on error
+          resolve([...dataItemAttributes.values()]); // Return what we have even on error
         });
       outputStream.on("error", () => {
         logger.error(
           "[offsets] Output stream errored; Returning collected attributes...",
-          {
-            dataItemAttrsCount: dataItemAttributes.length,
-            activeTasks: offsetsTaskCounter.activeTaskCount(),
-          }
+          loggerContext()
         );
-        resolve([...dataItemAttributes]); // Return what we have even on error
+        resolve([...dataItemAttributes.values()]); // Return what we have even on error
       });
     }
   );
@@ -979,6 +1084,135 @@ export function assembleBundlePayload(
     payloadReadable: outputStream,
     dataItemAttributesPromise,
   };
+}
+
+export function containsAns104Tags(tags: Tag[]) {
+  const hasBundleFormatHeader = tags.some(
+    (tag) => tag.name === "Bundle-Format" && tag.value === "binary"
+  );
+  return (
+    hasBundleFormatHeader &&
+    tags.some((tag) => tag.name === "Bundle-Version" && tag.value === "2.0.0")
+  );
+}
+
+// Recursive attribute extraction. Reads from rawDataItemStream, optionally descends
+// into nested bundles and accumulates attributes with root-relative offsets
+async function extractDataItemAttributesRecursively({
+  rawDataItemStream,
+  dataItemId,
+  parentDataItemId,
+  startOffsetInParentDataItemPayload,
+  rootOffsetInBundle,
+  dataItemAttributes,
+  offsetsTaskCounter,
+  logger,
+}: {
+  rawDataItemStream: Readable;
+  dataItemId: TransactionId;
+  parentDataItemId?: TransactionId;
+  startOffsetInParentDataItemPayload?: number;
+  rootOffsetInBundle: number;
+  dataItemAttributes: Map<TransactionId, DataItemAttributes>;
+  offsetsTaskCounter: TaskCounter;
+  logger: winston.Logger;
+}): Promise<void> {
+  const log = logger.child({ dataItemId, context: "extractAttrsRecursive" });
+  const sdi = new StreamingDataItem(rawDataItemStream, log);
+
+  try {
+    const [dataItemHeaders, tags] = await Promise.all([
+      sdi.getHeaders(),
+      sdi.getTags(),
+    ]);
+
+    // If nested bundle, parse inner bundle header and recurse sequentially over its children
+    if (containsAns104Tags(tags)) {
+      log.debug(
+        `Detected nested bundle payload; extracting inner attributes recursively...`
+      );
+
+      // The payloadStream may be read past the end of the bundle header during
+      // parsing, so we need to use the returned "rest" stream for further processing
+      const payloadStream = await sdi.getPayloadStream();
+      const {
+        bundleHeaderInfo: innerInfo,
+        bundleHeaderByteCount,
+        rest: nestedItemsStream,
+      } = await parseBundleHeaderInfo(payloadStream);
+
+      // Compute the root offset for the nested items based on the header size
+      let childRootOffset =
+        rootOffsetInBundle + dataItemHeaders.dataOffset + bundleHeaderByteCount;
+      let offsetInParent = bundleHeaderByteCount;
+
+      let nestedItemsRemainderStream = nestedItemsStream;
+      for (const nestedItem of innerInfo.dataItems) {
+        offsetsTaskCounter.startTask();
+        try {
+          const { head: nestedDataItemStream, tail } = splitReadable(
+            nestedItemsRemainderStream,
+            nestedItem.size
+          );
+          await extractDataItemAttributesRecursively({
+            rawDataItemStream: nestedDataItemStream,
+            dataItemId: nestedItem.id,
+            parentDataItemId: dataItemId,
+            startOffsetInParentDataItemPayload: offsetInParent,
+            rootOffsetInBundle: childRootOffset,
+            dataItemAttributes,
+            offsetsTaskCounter,
+            logger,
+          });
+          childRootOffset += nestedItem.size;
+          offsetInParent += nestedItem.size;
+          nestedItemsRemainderStream = tail;
+        } finally {
+          offsetsTaskCounter.finishTask();
+        }
+      }
+    }
+
+    // Resume computing current data item's metadata
+    const rawDataItemSize = await sdi.getRawDataItemSize(true);
+
+    const contentTypeTag = tags.find(
+      (tag) => tag.name.toLowerCase() === "content-type"
+    );
+    const payloadContentType =
+      contentTypeTag?.value || "application/octet-stream";
+
+    const extractedAttributes = {
+      dataItemId,
+      ...(parentDataItemId ? { parentDataItemId } : {}),
+      ...(startOffsetInParentDataItemPayload
+        ? { startOffsetInParentDataItemPayload }
+        : {}),
+      rawDataItemSize,
+      payloadDataStartOffset: (await sdi.getHeaders()).dataOffset,
+      payloadContentType,
+      rawDataItemOffsetInBundle: rootOffsetInBundle,
+    };
+
+    // Log when we find duplicates
+    if (dataItemAttributes.has(dataItemId)) {
+      log.warn(
+        `Duplicate data item ID ${dataItemId} found while extracting attributes! Overwriting previous entry...`,
+        {
+          previous: dataItemAttributes.get(dataItemId),
+          updated: extractedAttributes,
+        }
+      );
+    }
+
+    // Store attributes for this item
+    dataItemAttributes.set(dataItemId, extractedAttributes);
+  } catch (error) {
+    log.error(`Error extracting attributes`, {
+      error,
+    });
+    throw error;
+  }
 }
 
 export async function quarantineDataItem({
@@ -1012,7 +1246,7 @@ export async function quarantineDataItem({
     return;
   }
 
-  // First quarantine the data item from the cache service
+  // First, quarantine the data item from the cache service
   try {
     await quarantineCachedDataItem(cacheService, dataItemId, logger);
   } catch (error) {
@@ -1023,7 +1257,7 @@ export async function quarantineDataItem({
     );
   }
 
-  // Then quarantine the data item from the file system backup
+  // Then, quarantine the data item from the file system backup
   try {
     await quarantineDataItemFromBackupFs({
       dataItemId,
@@ -1036,7 +1270,16 @@ export async function quarantineDataItem({
     );
   }
 
-  // Finally quarantine the data item from the object store
+  // Next, quarantine the data item from DynamoDB
+  try {
+    await quarantineDynamoDataItem(dataItemId, logger);
+  } catch (error) {
+    logger.error(`Error quarantining data item ${dataItemId} in DynamoDB`, {
+      error,
+    });
+  }
+
+  // Finally, quarantine the data item from the object store
   if (await rawDataItemObjectExists(objectStore, dataItemId)) {
     try {
       logger.info(`Quarantining data item ${dataItemId} in object store...`);
@@ -1276,7 +1519,6 @@ export async function cacheDataItem({
             contentType: payloadContentType,
             logger,
           });
-          actualStores.push("ddb");
         })()
           .then(() => {
             if (durations) {
@@ -1427,18 +1669,25 @@ export async function cacheNestedDataItem({
   });
   shouldCacheToFsBackup = shouldCacheToFsBackup && fsAvailable;
 
-  let shouldCacheToDynamoDB = await shouldCacheNestedDataItemToDynamoDB();
-  const dynamoIsAvailable = dynamoAvailable();
-  const itemFitsInDynamo =
-    rawContentLength <=
-    (await getConfigValue(ConfigKeys.dynamoDataItemBytesThreshold));
-  shouldCacheToDynamoDB =
-    shouldCacheToDynamoDB && dynamoIsAvailable && itemFitsInDynamo;
+  // Write as many nested offsets to dynamo as possible
+  const shouldCacheToDynamoDB =
+    (await shouldCacheNestedDataItemToDynamoDB()) && dynamoAvailable();
 
   // Throw if no backup store is available
   if (!shouldCacheToFsBackup && !shouldCacheToDynamoDB && !objStoreStream) {
     throw new Error(
       `No backup store available for nested data item ${dataItemId} with parent ${parentDataItemId}`
+    );
+  }
+
+  // TODO: As offsets have become increasingly important, consider another SQS queue for writing them
+  // Throw if the data item is too large for dynamo but not ending up in a durable store
+  const itemFitsInDynamo =
+    rawContentLength <=
+    (await getConfigValue(ConfigKeys.dynamoDataItemBytesThreshold));
+  if (!itemFitsInDynamo && !(shouldCacheToFsBackup || objStoreStream)) {
+    throw new Error(
+      `Data item ${dataItemId} is too large for DynamoDB and no other backup store is available.`
     );
   }
 

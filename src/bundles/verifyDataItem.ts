@@ -20,6 +20,7 @@ import { EventEmitter, PassThrough, Readable } from "stream";
 import winston from "winston";
 
 import { signatureTypeInfo } from "../constants";
+import { sha256B64Url } from "../utils/base64";
 import { CircularBuffer } from "../utils/circularBuffer";
 import { tapStream } from "../utils/common";
 import { InvalidDataItem } from "../utils/errors";
@@ -223,7 +224,7 @@ export function createVerifiedDataItemStream(
 
       byteQueue = useChunkAsBuffer
         ? new CircularBuffer(chunk.byteLength, {
-            buffer: chunkOffset ? chunk.slice(chunkOffset) : chunk,
+            buffer: chunkOffset ? chunk.subarray(chunkOffset) : chunk,
             usedCapacity: chunk.byteLength,
           })
         : searchBuffer;
@@ -411,6 +412,7 @@ export function createVerifiedDataItemStream(
 
   emitter.once("signature", (bufferedSignature: Buffer) => {
     signatureBytes = Buffer.from(bufferedSignature);
+    logger = logger?.child({ dataItemId: sha256B64Url(signatureBytes) });
   });
 
   emitter.once("owner", (bufferedOwner: Buffer) => {
@@ -555,6 +557,13 @@ export function createVerifiedDataItemStream(
     } catch (error) {
       streamDebugLog(logger, "Failed to deepHash stream", error);
       emitter.emit("isValid", false);
+    } finally {
+      // Explicitly detach deepHash tap
+      try {
+        deepHashStream.destroy();
+      } catch (e) {
+        streamDebugLog(logger, "Failed to destroy deepHashStream", e);
+      }
     }
   });
 

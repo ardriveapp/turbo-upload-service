@@ -229,4 +229,5 @@ else
 fi
 
 create_secret "arweave-wallet" "${ARWEAVE_WALLET}" "Arweave wallet for Turbo uploads, receipts, and optical bridging"
+create_secret "turbo-evm-data-item-signing-key" "${TURBO_EVM_DATA_ITEM_SIGNING_KEY}" "EVM Data Item Signing Key for unsigned uploads in Turbo"
 create_secret "turbo-optical-key-${NODE_ENV}" "${TURBO_OPTICAL_KEY}" "Turbo Optical Key for ${NODE_ENV} environment"

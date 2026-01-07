@@ -28,7 +28,7 @@ import {
 } from "../types/txStatus";
 import { ByteCount, PublicArweaveAddress, TransactionId } from "../types/types";
 import { W, Winston } from "../types/winston";
-import { getHttpAgents } from "./axiosClient";
+import { getHttpAgents } from "../utils/httpClient";
 import {
   ExponentialBackoffRetryStrategy,
   RetryStrategy,

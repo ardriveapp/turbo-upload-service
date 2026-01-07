@@ -1081,3 +1081,230 @@ export class BackfillPermanentDataItemsMigrator extends Migrator {
     });
   }
 }
+
+export class Add2026PartitionsMigrator extends Migrator {
+  constructor(private readonly knex: Knex) {
+    super();
+  }
+
+  public migrate() {
+    return this.operate({
+      name: "add 2026 partitions to permanent data items",
+      operation: async () => {
+        await this.knex.schema.raw(`
+          DROP TABLE IF EXISTS permanent_data_items_future;
+
+          CREATE TABLE IF NOT EXISTS permanent_data_items_12_2025_01 PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2025-12-01') TO ('2025-12-15');
+          CREATE TABLE IF NOT EXISTS permanent_data_items_12_2025_02 PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2025-12-15') TO ('2026-01-01');
+
+          CREATE TABLE IF NOT EXISTS permanent_data_items_01_2026_01 PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2026-01-01') TO ('2026-01-15');
+
+          CREATE TABLE IF NOT EXISTS permanent_data_items_01_2026_02 PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2026-01-15') TO ('2026-02-01');
+
+          CREATE TABLE IF NOT EXISTS permanent_data_items_02_2026_01 PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2026-02-01') TO ('2026-02-15');
+
+          CREATE TABLE IF NOT EXISTS permanent_data_items_02_2026_02 PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2026-02-15') TO ('2026-03-01');
+
+          CREATE TABLE IF NOT EXISTS permanent_data_items_03_2026_01 PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2026-03-01') TO ('2026-03-15');
+
+          CREATE TABLE IF NOT EXISTS permanent_data_items_03_2026_02 PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2026-03-15') TO ('2026-04-01');
+
+          CREATE TABLE IF NOT EXISTS permanent_data_items_04_2026_01 PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2026-04-01') TO ('2026-04-15');
+
+          CREATE TABLE IF NOT EXISTS permanent_data_items_04_2026_02 PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2026-04-15') TO ('2026-05-01');
+
+          CREATE TABLE IF NOT EXISTS permanent_data_items_05_2026_01 PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2026-05-01') TO ('2026-05-15');
+
+          CREATE TABLE IF NOT EXISTS permanent_data_items_05_2026_02 PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2026-05-15') TO ('2026-06-01');
+
+          CREATE TABLE IF NOT EXISTS permanent_data_items_06_2026_01 PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2026-06-01') TO ('2026-06-15');
+
+          CREATE TABLE IF NOT EXISTS permanent_data_items_06_2026_02 PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2026-06-15') TO ('2026-07-01');
+
+          CREATE TABLE IF NOT EXISTS permanent_data_items_07_2026_01 PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2026-07-01') TO ('2026-07-15');
+
+          CREATE TABLE IF NOT EXISTS permanent_data_items_07_2026_02 PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2026-07-15') TO ('2026-08-01');
+
+          CREATE TABLE IF NOT EXISTS permanent_data_items_08_2026_01 PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2026-08-01') TO ('2026-08-15');
+
+          CREATE TABLE IF NOT EXISTS permanent_data_items_08_2026_02 PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2026-08-15') TO ('2026-09-01');
+
+          CREATE TABLE IF NOT EXISTS permanent_data_items_09_2026_01 PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2026-09-01') TO ('2026-09-15');
+
+          CREATE TABLE IF NOT EXISTS permanent_data_items_09_2026_02 PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2026-09-15') TO ('2026-10-01');
+
+          CREATE TABLE IF NOT EXISTS permanent_data_items_10_2026_01 PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2026-10-01') TO ('2026-10-15');
+
+          CREATE TABLE IF NOT EXISTS permanent_data_items_10_2026_02 PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2026-10-15') TO ('2026-11-01');
+
+          CREATE TABLE IF NOT EXISTS permanent_data_items_11_2026_01 PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2026-11-01') TO ('2026-11-15');
+
+          CREATE TABLE IF NOT EXISTS permanent_data_items_11_2026_02 PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2026-11-15') TO ('2026-12-01');
+
+          CREATE TABLE IF NOT EXISTS permanent_data_items_12_2026_01 PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2026-12-01') TO ('2026-12-15');
+
+          CREATE TABLE IF NOT EXISTS permanent_data_items_12_2026_02 PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2026-12-15') TO ('2027-01-01');
+
+          CREATE TABLE IF NOT EXISTS permanent_data_items_future PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2027-01-01') TO (MAXVALUE);
+          `);
+      },
+    });
+  }
+
+  public rollback() {
+    return this.operate({
+      name: "rollback from add 2026 partitions to permanent data items",
+      operation: async () => {
+        await this.knex.schema.dropTableIfExists(
+          "permanent_data_items_01_2026_01"
+        );
+        await this.knex.schema.dropTableIfExists(
+          "permanent_data_items_01_2026_02"
+        );
+        await this.knex.schema.dropTableIfExists(
+          "permanent_data_items_02_2026_01"
+        );
+        await this.knex.schema.dropTableIfExists(
+          "permanent_data_items_02_2026_02"
+        );
+        await this.knex.schema.dropTableIfExists(
+          "permanent_data_items_03_2026_01"
+        );
+        await this.knex.schema.dropTableIfExists(
+          "permanent_data_items_03_2026_02"
+        );
+        await this.knex.schema.dropTableIfExists(
+          "permanent_data_items_04_2026_01"
+        );
+        await this.knex.schema.dropTableIfExists(
+          "permanent_data_items_04_2026_02"
+        );
+        await this.knex.schema.dropTableIfExists(
+          "permanent_data_items_05_2026_01"
+        );
+        await this.knex.schema.dropTableIfExists(
+          "permanent_data_items_05_2026_02"
+        );
+        await this.knex.schema.dropTableIfExists(
+          "permanent_data_items_06_2026_01"
+        );
+        await this.knex.schema.dropTableIfExists(
+          "permanent_data_items_06_2026_02"
+        );
+        await this.knex.schema.dropTableIfExists(
+          "permanent_data_items_07_2026_01"
+        );
+        await this.knex.schema.dropTableIfExists(
+          "permanent_data_items_07_2026_02"
+        );
+        await this.knex.schema.dropTableIfExists(
+          "permanent_data_items_08_2026_01"
+        );
+        await this.knex.schema.dropTableIfExists(
+          "permanent_data_items_08_2026_02"
+        );
+        await this.knex.schema.dropTableIfExists(
+          "permanent_data_items_09_2026_01"
+        );
+        await this.knex.schema.dropTableIfExists(
+          "permanent_data_items_09_2026_02"
+        );
+        await this.knex.schema.dropTableIfExists(
+          "permanent_data_items_10_2026_01"
+        );
+        await this.knex.schema.dropTableIfExists(
+          "permanent_data_items_10_2026_02"
+        );
+        await this.knex.schema.dropTableIfExists(
+          "permanent_data_items_11_2026_01"
+        );
+        await this.knex.schema.dropTableIfExists(
+          "permanent_data_items_11_2026_02"
+        );
+        await this.knex.schema.dropTableIfExists(
+          "permanent_data_items_12_2026_01"
+        );
+        await this.knex.schema.dropTableIfExists(
+          "permanent_data_items_12_2026_02"
+        );
+        await this.knex.schema.dropTableIfExists("permanent_data_items_future");
+        // Recreate the old future partition
+        await this.knex.schema.raw(`
+          CREATE TABLE IF NOT EXISTS permanent_data_items_future PARTITION OF permanent_data_items
+          FOR VALUES FROM ('2026-01-01') TO (MAXVALUE);
+          `);
+      },
+    });
+  }
+}
+
+export class X402PaymentsMigrator extends Migrator {
+  constructor(private readonly knex: Knex) {
+    super();
+  }
+  private noTimeZone = { useTz: false };
+
+  public migrate() {
+    return this.operate({
+      name: "migrate to x402 payments table",
+      operation: async () => {
+        await this.knex.schema.createTable("x402_payments", (table) => {
+          table.string("tx_hash", 66).notNullable().primary();
+          table.string("network", 50).notNullable();
+          table.string("payer_address", 66).notNullable().index(); // gives room to support longer address formats in future (Solana is 44, Ethereum is 42 with 0x, Arweave is 43, etc)
+          table.string("usdc_amount", 255).notNullable();
+          table.string("winc_amount", 255).notNullable();
+          table.string("data_item_id", 43).nullable().index();
+          table.bigInteger("byte_count").notNullable();
+          table
+            .timestamp("created_at", this.noTimeZone)
+            .defaultTo(this.knex.fn.now())
+            .notNullable();
+          table
+            .timestamp("settled_at", this.noTimeZone)
+            .defaultTo(this.knex.fn.now())
+            .notNullable();
+
+          // Composite index for queries by payer and created date
+          table.index(["payer_address", "created_at"]);
+        });
+      },
+    });
+  }
+
+  public rollback() {
+    return this.operate({
+      name: "rollback from x402 payments table",
+      operation: async () => {
+        await this.knex.schema.dropTableIfExists("x402_payments");
+      },
+    });
+  }
+}
